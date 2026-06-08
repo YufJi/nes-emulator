@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Minimal Test</title>
+</head>
+<body>
+    <h1>Minimal NES Test</h1>
+    <canvas id="canvas" width="256" height="240"></canvas>
+    <br>
+    <input type="file" id="file" accept=".nes">
+    <div id="status">Loading...</div>
+    <script type="module">
+        import init, { JsNes } from './pkg/nes_wasm.js';
+        
+        const status = document.getElementById('status');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        async function main() {
+            try {
+                await init();
+                status.textContent = "WASM loaded";
+                
+                let nes = null;
+                let running = false;
+                
+                document.getElementById('file').addEventListener('change', async (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    
+                    status.textContent = "Loading ROM...";
+                    
+                    const buf = await file.arrayBuffer();
+                    const rom = new Uint8Array(buf);
+                    
+                    if (nes) nes.free();
+                    nes = new JsNes();
+                    
+                    try {
+                        nes.load_rom(rom);
+                        status.textContent = "ROM loaded, starting...";
+                        running = true;
+                        requestAnimationFrame(loop);
+                    } catch (err) {
+                        status.textContent = "Error: " + err.message;
+                        console.error(err);
+                    }
+                });
+                
+                function loop() {
+                    if (!running || !nes) return;
+                    
+                    try {
+                        nes.frame();
+                        
+                        const fb = nes.get_frame_buffer();
+                        const img = ctx.createImageData(256, 240);
+                        
+                        for (let i = 0, j = 0; i < fb.length; i++, j += 4) {
+                            const p = fb[i];
+                            img.data[j] = (p >> 16) & 0xFF;
+                            img.data[j+1] = (p >> 8) & 0xFF;
+                            img.data[j+2] = p & 0xFF;
+                            img.data[j+3] = (p >> 24) & 0xFF;
+                        }
+                        
+                        ctx.putImageData(img, 0, 0);
+                        
+                    } catch (err) {
+                        status.textContent = "Frame error: " + err.message;
+                        console.error(err);
+                        running = false;
+                        return;
+                    }
+                    
+                    requestAnimationFrame(loop);
+                }
+                
+            } catch (err) {
+                status.textContent = "Init error: " + err.message;
+                console.error(err);
+            }
+        }
+        
+        main();
+    </script>
+</body>
+</html>

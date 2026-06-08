@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CPU Test</title>
+    <style>
+        body { font-family: monospace; padding: 10px; }
+        #log { background: #000; color: #0f0; padding: 10px; height: 400px; overflow-y: scroll; }
+        .error { color: #f00; }
+    </style>
+</head>
+<body>
+    <h1>CPU Execution Test</h1>
+    <div id="log"></div>
+    <script type="module">
+        import init, { JsNes } from './pkg/nes_wasm.js';
+        
+        const log = (msg, cls='') => {
+            const el = document.getElementById('log');
+            el.innerHTML += `<div class="${cls}">${msg}</div>`;
+            el.scrollTop = el.scrollHeight;
+        };
+        
+        async function main() {
+            await init();
+            log("WASM loaded");
+            
+            // Create a ROM that writes to PPUMASK and then loops
+            const prgRom = new Uint8Array(16384);
+            
+            // Code at $8000
+            let addr = 0;
+            
+            // SEI
+            prgRom[addr++] = 0x78;
+            
+            // CLD
+            prgRom[addr++] = 0xD8;
+            
+            // LDA #$0E (show background)
+            prgRom[addr++] = 0xA9;
+            prgRom[addr++] = 0x0E;
+            
+            // STA $2001
+            prgRom[addr++] = 0x8D;
+            prgRom[addr++] = 0x01;
+            prgRom[addr++] = 0x20;
+            
+            // Infinite loop
+            const loopAddr = 0x8000 + addr;
+            prgRom[addr++] = 0x4C;
+            prgRom[addr++] = loopAddr & 0xFF;
+            prgRom[addr++] = (loopAddr >> 8) & 0xFF;
+            
+            // Reset vector at $FFFC
+            prgRom[0x7FFC] = 0x00;
+            prgRom[0x7FFD] = 0x80;
+            
+            // CHR-ROM
+            const chrRom = new Uint8Array(8192);
+            // Tile 1: solid
+            for (let i = 0; i < 16; i++) chrRom[i] = 0xFF;
+            
+            // Header
+            const header = new Uint8Array([
+                0x4E, 0x45, 0x53, 0x1A,
+                0x01, 0x01, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            ]);
+            
+            const rom = new Uint8Array(header.length + prgRom.length + chrRom.length);
+            rom.set(header, 0);
+            rom.set(prgRom, header.length);
+            rom.set(chrRom, header.length + prgRom.length);
+            
+            log("ROM created, loading...");
+            
+            const nes = new JsNes();
+            
+            try {
+                nes.load_rom(rom);
+                log("ROM loaded");
+                
+                // Run multiple frames
+                for (let i = 0; i < 10; i++) {
+                    nes.frame();
+                    log(`Frame ${i + 1} completed`);
+                }
+                
+                log("Test complete - if no errors, CPU is executing", "info");
+                
+            } catch (err) {
+                log(`Error: ${err.message}`, "error");
+                console.error(err);
+            }
+        }
+        
+        main();
+    </script>
+</body>
+</html>

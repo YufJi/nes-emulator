@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Test 2</title>
+    <style>
+        body { font-family: monospace; padding: 10px; }
+        canvas { border: 2px solid #333; width: 512px; height: 480px; image-rendering: pixelated; }
+        #info { background: #222; color: #0f0; padding: 10px; margin: 10px 0; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Simple NES Test 2 (Fixed)</h1>
+    <canvas id="c" width="256" height="240"></canvas>
+    <div id="info">Loading...</div>
+    <script type="module">
+        import init, { JsNes } from './pkg/nes_wasm.js';
+        
+        const info = document.getElementById('info');
+        const ctx = document.getElementById('c').getContext('2d');
+        
+        // Create a minimal test ROM
+        // PRG-ROM is 16KB at $8000-$BFFF, mirrored at $C000-$FFFF
+        // Reset vector at $FFFC points to start of PRG-ROM
+        
+        const prgRom = new Uint8Array(16384); // 16KB PRG-ROM
+        const chrRom = new Uint8Array(8192);  // 8KB CHR-ROM
+        
+        // Code at $8000 (start of PRG-ROM)
+        let addr = 0;
+        
+        // SEI - Disable interrupts
+        prgRom[addr++] = 0x78;
+        
+        // CLD - Clear decimal mode
+        prgRom[addr++] = 0xD8;
+        
+        // Wait for VBlank (read $2002 until bit 7 is set)
+        // LDA #$80
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x80;
+        // STA $2002 (dummy write to reset latch)
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x02;
+        prgRom[addr++] = 0x20;
+        
+        // Wait loop:
+        // LDA $2002
+        const waitLoop = addr;
+        prgRom[addr++] = 0xAD;
+        prgRom[addr++] = 0x02;
+        prgRom[addr++] = 0x20;
+        // BPL waitLoop (branch if positive, i.e., bit 7 is clear)
+        prgRom[addr++] = 0x10;
+        prgRom[addr++] = 0xFB; // -5 bytes
+        
+        // Now in VBlank, set PPU registers
+        
+        // LDA #$80 (enable NMI)
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x80;
+        // STA $2000 (PPUCTRL)
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x00;
+        prgRom[addr++] = 0x20;
+        
+        // LDA #$0E (show background + sprites, but not left 8 pixels)
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x0E;
+        // STA $2001 (PPUMASK)
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x01;
+        prgRom[addr++] = 0x20;
+        
+        // Set PPUADDR to $3F00 (palette address)
+        // LDA #$3F
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x3F;
+        // STA $2006
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x06;
+        prgRom[addr++] = 0x20;
+        // LDA #$00
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x00;
+        // STA $2006
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x06;
+        prgRom[addr++] = 0x20;
+        
+        // Write palette colors to $2007
+        // Background color: $22 (blue)
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x22;
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x07;
+        prgRom[addr++] = 0x20;
+        
+        // Set PPUADDR to $2000 (nametable)
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x20;
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x06;
+        prgRom[addr++] = 0x20;
+        prgRom[addr++] = 0xA9;
+        prgRom[addr++] = 0x00;
+        prgRom[addr++] = 0x8D;
+        prgRom[addr++] = 0x06;
+        prgRom[addr++] = 0x20;
+        
+        // Write some tiles to nametable
+        // Tile 0, 1, 2, 3...
+        for (let i = 0; i < 32; i++) {
+            prgRom[addr++] = 0xA9; // LDA
+            prgRom[addr++] = i % 4; // tile index
+            prgRom[addr++] = 0x8D; // STA $2007
+            prgRom[addr++] = 0x07;
+            prgRom[addr++] = 0x20;
+        }
+        
+        // Infinite loop
+        const infiniteLoop = addr;
+        prgRom[addr++] = 0x4C; // JMP
+        prgRom[addr++] = infiniteLoop & 0xFF;
+        prgRom[addr++] = (infiniteLoop >> 8) & 0xFF;
+        
+        // Reset vector at $FFFC (offset 0x7FFC in PRG-ROM)
+        // Points to $8000
+        prgRom[0x7FFC] = 0x00;
+        prgRom[0x7FFD] = 0x80;
+        
+        // IRQ vector at $FFFE
+        prgRom[0x7FFE] = 0x00;
+        prgRom[0x7FFF] = 0x80;
+        
+        // CHR-ROM: Create 4 simple tiles
+        // Tile 0: empty (all zeros)
+        // Tile 1: horizontal stripes
+        for (let i = 0; i < 8; i++) {
+            chrRom[i] = 0xAA; // pattern low
+            chrRom[i + 8] = 0xAA; // pattern high
+        }
+        // Tile 2: vertical stripes
+        for (let i = 0; i < 8; i++) {
+            chrRom[16 + i] = 0xFF;
+            chrRom[16 + i + 8] = 0x00;
+        }
+        // Tile 3: checkerboard
+        for (let i = 0; i < 8; i++) {
+            chrRom[32 + i] = (i % 2 == 0) ? 0xAA : 0x55;
+            chrRom[32 + i + 8] = (i % 2 == 0) ? 0xAA : 0x55;
+        }
+        
+        // iNES header
+        const header = new Uint8Array([
+            0x4E, 0x45, 0x53, 0x1A, // NES magic
+            0x01, // 16KB PRG
+            0x01, // 8KB CHR
+            0x00, // flags6 (horizontal mirroring)
+            0x00, // flags7
+            0x00, 0x00, 0x00, 0x00, // padding
+            0x00, 0x00, 0x00, 0x00,
+        ]);
+        
+        // Combine into ROM
+        const rom = new Uint8Array(header.length + prgRom.length + chrRom.length);
+        rom.set(header, 0);
+        rom.set(prgRom, header.length);
+        rom.set(chrRom, header.length + prgRom.length);
+        
+        async function main() {
+            await init();
+            info.textContent = "WASM loaded, loading ROM...";
+            
+            const nes = new JsNes();
+            
+            try {
+                nes.load_rom(rom);
+                info.textContent = "ROM loaded, running 60 frames...";
+                
+                // Run 60 frames
+                for (let i = 0; i < 60; i++) {
+                    nes.frame();
+                }
+                
+                // Render
+                const fb = nes.get_frame_buffer();
+                const img = ctx.createImageData(256, 240);
+                for (let i = 0, j = 0; i < fb.length; i++, j += 4) {
+                    const p = fb[i];
+                    img.data[j] = (p >> 16) & 0xFF;
+                    img.data[j+1] = (p >> 8) & 0xFF;
+                    img.data[j+2] = p & 0xFF;
+                    img.data[j+3] = (p >> 24) & 0xFF;
+                }
+                ctx.putImageData(img, 0, 0);
+                
+                // Analyze
+                const colors = new Set(fb);
+                const colorList = Array.from(colors).map(c => '0x' + c.toString(16).padStart(8, '0')).join(', ');
+                info.textContent = `Test complete!\nUnique colors: ${colors.size}\nColors: ${colorList}`;
+                
+            } catch (err) {
+                info.textContent = "Error: " + err.message;
+                console.error(err);
+            }
+        }
+        
+        main();
+    </script>
+</body>
+</html>

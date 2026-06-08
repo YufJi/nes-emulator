@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Simple Test</title>
+    <style>
+        body { font-family: monospace; padding: 10px; }
+        canvas { border: 2px solid #333; width: 512px; height: 480px; image-rendering: pixelated; }
+        #info { background: #222; color: #0f0; padding: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Simple NES Test</h1>
+    <canvas id="c" width="256" height="240"></canvas>
+    <div id="info">Click to start</div>
+    <script type="module">
+        import init, { JsNes } from './pkg/nes_wasm.js';
+        
+        const info = document.getElementById('info');
+        const ctx = document.getElementById('c').getContext('2d');
+        
+        // Simple test ROM that sets PPUMASK and fills nametable
+        // iNES header + PRG-ROM (16KB) + CHR-ROM (8KB)
+        const rom = new Uint8Array([
+            // iNES header (16 bytes)
+            0x4E, 0x45, 0x53, 0x1A, // NES magic
+            0x01, // 16KB PRG
+            0x01, // 8KB CHR
+            0x00, // flags6 (horizontal mirroring)
+            0x00, // flags7
+            0x00, 0x00, 0x00, 0x00, // padding
+            0x00, 0x00, 0x00, 0x00,
+            
+            // PRG-ROM (16KB at $8000-$BFFF, mirrored at $C000-$FFFF)
+            // Reset vector at $FFFC-$FFFD points to $8000
+            
+            // Code at $8000:
+            0x78, // SEI (disable interrupts)
+            0xD8, // CLD (clear decimal mode)
+            
+            // Set PPUCTRL ($2000) = $80 (enable NMI)
+            0xA9, 0x80, // LDA #$80
+            0x8D, 0x00, 0x20, // STA $2000
+            
+            // Set PPUMASK ($2001) = $08 (show background)
+            0xA9, 0x08, // LDA #$08
+            0x8D, 0x01, 0x20, // STA $2001
+            
+            // Fill nametable at $2000 with tile $01
+            0xA9, 0x20, // LDA #$20 (high byte of nametable address)
+            0x8D, 0x06, 0x20, // STA $2006 (PPUADDR high)
+            0xA9, 0x00, // LDA #$00 (low byte)
+            0x8D, 0x06, 0x20, // STA $2006 (PPUADDR low)
+            
+            // Write 960 tiles (32*30 = 960 bytes)
+            0xA2, 0x00, // LDX #$00 (counter)
+            0xA9, 0x01, // LDA #$01 (tile index)
+            0x8D, 0x07, 0x20, // STA $2007 (PPUDATA)
+            0xE8, // INX
+            0xE0, 0xC0, 0x03, // CPX #$03C0 (960)
+            0xD0, 0xF7, // BNE -9 (loop back)
+            
+            // Infinite loop
+            0x4C, 0x10, 0x80, // JMP $8010
+            
+            // Padding to fill 16KB
+            ...new Array(16384 - 50).fill(0xEA), // NOP padding
+            
+            // Reset vector at $FFFC-$FFFD
+            0x00, 0x80, // Points to $8000
+            
+            // IRQ/BRK vector at $FFFE-$FFFF
+            0x00, 0x80,
+            
+            // CHR-ROM (8KB)
+            // Tile 0: empty
+            ...new Array(16).fill(0x00),
+            // Tile 1: solid fill
+            ...new Array(16).fill(0xFF),
+            // Rest: empty
+            ...new Array(8192 - 32).fill(0x00),
+        ]);
+        
+        async function main() {
+            await init();
+            info.textContent = "WASM loaded, starting test...";
+            
+            const nes = new JsNes();
+            
+            try {
+                nes.load_rom(rom);
+                info.textContent = "ROM loaded, running frames...";
+                
+                // Run 10 frames
+                for (let i = 0; i < 10; i++) {
+                    nes.frame();
+                }
+                
+                // Render
+                const fb = nes.get_frame_buffer();
+                const img = ctx.createImageData(256, 240);
+                for (let i = 0, j = 0; i < fb.length; i++, j += 4) {
+                    const p = fb[i];
+                    img.data[j] = (p >> 16) & 0xFF;
+                    img.data[j+1] = (p >> 8) & 0xFF;
+                    img.data[j+2] = p & 0xFF;
+                    img.data[j+3] = (p >> 24) & 0xFF;
+                }
+                ctx.putImageData(img, 0, 0);
+                
+                // Analyze
+                const colors = new Set(fb);
+                info.innerHTML = `Test complete!<br>Unique colors: ${colors.size}<br>First pixel: 0x${fb[0].toString(16).padStart(8,'0')}`;
+                
+            } catch (err) {
+                info.textContent = "Error: " + err.message;
+                console.error(err);
+            }
+        }
+        
+        main();
+    </script>
+</body>
+</html>
