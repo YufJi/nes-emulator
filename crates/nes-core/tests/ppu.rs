@@ -405,7 +405,7 @@ fn test_palette_read() {
     // Set palette data
     ppu.palette[0x00] = 0x0F;
     ppu.palette[0x01] = 0x20;
-    ppu.palette[0x10] = 0x30;
+    ppu.palette[0x11] = 0x30;
 
     // Read palette 0
     ppu.write_register(0x2006, 0x3F);
@@ -419,11 +419,18 @@ fn test_palette_read() {
     let data1 = ppu.read_register(0x2007);
     assert_eq!(data1, 0x20);
 
-    // Read sprite palette 0
+    // $3F10 is the sprite backdrop and mirrors the background backdrop at
+    // $3F00, so it reads back the same byte.
     ppu.write_register(0x2006, 0x3F);
     ppu.write_register(0x2006, 0x10);
-    let data10 = ppu.read_register(0x2007);
-    assert_eq!(data10, 0x30);
+    let backdrop = ppu.read_register(0x2007);
+    assert_eq!(backdrop, 0x0F);
+
+    // A non-backdrop sprite palette entry maps to its own byte.
+    ppu.write_register(0x2006, 0x3F);
+    ppu.write_register(0x2006, 0x11);
+    let data11 = ppu.read_register(0x2007);
+    assert_eq!(data11, 0x30);
 }
 
 #[test]

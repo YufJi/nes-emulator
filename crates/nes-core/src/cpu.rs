@@ -27,10 +27,6 @@ pub struct Cpu {
     status: StatusFlags,
     /// Total cycles executed
     cycles: u64,
-    /// Internal 2KB RAM ($0000-$07FF, mirrored to $1FFF)
-    /// The NES CPU has 2KB of internal RAM that is mirrored
-    /// across the address range $0000-$1FFF (4 times).
-    ram: [u8; 0x800],
 }
 
 bitflags::bitflags! {
@@ -76,40 +72,7 @@ impl Cpu {
             pc: 0,
             status: StatusFlags::from_bits_truncate(0x24),
             cycles: 0,
-            ram: [0; 0x800],
         }
-    }
-
-    /// Read a byte from internal RAM
-    ///
-    /// The NES has 2KB of internal RAM at $0000-$07FF that is mirrored
-    /// to $0800-$0FFF, $1000-$17FF, and $1800-$1FFF. This method handles
-    /// the mirroring by masking the address to 11 bits (0x7FF).
-    ///
-    /// # Arguments
-    /// * `addr` - The address to read from (must be in $0000-$1FFF range)
-    ///
-    /// # Returns
-    /// The byte value at the mirrored address
-    pub fn read_ram(&self, addr: u16) -> u8 {
-        // Mask to 2KB range (mirrors every $800 bytes)
-        let mirrored_addr = (addr & 0x07FF) as usize;
-        self.ram[mirrored_addr]
-    }
-
-    /// Write a byte to internal RAM
-    ///
-    /// The NES has 2KB of internal RAM at $0000-$07FF that is mirrored
-    /// to $0800-$0FFF, $1000-$17FF, and $1800-$1FFF. This method handles
-    /// the mirroring by masking the address to 11 bits (0x7FF).
-    ///
-    /// # Arguments
-    /// * `addr` - The address to write to (must be in $0000-$1FFF range)
-    /// * `value` - The byte value to write
-    pub fn write_ram(&mut self, addr: u16, value: u8) {
-        // Mask to 2KB range (mirrors every $800 bytes)
-        let mirrored_addr = (addr & 0x07FF) as usize;
-        self.ram[mirrored_addr] = value;
     }
 
     /// Reset the CPU
@@ -207,27 +170,6 @@ mod tests {
         assert_eq!(cpu.sp, 0xFD);
         assert_eq!(cpu.pc, 0);
         assert_eq!(cpu.cycles, 0);
-        assert_eq!(cpu.ram[0], 0);
-        assert_eq!(cpu.ram[0x7FF], 0);
-    }
-
-    #[test]
-    fn test_ram_read_write() {
-        let mut cpu = Cpu::new();
-
-        cpu.write_ram(0x0000, 0x42);
-        assert_eq!(cpu.read_ram(0x0000), 0x42);
-
-        cpu.write_ram(0x07FF, 0xAB);
-        assert_eq!(cpu.read_ram(0x07FF), 0xAB);
-
-        assert_eq!(cpu.read_ram(0x0800), 0x42);
-        assert_eq!(cpu.read_ram(0x1000), 0x42);
-        assert_eq!(cpu.read_ram(0x1800), 0x42);
-        assert_eq!(cpu.read_ram(0x0FFF), 0xAB);
-
-        cpu.write_ram(0x0801, 0xCD);
-        assert_eq!(cpu.read_ram(0x0001), 0xCD);
     }
 
     #[test]

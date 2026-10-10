@@ -13,7 +13,7 @@ use crate::ppu::rendering::{
     BackgroundRenderer, FrameBuffer, MapperChr, Mirroring, ScanlineProcessor, VramChr,
 };
 use crate::ppu::sprite::SpriteEvaluator;
-use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
+use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::{JsnesError, Region};
 
 /// Button indices used by [`Nes::set_button`].
@@ -208,8 +208,6 @@ struct NesBus {
     /// Whether the cartridge declares battery-backed work RAM
     has_battery: bool,
     frame_ready: bool,
-    /// PPU read buffer for $2007
-    ppu_read_buffer: u8,
 }
 
 impl NesBus {
@@ -242,7 +240,6 @@ impl NesBus {
             open_bus: 0,
             has_battery: false,
             frame_ready: false,
-            ppu_read_buffer: 0,
         }
     }
 
@@ -373,148 +370,25 @@ impl NesBus {
 
     /// Read from PPU register
     fn read_ppu_register(&mut self, addr: u16) -> u8 {
-        // PPU register addresses are mirrored every 8 bytes from $2000-$3FFF
-        let reg = (addr & 0x07) as u8;
-
-        match reg {
-            0x02 => {
-                // PPUSTATUS - a read clears VBlank, sprite overflow and sprite 0
-                // hit, and resets the write toggle. Games such as Super Mario
-                // Bros. spin on the sprite 0 flag while waiting for the status
-                // bar split, so leaving it set stalls their timing loops.
-                let status = self.ppu.status.bits();
-                self.ppu.status.remove(
-                    PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
-                );
-                self.ppu.w = false;
-                // Bits 0-4 are not driven and read back as open bus.
-                (status & 0xE0) | (self.open_bus & 0x1F)
-            }
-            0x04 => {
-                // OAMDATA - read from OAM
-                self.ppu.oam[self.ppu.oam_addr as usize]
-            }
-            0x07 => {
-                // PPUDATA - read from VRAM
-                let value = self.ppu_read_buffer;
-                let vram_addr = self.ppu.v & 0x3FFF;
-
-                // Update read buffer
-                if vram_addr >= 0x3F00 {
-                    // Palette reads don't have the delayed read
-                    self.ppu_read_buffer = self.ppu.palette[Self::palette_index(vram_addr)];
-                } else if vram_addr < 0x2000 {
-                    // Pattern tables live on the cartridge (CHR ROM or RAM).
-                    self.ppu_read_buffer = match self.mapper {
-                        Some(ref mut mapper) => mapper.read(vram_addr),
-                        None => 0,
-                    };
-                } else {
-                    self.ppu_read_buffer =
-                        self.ppu.vram[self.mirroring.mirror_vram_addr(vram_addr) as usize];
-                }
-
-                // Increment VRAM address
-                let increment = if self.ppu.ctrl.contains(crate::ppu::PpuCtrl::INCREMENT) {
-                    32
-                } else {
-                    1
-                };
-                self.ppu.v = (self.ppu.v + increment) & 0x7FFF;
-
-                value
-            }
-            _ => {
-                // Write-only or unused registers read back as open bus.
-                self.open_bus
-            }
-        }
+        // The register state machine lives in `Ppu`; the bus only supplies the
+        // cartridge CHR, nametable mirroring and data bus that the PPU cannot
+        // own. Addresses mirror every 8 bytes across $2000-$3FFF.
+        let memory = PpuMemory::System {
+            chr: self.mapper.as_deref_mut(),
+            mirroring: self.mirroring,
+            open_bus: self.open_bus,
+        };
+        self.ppu.read_register_with(addr, memory)
     }
 
     /// Write to PPU register
     fn write_ppu_register(&mut self, addr: u16, value: u8) {
-        // PPU register addresses are mirrored every 8 bytes from $2000-$3FFF
-        let reg = (addr & 0x07) as u8;
-
-        match reg {
-            0x00 => {
-                // PPUCTRL
-                self.ppu.ctrl = crate::ppu::PpuCtrl::from_bits_truncate(value);
-                // Update nametable bits in temporary VRAM address
-                self.ppu.t = (self.ppu.t & !0x0C00) | ((value as u16 & 0x03) << 10);
-            }
-            0x01 => {
-                // PPUMASK
-                self.ppu.mask = crate::ppu::PpuMask::from_bits_truncate(value);
-            }
-            0x03 => {
-                // OAMADDR
-                self.ppu.oam_addr = value;
-            }
-            0x04 => {
-                // OAMDATA
-                self.ppu.oam[self.ppu.oam_addr as usize] = value;
-                self.ppu.oam_addr = self.ppu.oam_addr.wrapping_add(1);
-            }
-            0x05 => {
-                // PPUSCROLL
-                if !self.ppu.w {
-                    // First write: X scroll
-                    self.ppu.t = (self.ppu.t & !0x001F) | ((value as u16 >> 3) & 0x001F);
-                    self.ppu.x = value & 0x07;
-                } else {
-                    // Second write: Y scroll
-                    self.ppu.t = (self.ppu.t & !0x73E0)
-                        | ((value as u16 & 0x07) << 12)
-                        | (((value as u16 >> 3) & 0x1F) << 5);
-                }
-                self.ppu.w = !self.ppu.w;
-            }
-            0x06 => {
-                // PPUADDR
-                if !self.ppu.w {
-                    // First write: high byte
-                    self.ppu.t = (self.ppu.t & 0x00FF) | ((value as u16 & 0x3F) << 8);
-                } else {
-                    // Second write: low byte
-                    self.ppu.t = (self.ppu.t & 0xFF00) | value as u16;
-                    self.ppu.v = self.ppu.t;
-                }
-                self.ppu.w = !self.ppu.w;
-            }
-            0x07 => {
-                // PPUDATA
-                let vram_addr = self.ppu.v & 0x3FFF;
-
-                if vram_addr >= 0x3F00 {
-                    // Palette write. The sprite backdrop entries
-                    // ($3F10/$3F14/$3F18/$3F1C) alias the background ones
-                    // ($3F00/$3F04/$3F08/$3F0C) in both directions.
-                    let palette_addr = Self::palette_index(vram_addr);
-                    self.ppu.palette[palette_addr] = value;
-                    if palette_addr % 4 == 0 {
-                        self.ppu.palette[palette_addr + 0x10] = value;
-                    }
-                } else if vram_addr < 0x2000 {
-                    // CHR-RAM uploads must land on the cartridge so the
-                    // renderer sees them.
-                    if let Some(ref mut mapper) = self.mapper {
-                        mapper.write(vram_addr, value);
-                    }
-                } else {
-                    self.ppu.vram[self.mirroring.mirror_vram_addr(vram_addr) as usize] = value;
-                }
-
-                // Increment VRAM address
-                let increment = if self.ppu.ctrl.contains(crate::ppu::PpuCtrl::INCREMENT) {
-                    32
-                } else {
-                    1
-                };
-                self.ppu.v = (self.ppu.v + increment) & 0x7FFF;
-            }
-            _ => {}
-        }
+        let memory = PpuMemory::System {
+            chr: self.mapper.as_deref_mut(),
+            mirroring: self.mirroring,
+            open_bus: self.open_bus,
+        };
+        self.ppu.write_register_with(addr, value, memory);
     }
 
     /// Read from APU/register
@@ -598,18 +472,6 @@ impl NesBus {
         }
     }
 
-    /// Map a palette RAM address ($3F00-$3F1F) to its storage index.
-    ///
-    /// The four sprite backdrop entries at $3F10/$3F14/$3F18/$3F1C are mirrors
-    /// of the background ones at $3F00/$3F04/$3F08/$3F0C, so they share storage.
-    fn palette_index(addr: u16) -> usize {
-        let index = (addr & 0x1F) as usize;
-        if index >= 0x10 && index % 4 == 0 {
-            index - 0x10
-        } else {
-            index
-        }
-    }
     /// Advance the PPU by the single cycle that was just counted.
     ///
     /// Rendering works off `ppu.render_v` (a dedicated scroll counter) rather
@@ -943,6 +805,46 @@ mod tests {
     #[test]
     fn test_js_nes_new() {
         let _nes = Nes::new();
+    }
+
+    #[test]
+    fn test_cpu_ram_mirrors_across_0000_1fff() {
+        let mut bus = NesBus::new();
+
+        bus.write(0x0000, 0x42);
+        assert_eq!(bus.read(0x0000), 0x42);
+        // 2KB of RAM is mirrored every $800 up to $1FFF.
+        assert_eq!(bus.read(0x0800), 0x42);
+        assert_eq!(bus.read(0x1000), 0x42);
+        assert_eq!(bus.read(0x1800), 0x42);
+
+        bus.write(0x07FF, 0xAB);
+        assert_eq!(bus.read(0x0FFF), 0xAB);
+
+        bus.write(0x0801, 0xCD);
+        assert_eq!(bus.read(0x0001), 0xCD);
+    }
+
+    #[test]
+    fn test_ppudata_routes_pattern_tables_to_the_cartridge() {
+        let mut bus = NesBus::new();
+        // Mapper 0 with an empty CHR image is a CHR-RAM cartridge.
+        bus.mapper = Some(create_mapper(0, vec![0u8; 0x4000], vec![]).unwrap());
+
+        // Point v at $0000 and upload a CHR byte through $2007.
+        bus.write(0x2006, 0x00);
+        bus.write(0x2006, 0x00);
+        bus.write(0x2007, 0x5A);
+
+        // The write reached the cartridge, not the PPU's own VRAM.
+        assert_eq!(bus.mapper.as_mut().unwrap().read(0x0000), 0x5A);
+
+        // Reading back through $2007 is buffered: the old buffer first, then
+        // the byte fetched from cartridge CHR.
+        bus.write(0x2006, 0x00);
+        bus.write(0x2006, 0x00);
+        assert_eq!(bus.read(0x2007), 0x00);
+        assert_eq!(bus.read(0x2007), 0x5A);
     }
 
     #[test]

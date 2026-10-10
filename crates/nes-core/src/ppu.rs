@@ -7,10 +7,35 @@ use bitflags::bitflags;
 pub mod rendering;
 pub mod sprite;
 
+use crate::mapper::Mapper;
 pub use rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor};
 pub use sprite::{
     SecondaryOam, Sprite, SpriteAttributes, SpriteEvaluator, SpritePatternFetcher, SpriteRenderer,
 };
+
+/// Memory the PPU register logic needs beyond its own state.
+///
+/// The palette and nametables live in the PPU, but pattern tables live on the
+/// cartridge and nametable mirroring is chosen by the mapper. The system bus
+/// supplies those through [`PpuMemory::System`]; a standalone PPU (the unit
+/// tests) keeps everything in its own flat VRAM via [`PpuMemory::Internal`].
+///
+/// Keeping this behind one parameter is what lets the PPU own the single copy
+/// of the register state machine: both entry points drive the same code.
+pub enum PpuMemory<'a> {
+    /// Pattern tables and nametables both live in the PPU's flat VRAM.
+    Internal,
+    /// Pattern tables come from the cartridge, nametables are mirrored, and
+    /// write-only registers return the CPU data bus value.
+    System {
+        /// Cartridge CHR source used for pattern table ($0000-$1FFF) access.
+        chr: Option<&'a mut (dyn Mapper + 'static)>,
+        /// Nametable mirroring selected by the mapper or cartridge header.
+        mirroring: Mirroring,
+        /// Value currently driven on the CPU data bus, for open-bus reads.
+        open_bus: u8,
+    },
+}
 
 bitflags! {
     /// PPU Control Register ($2000)
@@ -217,60 +242,53 @@ impl Ppu {
     /// # Returns
     /// The value read from the register
     pub fn read_register(&mut self, addr: u16) -> u8 {
+        self.read_register_with(addr, PpuMemory::Internal)
+    }
+
+    /// Read from a PPU register using an explicit memory source.
+    ///
+    /// This is the single implementation of the register logic. The system bus
+    /// calls it with [`PpuMemory::System`] so pattern tables come from the
+    /// cartridge and nametables are mirrored; [`Ppu::read_register`] is the
+    /// standalone form used by the unit tests.
+    pub fn read_register_with(&mut self, addr: u16, mut memory: PpuMemory<'_>) -> u8 {
         match addr & 0x2007 {
-            0x2000 => {
-                // $2000: PPUCTRL - write-only, returns open bus
-                self.open_bus_latch
-            }
-            0x2001 => {
-                // $2001: PPUMASK - write-only, returns open bus
-                self.open_bus_latch
-            }
             0x2002 => {
-                // $2002: PPUSTATUS - read-only, clears VBlank flag and write toggle
-                let status = self.status.bits() | (self.open_bus_latch & 0x1f);
-                // Clear VBlank flag on read
-                self.status.remove(PpuStatus::VBLANK);
-                // Clear sprite overflow and sprite 0 hit as well
-                self.status
-                    .remove(PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT);
-                // Reset write toggle
+                // $2002: PPUSTATUS - read-only. A read clears VBlank, sprite
+                // overflow and sprite 0 hit and resets the write toggle. Games
+                // such as Super Mario Bros. spin on the sprite 0 flag while
+                // waiting for the status bar split, so leaving it set stalls
+                // their timing loops. Bits 0-4 are not driven and read back as
+                // open bus.
+                let status = self.status.bits();
+                self.status.remove(
+                    PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
+                );
                 self.w = false;
-                // Update open bus latch
-                self.open_bus_latch = status;
-                status
-            }
-            0x2003 => {
-                // $2003: OAMADDR - write-only, returns open bus
-                self.open_bus_latch
+                let value = (status & 0xE0) | (self.open_bus(&memory) & 0x1F);
+                self.open_bus_latch = value;
+                value
             }
             0x2004 => {
-                // $2004: OAMDATA - read OAM
+                // $2004: OAMDATA - read OAM. Attribute bytes (every 4th byte
+                // from offset 2) keep only the implemented bits, which is
+                // invisible to the sprite renderer but matches hardware reads.
                 let value = self.oam[self.oam_addr as usize];
-                // Attribute bytes (every 4th byte starting at byte 2) have bits 2-4 clear
-                if (self.oam_addr & 3) == 2 {
-                    self.open_bus_latch = value & 0xE3;
+                let value = if (self.oam_addr & 3) == 2 {
+                    value & 0xE3
                 } else {
-                    self.open_bus_latch = value;
-                }
-                self.open_bus_latch
-            }
-            0x2005 => {
-                // $2005: PPUSCROLL - write-only, returns open bus
-                self.open_bus_latch
-            }
-            0x2006 => {
-                // $2006: PPUADDR - write-only, returns open bus
-                self.open_bus_latch
+                    value
+                };
+                self.open_bus_latch = value;
+                value
             }
             0x2007 => {
                 // $2007: PPUDATA - read VRAM
-                self.read_ppudata()
+                self.read_ppudata(&mut memory)
             }
-            _ => {
-                // Should not happen due to mask, but handle gracefully
-                self.open_bus_latch
-            }
+            // $2000/$2001/$2003/$2005/$2006 are write-only or unused and read
+            // back as open bus.
+            _ => self.open_bus(&memory),
         }
     }
 
@@ -280,6 +298,14 @@ impl Ppu {
     /// * `addr` - Register address (should be in $2000-$2007 range)
     /// * `value` - Value to write
     pub fn write_register(&mut self, addr: u16, value: u8) {
+        self.write_register_with(addr, value, PpuMemory::Internal)
+    }
+
+    /// Write to a PPU register using an explicit memory source.
+    ///
+    /// See [`Ppu::read_register_with`] for why the memory source is a
+    /// parameter rather than state owned by the PPU.
+    pub fn write_register_with(&mut self, addr: u16, value: u8, mut memory: PpuMemory<'_>) {
         // Update open bus latch on all writes
         self.open_bus_latch = value;
 
@@ -314,7 +340,7 @@ impl Ppu {
             }
             0x2007 => {
                 // $2007: PPUDATA
-                self.write_ppudata(value);
+                self.write_ppudata(value, &mut memory);
             }
             _ => {
                 // Should not happen due to mask
@@ -379,20 +405,19 @@ impl Ppu {
     }
 
     /// Read from PPUDATA ($2007)
-    fn read_ppudata(&mut self) -> u8 {
+    fn read_ppudata(&mut self, memory: &mut PpuMemory<'_>) -> u8 {
         let addr = self.v & 0x3FFF;
         let result;
 
         if addr < 0x3F00 {
             // Pattern tables and nametables: buffered read
             result = self.read_buffer;
-            self.read_buffer = self.read_vram(addr);
+            self.read_buffer = self.read_vram(addr, memory);
         } else {
-            // Palette RAM: direct read, but buffer gets nametable data
-            let palette_addr = addr & 0x1F;
-            result = self.palette[palette_addr as usize];
-            // Buffer gets the nametable data "behind" the palette
-            self.read_buffer = self.read_vram(addr & 0x2FFF);
+            // Palette RAM: returned immediately, but the buffer still picks up
+            // the nametable data "behind" the palette.
+            result = self.palette[Self::palette_index(addr)];
+            self.read_buffer = self.read_vram(addr & 0x2FFF, memory);
         }
 
         // Increment VRAM address
@@ -402,49 +427,96 @@ impl Ppu {
     }
 
     /// Write to PPUDATA ($2007)
-    fn write_ppudata(&mut self, value: u8) {
+    fn write_ppudata(&mut self, value: u8, memory: &mut PpuMemory<'_>) {
         let addr = self.v & 0x3FFF;
 
-        if addr < 0x3F00 {
-            // Pattern tables and nametables
-            self.write_vram(addr, value);
+        if addr >= 0x3F00 {
+            // Palette RAM stores 6 bits. The four sprite backdrop entries
+            // ($3F10/$3F14/$3F18/$3F1C) alias the background ones, so they
+            // share storage.
+            let palette_addr = Self::palette_index(addr);
+            self.palette[palette_addr] = value & 0x3F;
+            if palette_addr % 4 == 0 {
+                self.palette[palette_addr + 0x10] = value & 0x3F;
+            }
         } else {
-            // Palette RAM
-            let palette_addr = addr & 0x1F;
-            self.palette[palette_addr as usize] = value & 0x3F; // Only 6 bits
+            self.write_vram(addr, value, memory);
         }
 
         // Increment VRAM address
         self.increment_vram_addr();
     }
 
+    /// Map a palette RAM address ($3F00-$3F1F) to its storage index.
+    ///
+    /// The four sprite backdrop entries at $3F10/$3F14/$3F18/$3F1C are mirrors
+    /// of the background ones at $3F00/$3F04/$3F08/$3F0C, so they share storage.
+    fn palette_index(addr: u16) -> usize {
+        let index = (addr & 0x1F) as usize;
+        if index >= 0x10 && index % 4 == 0 {
+            index - 0x10
+        } else {
+            index
+        }
+    }
+
+    /// Open-bus value returned by write-only or unused register reads.
+    fn open_bus(&self, memory: &PpuMemory<'_>) -> u8 {
+        match memory {
+            PpuMemory::Internal => self.open_bus_latch,
+            PpuMemory::System { open_bus, .. } => *open_bus,
+        }
+    }
+
     /// Read from VRAM at the given address
-    fn read_vram(&self, addr: u16) -> u8 {
+    fn read_vram(&self, addr: u16, memory: &mut PpuMemory<'_>) -> u8 {
         let addr = addr & 0x3FFF;
 
         if addr < 0x2000 {
-            // Pattern tables ($0000-$1FFF)
-            self.vram[addr as usize]
+            // Pattern tables ($0000-$1FFF): cartridge CHR in the system
+            // configuration, flat VRAM for a standalone PPU.
+            match memory {
+                PpuMemory::Internal => self.vram[addr as usize],
+                PpuMemory::System { chr, .. } => match chr {
+                    Some(mapper) => mapper.read(addr),
+                    None => 0,
+                },
+            }
         } else if addr < 0x3F00 {
-            // Nametables ($2000-$2FFF) - handle mirroring
-            // For now, direct access (mirroring handled by mapper/bus)
-            self.vram[addr as usize]
+            // Nametables ($2000-$2FFF): mirroring is chosen by the mapper.
+            let mirrored = match memory {
+                PpuMemory::Internal => addr,
+                PpuMemory::System { mirroring, .. } => mirroring.mirror_vram_addr(addr),
+            };
+            self.vram[mirrored as usize]
         } else {
             // Palette RAM ($3F00-$3FFF)
-            self.palette[(addr & 0x1F) as usize]
+            self.palette[Self::palette_index(addr)]
         }
     }
 
     /// Write to VRAM at the given address
-    fn write_vram(&mut self, addr: u16, value: u8) {
+    fn write_vram(&mut self, addr: u16, value: u8, memory: &mut PpuMemory<'_>) {
         let addr = addr & 0x3FFF;
 
         if addr < 0x2000 {
-            // Pattern tables ($0000-$1FFF)
-            self.vram[addr as usize] = value;
+            // Pattern tables ($0000-$1FFF): CHR-RAM uploads must land on the
+            // cartridge so the renderer sees them.
+            match memory {
+                PpuMemory::Internal => self.vram[addr as usize] = value,
+                PpuMemory::System { chr, .. } => {
+                    if let Some(mapper) = chr {
+                        mapper.write(addr, value);
+                    }
+                }
+            }
         } else if addr < 0x3F00 {
-            // Nametables ($2000-$2FFF)
-            self.vram[addr as usize] = value;
+            // Nametables ($2000-$2FFF), mirrored to a physical nametable.
+            let mirrored = match memory {
+                PpuMemory::Internal => addr,
+                PpuMemory::System { mirroring, .. } => mirroring.mirror_vram_addr(addr),
+            };
+            self.vram[mirrored as usize] = value;
         }
         // Palette handled separately in write_ppudata
     }
