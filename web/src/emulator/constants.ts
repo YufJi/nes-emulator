@@ -1,0 +1,62 @@
+/** Native NES output resolution. */
+export const NES_WIDTH = 256;
+export const NES_HEIGHT = 240;
+
+/**
+ * NTSC frame rate. The NES renders 262 scanlines of 341 PPU cycles each, which
+ * works out to 60.0988 frames per second — not the 60 Hz of a typical display.
+ */
+export const FRAME_RATE = 60.0988;
+export const FRAME_DURATION_MS = 1000 / FRAME_RATE;
+
+/** Logical buttons of the standard controller. */
+export type ButtonName =
+  | 'A'
+  | 'B'
+  | 'SELECT'
+  | 'START'
+  | 'UP'
+  | 'DOWN'
+  | 'LEFT'
+  | 'RIGHT';
+
+export const BUTTON_NAMES: readonly ButtonName[] = [
+  'A',
+  'B',
+  'SELECT',
+  'START',
+  'UP',
+  'DOWN',
+  'LEFT',
+  'RIGHT',
+];
+
+/** Keyboard `event.code` to controller button mapping. */
+export const KEY_BINDINGS: Record<string, ButtonName> = {
+  ArrowUp: 'UP',
+  ArrowDown: 'DOWN',
+  ArrowLeft: 'LEFT',
+  ArrowRight: 'RIGHT',
+  KeyX: 'A',
+  KeyK: 'A',
+  KeyZ: 'B',
+  KeyJ: 'B',
+  Enter: 'START',
+  Space: 'START',
+  ShiftLeft: 'SELECT',
+  ShiftRight: 'SELECT',
+};
+
+/** Rows rendered by the on-screen key legend. */
+export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: string }> = [
+  { action: '方向', keys: '↑ ↓ ← →' },
+  { action: 'A', keys: 'X / K' },
+  { action: 'B', keys: 'Z / J' },
+  { action: 'Start', keys: 'Enter / Space' },
+  { action: 'Select', keys: 'Shift' },
+];
+
+/** Mappers implemented by `nes-core`; anything else cannot be emulated yet. */
+export const SUPPORTED_MAPPERS: readonly number[] = [
+  0, 1, 2, 3, 4, 5, 7, 9, 11, 34, 38, 66, 71, 79, 94, 118, 119, 140, 180, 240, 241,
+];
