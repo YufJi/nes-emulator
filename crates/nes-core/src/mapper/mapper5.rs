@@ -64,7 +64,9 @@ pub struct Mapper5 {
     irq_target: u8,
     /// IRQ enabled ($5204 bit 7)
     irq_enabled: bool,
-    /// IRQ pending
+    /// IRQ pending status flag ($5204 bit 7). Latches when the scanline
+    /// counter reaches the target, independently of [`Mapper5::irq_enabled`];
+    /// it is cleared by reading $5204.
     irq_pending: bool,
     /// In-frame flag
     in_frame: bool,
@@ -139,57 +141,17 @@ impl Mapper5 {
 
     /// Read from PRG-ROM/RAM at $8000-$FFFF
     fn read_prg(&self, addr: u16) -> u8 {
-        let slot = match self.prg_mode {
-            0 => {
-                // Mode 0: One 32K bank at $8000-$FFFF, controlled by $5117
-                // addr is always in range $8000-$FFFF, so no check needed
-                let reg = self.prg_bank_reg[4];
-                let bank = ((reg & 0x7C) >> 2) as usize; // 32K page
-                let offset = (addr - 0x8000) as usize;
-                let rom_addr = (bank * 0x8000 + offset) % self.prg_rom.len();
-                return self.prg_rom.get(rom_addr).copied().unwrap_or(0);
-            }
-            1 => {
-                // Mode 1: Two 16K banks
-                if addr < 0xC000 {
-                    // $8000-$BFFF: $5115
-                    1
-                } else {
-                    // $C000-$FFFF: $5117
-                    3
-                }
-            }
-            2 => {
-                // Mode 2: 16K + 8K + 8K
-                if addr < 0xC000 {
-                    // $8000-$BFFF: $5115
-                    1
-                } else if addr < 0xE000 {
-                    // $C000-$DFFF: $5116
-                    2
-                } else {
-                    // $E000-$FFFF: $5117
-                    3
-                }
-            }
-            3 | _ => {
-                // Mode 3: Four 8K banks
-                if addr < 0xA000 {
-                    // $8000-$9FFF: $5114
-                    0
-                } else if addr < 0xC000 {
-                    // $A000-$BFFF: $5115
-                    1
-                } else if addr < 0xE000 {
-                    // $C000-$DFFF: $5116
-                    2
-                } else {
-                    // $E000-$FFFF: $5117
-                    3
-                }
-            }
-        };
+        if self.prg_mode == 0 {
+            // Mode 0: One 32K ROM bank at $8000-$FFFF, controlled by $5117.
+            // addr is always in range $8000-$FFFF, so no check needed.
+            let reg = self.prg_bank_reg[4];
+            let bank = ((reg & 0x7C) >> 2) as usize; // 32K page
+            let offset = (addr - 0x8000) as usize;
+            let rom_addr = (bank * 0x8000 + offset) % self.prg_rom.len();
+            return self.prg_rom.get(rom_addr).copied().unwrap_or(0);
+        }
 
+        let slot = self.prg_slot(addr);
         // prg_bank_reg[0] is for $5113 (PRG RAM at $6000)
         // prg_bank_reg[1..=4] are for $5114-$5117 (PRG ROM at $8000-$FFFF)
         let reg_idx = slot + 1;
@@ -214,6 +176,45 @@ impl Mapper5 {
         }
     }
 
+    /// Which of the four 8K PRG slots ($8000/$A000/$C000/$E000) holds `addr`.
+    ///
+    /// Only meaningful for PRG modes 1-3; mode 0 is a single 32K ROM bank and
+    /// is handled directly in [`Mapper5::read_prg`] / [`Mapper5::write_prg_space`].
+    fn prg_slot(&self, addr: u16) -> usize {
+        match self.prg_mode {
+            1 => {
+                // Mode 1: Two 16K banks ($5115 at $8000, $5117 at $C000).
+                if addr < 0xC000 {
+                    1
+                } else {
+                    3
+                }
+            }
+            2 => {
+                // Mode 2: 16K + 8K + 8K.
+                if addr < 0xC000 {
+                    1
+                } else if addr < 0xE000 {
+                    2
+                } else {
+                    3
+                }
+            }
+            _ => {
+                // Mode 3: Four 8K banks.
+                if addr < 0xA000 {
+                    0
+                } else if addr < 0xC000 {
+                    1
+                } else if addr < 0xE000 {
+                    2
+                } else {
+                    3
+                }
+            }
+        }
+    }
+
     /// Read from PRG RAM at $6000-$7FFF
     fn read_prg_ram(&self, addr: u16) -> u8 {
         let bank = (self.prg_bank_reg[0] & 0x07) as usize;
@@ -233,8 +234,39 @@ impl Mapper5 {
         self.prg_ram[ram_addr] = value;
     }
 
-    /// Read from CHR-ROM/RAM
-    fn read_chr(&self, addr: u16) -> u8 {
+    /// Write to the $8000-$FFFF window.
+    ///
+    /// In PRG modes 1-3, bank registers $5114-$5116 with bit 7 clear map their
+    /// slot to PRG RAM; those bytes are part of the battery-backed work RAM and
+    /// must accept writes (still gated by the $5102/$5103 write protection).
+    /// Mode 0 is always ROM, and $5117 (slot 3) can never select RAM.
+    fn write_prg_space(&mut self, addr: u16, value: u8) {
+        if self.prg_mode == 0 {
+            return;
+        }
+
+        let slot = self.prg_slot(addr);
+        if slot >= 3 {
+            return;
+        }
+
+        let reg = self.prg_bank_reg[slot + 1];
+        if reg & 0x80 != 0 || !self.is_prg_ram_writable() {
+            return;
+        }
+
+        let bank = (reg & 0x07) as usize;
+        let base = 0x8000 + (slot as u16 * 0x2000);
+        let offset = (addr - base) as usize;
+        let ram_addr = (bank * 0x2000 + offset) & 0xFFFF;
+        self.prg_ram[ram_addr] = value;
+    }
+
+    /// Resolve a pattern-table address ($0000-$1FFF) to an offset in CHR memory.
+    ///
+    /// Reads and writes share this mapping so CHR-RAM uploads land on exactly
+    /// the bytes the PPU will fetch back.
+    fn chr_addr(&self, addr: u16) -> usize {
         // Use CHR bank set A (simplified - full implementation would track BG/sprite phase)
         let slot = (addr / 0x0400) as usize;
         let bank = match self.chr_mode {
@@ -264,8 +296,23 @@ impl Mapper5 {
         };
 
         let offset = (addr & 0x03FF) as usize;
-        let chr_addr = (bank * 0x0400 + offset) % self.chr_rom.len();
-        self.chr_rom.get(chr_addr).copied().unwrap_or(0)
+        (bank * 0x0400 + offset) % self.chr_rom.len()
+    }
+
+    /// Read from CHR-ROM/RAM
+    fn read_chr(&self, addr: u16) -> u8 {
+        self.chr_rom.get(self.chr_addr(addr)).copied().unwrap_or(0)
+    }
+
+    /// Write to CHR-RAM (only when the cartridge ships without CHR-ROM).
+    fn write_chr(&mut self, addr: u16, value: u8) {
+        if !self.chr_is_ram {
+            return;
+        }
+        let chr_addr = self.chr_addr(addr);
+        if let Some(byte) = self.chr_rom.get_mut(chr_addr) {
+            *byte = value;
+        }
     }
 
     /// Clock the IRQ counter (called once per scanline)
@@ -331,10 +378,7 @@ impl Mapper for Mapper5 {
             // PRG-ROM: $8000-$FFFF
             0x8000..=0xFFFF => self.read_prg(addr),
             // Expansion audio registers
-            0x5015 => {
-                // Status register
-                0 // Simplified
-            }
+            0x5015 => self.audio.read_status(),
             0x5204 => {
                 // IRQ status
                 let mut val = 0;
@@ -373,7 +417,7 @@ impl Mapper for Mapper5 {
         match addr {
             // CHR-RAM writes (if enabled)
             0x0000..=0x1FFF => {
-                // Simplified - would need proper CHR-RAM support
+                self.write_chr(addr, value);
             }
             // PRG RAM: $6000-$7FFF
             0x6000..=0x7FFF => {
@@ -385,7 +429,7 @@ impl Mapper for Mapper5 {
             }
             // PRG writes: $8000-$FFFF (may be RAM in some modes)
             0x8000..=0xFFFF => {
-                // Simplified - would need to handle RAM writes in PRG space
+                self.write_prg_space(addr, value);
             }
             // MMC5 registers
             0x5100 => {
@@ -465,7 +509,8 @@ impl Mapper for Mapper5 {
             0x5204 => {
                 // IRQ enable
                 self.irq_enabled = (value & 0x80) != 0;
-                // If both enabled and pending, would fire IRQ immediately
+                // The pending flag is not cleared here: if it already latched,
+                // enabling now asserts the IRQ line immediately.
             }
             0x5205 => {
                 // Multiplier operand A
@@ -480,7 +525,10 @@ impl Mapper for Mapper5 {
     }
 
     fn irq_pending(&self) -> bool {
-        self.irq_pending
+        // $5204 bit 7 latches the pending status even while IRQ generation is
+        // disabled, but the CPU's IRQ line only asserts when it is enabled.
+        // Enabling after the flag has already latched raises the IRQ at once.
+        self.irq_enabled && self.irq_pending
     }
 
     fn clear_irq(&mut self) {
@@ -860,7 +908,8 @@ mod tests {
     #[test]
     fn test_on_scanline_counts_and_fires_irq() {
         let mut mapper = create_test_mapper();
-        mapper.irq_target = 3;
+        mapper.write(0x5203, 3);
+        mapper.write(0x5204, 0x80); // enable IRQ generation
 
         // Pre-render line starts the frame and resets the counter.
         mapper.on_scanline(261, true);
@@ -878,5 +927,144 @@ mod tests {
         mapper.clear_irq();
         mapper.on_scanline(245, true);
         assert!(!mapper.irq_pending());
+    }
+
+    #[test]
+    fn test_irq_line_is_gated_by_enable() {
+        let mut mapper = create_test_mapper();
+        mapper.write(0x5203, 3);
+
+        // Drive the counter to the target while IRQ generation is disabled.
+        mapper.on_scanline(261, true); // pre-render resets the counter
+        mapper.on_scanline(0, true);
+        mapper.on_scanline(1, true);
+        mapper.on_scanline(2, true); // counter reaches 3
+
+        // The IRQ line must stay low even though the condition was met.
+        assert!(!mapper.irq_pending(), "IRQ must not assert while disabled");
+
+        // Enabling after the flag has latched asserts the IRQ immediately.
+        mapper.write(0x5204, 0x80);
+        assert!(mapper.irq_pending());
+
+        // $5204 still reports the latched flag, and reading it acknowledges.
+        assert_eq!(mapper.read(0x5204) & 0x80, 0x80);
+        assert!(!mapper.irq_pending());
+
+        // Disabling again keeps the line low.
+        mapper.write(0x5204, 0x00);
+        assert!(!mapper.irq_pending());
+    }
+
+    fn create_chr_ram_mapper() -> Mapper5 {
+        // An empty CHR image means the cartridge has CHR-RAM.
+        Mapper5::new(vec![0u8; 0x100000], vec![])
+    }
+
+    #[test]
+    fn test_5015_read_reports_audio_status() {
+        let mut mapper = create_test_mapper();
+
+        // Nothing is playing yet.
+        assert_eq!(mapper.read(0x5015), 0);
+
+        // Enable and start pulse A; $5015 must report the channel as active.
+        mapper.write(0x5015, 0x01);
+        mapper.write(0x5000, 0xBF); // duty 2, constant volume 15
+        mapper.write(0x5002, 0x20); // period low
+        mapper.write(0x5003, 0x08); // period high + length load
+        assert_eq!(mapper.read(0x5015) & 0x01, 0x01);
+    }
+
+    #[test]
+    fn test_chr_ram_writes_are_visible() {
+        let mut mapper = create_chr_ram_mapper();
+        assert!(mapper.chr_is_ram);
+
+        // Default (1K) CHR mode with bank 0: a plain write/read round trip.
+        mapper.write(0x0010, 0x42);
+        assert_eq!(mapper.read(0x0010), 0x42);
+
+        // Bank 1 covers the second 1K page.
+        mapper.write(0x5120, 0x01); // slot 0 -> 1K bank 1
+        mapper.write(0x0000, 0xAB); // lands in 1K bank 1
+        mapper.write(0x5121, 0x01); // slot 1 -> the same 1K bank 1
+        assert_eq!(mapper.read(0x0000), 0xAB);
+        assert_eq!(mapper.read(0x0400), 0xAB);
+    }
+
+    #[test]
+    fn test_chr_rom_writes_are_ignored() {
+        let mut mapper = create_test_mapper();
+        assert!(!mapper.chr_is_ram);
+
+        let before = mapper.read(0x0010);
+        mapper.write(0x0010, before ^ 0xFF);
+        assert_eq!(mapper.read(0x0010), before);
+    }
+
+    #[test]
+    fn test_prg_ram_writable_in_prg_space() {
+        let mut mapper = create_test_mapper();
+        mapper.write(0x5100, 3); // four 8K banks
+
+        // $5114 with bit 7 clear maps $8000-$9FFF to PRG RAM (bank 0).
+        mapper.write(0x5114, 0x00);
+
+        // Protected by default: the write is dropped.
+        mapper.write(0x8000, 0xAB);
+        assert_eq!(mapper.read(0x8000), 0x00);
+
+        // Unlock PRG RAM and write again.
+        mapper.write(0x5102, 0x02);
+        mapper.write(0x5103, 0x01);
+        mapper.write(0x8000, 0xAB);
+        assert_eq!(mapper.read(0x8000), 0xAB);
+
+        // The same physical byte is reachable through the $6000 window.
+        mapper.write(0x5113, 0x00);
+        assert_eq!(mapper.read(0x6000), 0xAB);
+    }
+
+    #[test]
+    fn test_prg_rom_writes_in_prg_space_are_ignored() {
+        let mut prg = vec![0u8; 0x40000];
+        prg[0x2000] = 0x11; // 8K bank 1
+        let chr = vec![0u8; 8192];
+        let mut mapper = Mapper5::new(prg, chr);
+
+        mapper.write(0x5100, 3);
+        mapper.write(0x5102, 0x02);
+        mapper.write(0x5103, 0x01);
+
+        // $5114 with bit 7 set maps $8000-$9FFF to ROM bank 1.
+        mapper.write(0x5114, 0x80 | 0x01);
+        assert_eq!(mapper.read(0x8000), 0x11);
+
+        // Writing through a ROM-mapped slot must not corrupt the ROM.
+        mapper.write(0x8000, 0x99);
+        assert_eq!(mapper.read(0x8000), 0x11);
+    }
+
+    #[test]
+    fn test_prg_space_ram_survives_battery_snapshot() {
+        let mut mapper = create_test_mapper();
+        mapper.write(0x5100, 3);
+        mapper.write(0x5102, 0x02);
+        mapper.write(0x5103, 0x01);
+        mapper.write(0x5114, 0x00); // $8000-$9FFF -> PRG RAM bank 0
+
+        mapper.write(0x8000, 0x5A);
+
+        let snapshot = mapper.save_ram().expect("MMC5 exposes work RAM").to_vec();
+
+        // A fresh cartridge restores the snapshot into the same slot.
+        let mut restored = create_test_mapper();
+        restored.write(0x5100, 3);
+        restored.write(0x5102, 0x02);
+        restored.write(0x5103, 0x01);
+        restored.write(0x5114, 0x00);
+        restored.load_save_ram(&snapshot);
+        assert_eq!(restored.read(0x8000), 0x5A);
     }
 }
