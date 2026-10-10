@@ -52,6 +52,17 @@ bitflags::bitflags! {
     }
 }
 
+impl crate::state::StateField for StatusFlags {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(self.bits());
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = StatusFlags::from_bits_truncate(r.u8());
+    }
+}
+
+crate::state::state_fields!(Cpu { a, x, y, sp, pc, status, cycles });
+
 impl Default for Cpu {
     fn default() -> Self {
         Self::new()

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { DropOverlay } from './components/DropOverlay';
 import { GameScreen } from './components/GameScreen';
 import { KeyGuide } from './components/KeyGuide';
+import { SaveStatePanel } from './components/SaveStatePanel';
 import { StatusBar } from './components/StatusBar';
 import { Toolbar } from './components/Toolbar';
 import { VirtualPad } from './components/VirtualPad';
@@ -18,8 +19,14 @@ export default function App() {
     fps,
     muted,
     busy,
+    hasBattery,
+    saveSlots,
     loadFile,
     reset,
+    clearSave,
+    saveSlot,
+    loadSlot,
+    clearSlot,
     togglePause,
     toggleMute,
     clearError,
@@ -46,6 +53,12 @@ export default function App() {
     wakeAudio();
     fileInputRef.current?.click();
   }, [wakeAudio]);
+
+  // Wiping a save cannot be undone, so make the user confirm first.
+  const handleClearSave = useCallback(() => {
+    if (!window.confirm('清空该卡带的电池存档并重新开始？此操作无法撤销。')) return;
+    clearSave();
+  }, [clearSave]);
 
   // Window-wide drag & drop so a ROM can be dropped anywhere on the page.
   useEffect(() => {
@@ -151,13 +164,22 @@ export default function App() {
           <Toolbar
             state={state}
             hasRom={hasRom}
+            hasBattery={hasBattery}
             muted={muted}
             busy={busy}
             onPick={pickRom}
             onTogglePause={togglePause}
             onReset={reset}
+            onClearSave={handleClearSave}
             onToggleMute={toggleMute}
             onFullscreen={toggleFullscreen}
+          />
+          <SaveStatePanel
+            disabled={!hasRom}
+            slots={saveSlots}
+            onSave={saveSlot}
+            onLoad={loadSlot}
+            onClear={clearSlot}
           />
           <VirtualPad disabled={!hasRom} onButton={setButton} />
           <KeyGuide />

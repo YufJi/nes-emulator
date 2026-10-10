@@ -60,6 +60,15 @@ impl Mapper240 {
 }
 
 impl Mapper for Mapper240 {
+    crate::state::mapper_state!(
+        chr_rom,
+        prg_bank,
+        chr_bank,
+        prg_rom_banks,
+        chr_rom_banks,
+        irq_pending,
+    );
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-ROM: $0000-$1FFF

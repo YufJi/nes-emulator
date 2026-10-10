@@ -158,3 +158,36 @@ fn smb_produces_audio() {
         "only {audible_frames}/600 frames contained audio"
     );
 }
+
+#[test]
+fn smb_save_state_rewinds_the_whole_machine() {
+    let Some(mut nes) = load_smb() else {
+        eprintln!("Skipping: {} not found", ROM_PATH);
+        return;
+    };
+
+    // Let the game reach a live, animated screen before snapshotting.
+    for _ in 0..240 {
+        nes.frame();
+    }
+    let snapshot = nes.save_state();
+    assert!(!snapshot.is_empty(), "save state should not be empty");
+
+    for _ in 0..30 {
+        nes.frame();
+    }
+    let expected = nes.get_frame_buffer();
+
+    // Rewinding and replaying the same number of frames must reproduce the
+    // exact picture: a strong check that CPU, PPU, APU and cartridge state all
+    // round-trip.
+    nes.load_state(&snapshot);
+    for _ in 0..30 {
+        nes.frame();
+    }
+    assert_eq!(
+        nes.get_frame_buffer(),
+        expected,
+        "the rewound machine rendered a different frame"
+    );
+}

@@ -125,6 +125,21 @@ impl JsNes {
         self.nes.load_save_ram(data);
     }
 
+    /// Serialize the whole machine (CPU, PPU, APU, cartridge) into a save state.
+    ///
+    /// The PRG-ROM image is not included, so a state must be applied to the
+    /// same cartridge it was taken from.
+    #[wasm_bindgen]
+    pub fn save_state(&self) -> Vec<u8> {
+        self.nes.save_state()
+    }
+
+    /// Restore a state produced by `save_state`.
+    #[wasm_bindgen]
+    pub fn load_state(&mut self, data: &[u8]) {
+        self.nes.load_state(data);
+    }
+
     /// Frames rendered so far.
     #[wasm_bindgen]
     pub fn get_frame_number(&self) -> u64 {

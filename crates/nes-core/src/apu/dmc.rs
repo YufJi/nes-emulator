@@ -25,6 +25,23 @@ enum PlayMode {
     Irq,
 }
 
+impl crate::state::StateField for PlayMode {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(match self {
+            PlayMode::Normal => 0,
+            PlayMode::Loop => 1,
+            PlayMode::Irq => 2,
+        });
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = match r.u8() {
+            1 => PlayMode::Loop,
+            2 => PlayMode::Irq,
+            _ => PlayMode::Normal,
+        };
+    }
+}
+
 /// DMC (Delta Modulation Channel) for sample playback
 ///
 /// The DMC channel plays 1-bit delta-encoded samples from CPU memory.
@@ -76,6 +93,51 @@ pub struct DmcChannel {
     dma_callback: Option<Box<dyn FnMut(u16) -> u8 + Send>>,
     /// Callback for IRQ generation
     irq_callback: Option<Box<dyn FnMut() + Send>>,
+}
+
+impl crate::state::StateField for DmcChannel {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        self.is_enabled.write(w);
+        self.has_sample.write(w);
+        self.irq_generated.write(w);
+        self.play_mode.write(w);
+        self.timer_period.write(w);
+        self.timer_counter.write(w);
+        self.output_level.write(w);
+        self.sample_start_address.write(w);
+        self.sample_address.write(w);
+        self.sample_length.write(w);
+        self.bytes_remaining.write(w);
+        self.sample_buffer.write(w);
+        self.shift_register.write(w);
+        self.bits_remaining.write(w);
+        self.reg_4012.write(w);
+        self.reg_4013.write(w);
+        self.last_fetched_byte.write(w);
+        self.dma_request.write(w);
+        // The DMA and IRQ callbacks are owned by the bus and survive a load.
+    }
+
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        self.is_enabled.read(r);
+        self.has_sample.read(r);
+        self.irq_generated.read(r);
+        self.play_mode.read(r);
+        self.timer_period.read(r);
+        self.timer_counter.read(r);
+        self.output_level.read(r);
+        self.sample_start_address.read(r);
+        self.sample_address.read(r);
+        self.sample_length.read(r);
+        self.bytes_remaining.read(r);
+        self.sample_buffer.read(r);
+        self.shift_register.read(r);
+        self.bits_remaining.read(r);
+        self.reg_4012.read(r);
+        self.reg_4013.read(r);
+        self.last_fetched_byte.read(r);
+        self.dma_request.read(r);
+    }
 }
 
 impl DmcChannel {

@@ -349,6 +349,23 @@ impl Mapper119 {
 }
 
 impl Mapper for Mapper119 {
+    crate::state::mapper_state!(
+        prg_ram,
+        chr_ram,
+        command,
+        prg_address_select,
+        chr_address_select,
+        bank_regs,
+        irq_counter,
+        irq_latch,
+        irq_enabled,
+        irq_pending,
+        mirroring,
+        chr_ram_slots,
+        prg_rom_banks,
+        chr_rom_banks,
+    );
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-ROM/RAM: $0000-$1FFF

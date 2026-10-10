@@ -301,10 +301,42 @@ export class NesEmulator {
     return this.nes.get_save_ram();
   }
 
+  /** Whether the loaded cartridge keeps battery-backed save RAM. */
+  hasBattery(): boolean {
+    return this.nes?.has_battery() ?? false;
+  }
+
   /** Restore a previously saved snapshot into the cartridge. */
   setSaveRam(data: Uint8Array): void {
     this.nes?.set_save_ram(data);
     this.lastSaveRam = null;
+  }
+
+  /** Serialize the whole machine into a save state, or null before loading. */
+  saveState(): Uint8Array | null {
+    return this.nes?.save_state() ?? null;
+  }
+
+  /** Restore a state produced by {@link NesEmulator.saveState}. */
+  loadState(data: Uint8Array): void {
+    this.nes?.load_state(data);
+  }
+
+  /**
+   * Blank the cartridge's battery RAM in memory.
+   *
+   * Persistence belongs to the host, so this only wipes the live cartridge;
+   * the caller deletes the stored copy. The blank snapshot is remembered so
+   * the save poll does not treat the wipe as a change and write it straight
+   * back to storage.
+   */
+  clearSaveRam(): void {
+    const current = this.getSaveRam();
+    if (!current) return;
+
+    const blank = new Uint8Array(current.length);
+    this.nes?.set_save_ram(blank);
+    this.lastSaveRam = blank;
   }
 
   /** Push a button state straight through to the emulated controller. */

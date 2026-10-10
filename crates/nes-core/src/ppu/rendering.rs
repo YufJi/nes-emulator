@@ -125,6 +125,19 @@ pub struct BgRenderState {
     pub attribute_byte: u8,
 }
 
+crate::state::state_fields!(BgRenderState {
+    pattern_shift_low,
+    pattern_shift_high,
+    attr_shift_low,
+    attr_shift_high,
+    attr_latch_low,
+    attr_latch_high,
+    tile_data_low,
+    tile_data_high,
+    nametable_byte,
+    attribute_byte,
+});
+
 impl Default for BgRenderState {
     fn default() -> Self {
         Self::new()
@@ -226,6 +239,8 @@ pub struct FrameBuffer {
     pub height: usize,
 }
 
+crate::state::state_fields!(FrameBuffer { pixels, width, height });
+
 impl Default for FrameBuffer {
     fn default() -> Self {
         Self::new()
@@ -294,7 +309,28 @@ pub enum Mirroring {
     /// Single screen mirroring onto the upper physical nametable ($2400)
     SingleScreenUpper,
     /// Four screen mirroring: all 4 nametables are unique (requires extra VRAM on cartridge)
-    FourScreen,
+   FourScreen,
+}
+
+impl crate::state::StateField for Mirroring {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(match self {
+            Mirroring::Horizontal => 0,
+            Mirroring::Vertical => 1,
+            Mirroring::SingleScreen => 2,
+            Mirroring::SingleScreenUpper => 3,
+            Mirroring::FourScreen => 4,
+        });
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = match r.u8() {
+            1 => Mirroring::Vertical,
+            2 => Mirroring::SingleScreen,
+            3 => Mirroring::SingleScreenUpper,
+            4 => Mirroring::FourScreen,
+            _ => Mirroring::Horizontal,
+        };
+    }
 }
 
 impl Default for Mirroring {
@@ -410,6 +446,15 @@ pub struct BackgroundRenderer {
     /// Secondary OAM for the current scanline
     pub secondary_oam: SecondaryOam,
 }
+
+crate::state::state_fields!(BackgroundRenderer {
+    state,
+    frame_buffer,
+    mirroring,
+    bg_pixels,
+    sprite_renderer,
+    secondary_oam,
+});
 
 impl Default for BackgroundRenderer {
     fn default() -> Self {

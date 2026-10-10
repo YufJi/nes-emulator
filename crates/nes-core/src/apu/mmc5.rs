@@ -33,6 +33,13 @@ pub struct Mmc5Audio {
     length_divider: u32,
 }
 
+crate::state::state_fields!(Mmc5Audio {
+    pulse_a,
+    pulse_b,
+    pcm,
+    length_divider,
+});
+
 /// M2 frequency divided by 7424, the MMC5's length-counter rate.
 const LENGTH_COUNTER_PERIOD: u32 = 7424;
 

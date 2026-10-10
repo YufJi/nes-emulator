@@ -87,6 +87,8 @@ impl Mapper79 {
 }
 
 impl Mapper for Mapper79 {
+    crate::state::mapper_state!(chr_rom, chr_bank, chr_rom_banks, mirroring, irq_pending);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-ROM/RAM: $0000-$1FFF

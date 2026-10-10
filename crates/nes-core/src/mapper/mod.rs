@@ -83,6 +83,36 @@ pub trait Mapper: Send + Sync + Debug {
     fn on_cpu_cycles(&mut self, cycles: u8) {
         let _ = cycles;
     }
+
+    /// Write the mapper's mutable state (banks, IRQ counters, work RAM…) into
+    /// a save state.
+    ///
+    /// ROM images are intentionally not included: a state is restored onto the
+    /// cartridge that is already loaded. Mappers implement this with
+    /// [`crate::state::mapper_state`].
+    fn save_state(&self, w: &mut crate::state::StateWriter);
+
+    /// Restore the mutable state written by [`Mapper::save_state`].
+    fn load_state(&mut self, r: &mut crate::state::StateReader<'_>);
+}
+
+impl crate::state::StateField for Option<Box<dyn Mapper>> {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        match self {
+            Some(mapper) => {
+                w.u8(1);
+                mapper.save_state(w);
+            }
+            None => w.u8(0),
+        }
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        if r.u8() != 0 {
+            if let Some(mapper) = self.as_mut() {
+                mapper.load_state(r);
+            }
+        }
+    }
 }
 
 /// Mapper factory - creates appropriate mapper based on mapper number

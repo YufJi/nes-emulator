@@ -159,6 +159,20 @@ impl Mapper9 {
 }
 
 impl Mapper for Mapper9 {
+    crate::state::mapper_state!(
+        chr_rom,
+        prg_ram,
+        prg_bank,
+        chr_bank_fd0,
+        chr_bank_fe0,
+        chr_bank_fd1,
+        chr_bank_fe1,
+        latch0,
+        latch1,
+        mirroring,
+        irq_pending,
+    );
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-ROM: $0000-$1FFF (with latch update)

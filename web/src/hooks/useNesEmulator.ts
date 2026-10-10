@@ -9,7 +9,14 @@ import {
 import { KEY_BINDINGS, type ButtonName } from '../emulator/constants';
 import { NesEmulator, initWasm, type EmulatorState } from '../emulator/NesEmulator';
 import { readRomFile } from '../emulator/rom';
-import { readSaveRam, writeSaveRam } from '../emulator/saveRam';
+import { clearSaveRam, readSaveRam, writeSaveRam } from '../emulator/saveRam';
+import {
+  SAVE_STATE_SLOTS,
+  clearState,
+  readState,
+  slotsFilled,
+  writeState,
+} from '../emulator/saveState';
 
 export interface UseNesEmulatorResult {
   canvasRef: RefObject<HTMLCanvasElement>;
@@ -19,8 +26,16 @@ export interface UseNesEmulatorResult {
   fps: number;
   muted: boolean;
   busy: boolean;
+  /** Whether the loaded cartridge keeps battery-backed save RAM. */
+  hasBattery: boolean;
+  /** Which quick-save slots hold a state for the current ROM. */
+  saveSlots: boolean[];
   loadFile: (file: File) => Promise<void>;
   reset: () => void;
+  clearSave: () => void;
+  saveSlot: (slot: number) => void;
+  loadSlot: (slot: number) => void;
+  clearSlot: (slot: number) => void;
   togglePause: () => void;
   toggleMute: () => void;
   clearError: () => void;
@@ -44,6 +59,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
   const [fps, setFps] = useState(0);
   const [muted, setMuted] = useState(false);
   const [busy, setBusy] = useState(true);
+  const [hasBattery, setHasBattery] = useState(false);
+  const [saveSlots, setSaveSlots] = useState<boolean[]>(() =>
+    Array(SAVE_STATE_SLOTS).fill(false),
+  );
   // The save-RAM callback is created once with the emulator, so it reads the
   // current ROM name through a ref instead of a captured value.
   const romNameRef = useRef<string | null>(null);
@@ -129,6 +148,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
     };
   }, []);
 
+  const refreshSaveSlots = useCallback(async (name: string) => {
+    setSaveSlots(await slotsFilled(name));
+  }, []);
+
   const loadFile = useCallback(async (file: File) => {
     const emulator = emulatorRef.current;
     if (!emulator) return;
@@ -143,6 +166,8 @@ export function useNesEmulator(): UseNesEmulatorResult {
       if (previous) emulator.setSaveRam(previous);
       romNameRef.current = file.name;
       setRomName(file.name);
+      setHasBattery(emulator.hasBattery());
+      void refreshSaveSlots(file.name);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -153,6 +178,60 @@ export function useNesEmulator(): UseNesEmulatorResult {
   const reset = useCallback(() => {
     emulatorRef.current?.reset();
   }, []);
+
+  /**
+   * Delete the current cartridge's stored save and start it over with a blank
+   * battery. Without this a dropped ROM always resumes from its old save.
+   */
+  const clearSave = useCallback(() => {
+    const name = romNameRef.current;
+    if (name) clearSaveRam(name);
+
+    const emulator = emulatorRef.current;
+    if (!emulator) return;
+    emulator.clearSaveRam();
+    emulator.reset();
+  }, []);
+
+  /** Snapshot the running machine into a slot. */
+  const saveSlot = useCallback(
+    async (slot: number) => {
+      const emulator = emulatorRef.current;
+      const name = romNameRef.current;
+      if (!emulator || !name) return;
+
+      const state = emulator.saveState();
+      if (!state) return;
+      await writeState(name, slot, state);
+      await refreshSaveSlots(name);
+    },
+    [refreshSaveSlots],
+  );
+
+  /** Restore a slot into the running machine. */
+  const loadSlot = useCallback(async (slot: number) => {
+    const emulator = emulatorRef.current;
+    const name = romNameRef.current;
+    if (!emulator || !name) return;
+
+    const state = await readState(name, slot);
+    if (state) {
+      emulator.loadState(state);
+      // A frozen display would hide the restored frame, so resume on load.
+      emulator.resume();
+    }
+  }, []);
+
+  /** Forget a slot. */
+  const clearSlot = useCallback(
+    async (slot: number) => {
+      const name = romNameRef.current;
+      if (!name) return;
+      await clearState(name, slot);
+      await refreshSaveSlots(name);
+    },
+    [refreshSaveSlots],
+  );
 
   const togglePause = useCallback(() => {
     emulatorRef.current?.togglePause();
@@ -187,8 +266,14 @@ export function useNesEmulator(): UseNesEmulatorResult {
       fps,
       muted,
       busy,
+      hasBattery,
+      saveSlots,
       loadFile,
       reset,
+      clearSave,
+      saveSlot,
+      loadSlot,
+      clearSlot,
       togglePause,
       toggleMute,
       clearError,
@@ -202,8 +287,14 @@ export function useNesEmulator(): UseNesEmulatorResult {
       fps,
       muted,
       busy,
+      hasBattery,
+      saveSlots,
       loadFile,
       reset,
+      clearSave,
+      saveSlot,
+      loadSlot,
+      clearSlot,
       togglePause,
       toggleMute,
       clearError,

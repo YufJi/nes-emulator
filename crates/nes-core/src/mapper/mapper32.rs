@@ -82,6 +82,9 @@ impl Mapper32 {
 }
 
 impl Mapper for Mapper32 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_banks, chr_banks,
+        mirroring, swap_mode, prg_bank_count, chr_bank_count, irq_pending);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {

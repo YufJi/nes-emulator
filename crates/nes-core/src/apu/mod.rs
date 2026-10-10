@@ -48,6 +48,21 @@ pub enum FrameCounterMode {
     FiveStep,
 }
 
+impl crate::state::StateField for FrameCounterMode {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(match self {
+            FrameCounterMode::FourStep => 0,
+            FrameCounterMode::FiveStep => 1,
+        });
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = match r.u8() {
+            1 => FrameCounterMode::FiveStep,
+            _ => FrameCounterMode::FourStep,
+        };
+    }
+}
+
 impl Default for FrameCounterMode {
     fn default() -> Self {
         FrameCounterMode::FourStep
@@ -65,6 +80,8 @@ pub struct FrameCounter {
     /// Current step in the sequence (0-4)
     pub step: u8,
 }
+
+crate::state::state_fields!(FrameCounter { cycle, step });
 
 impl FrameCounter {
     /// Create a new frame counter
@@ -149,6 +166,18 @@ pub struct Apu {
     /// Lookup table for triangle/noise/DMC mixing (0-202)
     tnd_table: [f32; 203],
 }
+
+crate::state::state_fields!(Apu {
+    frame_counter,
+    frame_counter_mode,
+    frame_counter_irq,
+    frame_counter_irq_inhibit,
+    pulse1,
+    pulse2,
+    triangle,
+    noise,
+    dmc,
+});
 
 impl Apu {
     /// Create a new APU instance

@@ -152,6 +152,11 @@ impl Mapper21 {
 }
 
 impl Mapper for Mapper21 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, addr_bit0, addr_bit1,
+        is_vrc2, prg_bank_0, prg_bank_1, swap_mode, wram_enable, chr_low, chr_high, mirroring,
+        irq_latch, irq_counter, irq_cycle_mode, irq_enabled, irq_pending,
+        irq_scanline_accumulator, prg_8k_bank_count, chr_1k_bank_count);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {

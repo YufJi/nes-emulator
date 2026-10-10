@@ -25,6 +25,14 @@ pub struct Vrc6Audio {
     shift_256x: bool,
 }
 
+crate::state::state_fields!(Vrc6Audio {
+    pulses,
+    saw,
+    halt,
+    shift_16x,
+    shift_256x,
+});
+
 impl Vrc6Audio {
     /// Create a silent VRC6 audio unit.
     pub fn new() -> Self {
@@ -111,6 +119,16 @@ struct Vrc6Pulse {
     step: u8,
 }
 
+crate::state::state_fields!(Vrc6Pulse {
+    volume,
+    duty,
+    ignore_duty,
+    enabled,
+    period,
+    divider,
+    step,
+});
+
 impl Vrc6Pulse {
     fn new() -> Self {
         Self {
@@ -173,6 +191,15 @@ struct Vrc6Saw {
     /// Position in the 14-step cycle
     step: u8,
 }
+
+crate::state::state_fields!(Vrc6Saw {
+    rate,
+    enabled,
+    period,
+    divider,
+    accumulator,
+    step,
+});
 
 impl Vrc6Saw {
     fn new() -> Self {

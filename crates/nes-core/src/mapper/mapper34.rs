@@ -47,6 +47,8 @@ impl Mapper34 {
 }
 
 impl Mapper for Mapper34 {
+    crate::state::mapper_state!(chr_ram, prg_bank, prg_rom_banks, irq_pending);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-RAM: $0000-$1FFF

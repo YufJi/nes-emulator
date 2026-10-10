@@ -78,6 +78,11 @@ scripts/
   播放；不支持 AudioWorklet 的浏览器自动回退到 `ScriptProcessorNode`。
 - **ROM 校验**：读取文件前先检查 iNES 文件头与 Mapper 是否已被内核实现，给出可读的
   错误提示；加载失败时保留当前正在运行的游戏。
+- **电池存档**：带电池的卡带其存档按 ROM 文件名写入 `localStorage`，再次拖入同一
+  ROM 时自动恢复；工具栏的「清空存档」在二次确认后删除该存档并重置卡带，方便重开。
+- **即时存档**：`save_state` / `load_state` 把 CPU、PPU、APU、总线以及卡带的可变状态
+  （bank 选择、IRQ 计数器、工作 RAM、扩展音频…）编码成一段字节流，PRG-ROM 不重复存储；
+  侧栏提供 4 个槽位，保存在 IndexedDB，可随时保存、读取或清除。
 
 > 注意：`crates/nes-wasm` 的 `generate_audio` 目前仍是占位实现（输出静音），
 > 因此前端音频链路已就绪但暂时没有声音，待内核 APU 输出补齐后会自动生效。

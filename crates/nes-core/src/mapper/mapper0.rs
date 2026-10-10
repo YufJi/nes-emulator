@@ -43,6 +43,8 @@ impl Mapper0 {
 }
 
 impl Mapper for Mapper0 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, irq_pending);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // PRG RAM: $6000-$7FFF
@@ -214,5 +216,43 @@ mod tests {
 
         mapper.write(0x1FFF, 0x66);
         assert_eq!(mapper.read(0x1FFF), 0x66);
+    }
+
+    #[test]
+    fn test_save_state_keeps_chr_ram() {
+        use crate::state::{StateField, StateReader, StateWriter};
+
+        let mut mapper = Mapper0::new(vec![0u8; 0x4000], vec![]); // CHR-RAM
+        mapper.write(0x0000, 0x5A);
+
+        let mut w = StateWriter::new();
+        mapper.save_state(&mut w);
+        let saved = w.into_bytes();
+
+        mapper.write(0x0000, 0x00);
+        let mut r = StateReader::new(&saved);
+        mapper.load_state(&mut r);
+        assert_eq!(mapper.read(0x0000), 0x5A, "CHR-RAM was not restored");
+    }
+
+    #[test]
+    fn test_save_state_leaves_chr_rom_out() {
+        use crate::state::{StateField, StateReader, StateWriter};
+
+        let mut mapper = Mapper0::new(vec![0u8; 0x4000], vec![0x11u8; 8192]); // CHR-ROM
+        assert!(!mapper.chr_is_ram);
+
+        let mut w = StateWriter::new();
+        mapper.save_state(&mut w);
+        let saved = w.into_bytes();
+
+        // Stand in for a different cartridge's CHR image.
+        mapper.chr_rom[0] = 0x22;
+        let mut r = StateReader::new(&saved);
+        mapper.load_state(&mut r);
+        assert_eq!(
+            mapper.chr_rom[0], 0x22,
+            "CHR-ROM must not be part of a save state"
+        );
     }
 }

@@ -95,6 +95,10 @@ impl Mapper33 {
 }
 
 impl Mapper for Mapper33 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_bank_8000, prg_bank_a000,
+        chr_banks_2k, chr_banks_1k, mirroring, prg_bank_count, chr_1k_bank_count, irq_pending,
+        irq_enabled, irq_counter, irq_reload, irq_latch, irq_mode, has_irq);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x0FFF => self.read_chr_low(addr as usize),

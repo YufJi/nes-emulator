@@ -367,6 +367,12 @@ impl Mapper5 {
 }
 
 impl Mapper for Mapper5 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, exram, audio,
+        prg_mode, prg_bank_reg, prg_ram_protect_a, prg_ram_protect_b, chr_mode, chr_bank_a,
+        chr_bank_b, chr_upper_bits, last_chr_write, nt_mapping, exram_mode, fill_tile,
+        fill_attr, irq_target, irq_enabled, irq_pending, in_frame, irq_counter, mult_a,
+        mult_b, prg_rom_banks, chr_rom_banks);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-ROM/RAM: $0000-$1FFF
@@ -1066,5 +1072,41 @@ mod tests {
         restored.write(0x5114, 0x00);
         restored.load_save_ram(&snapshot);
         assert_eq!(restored.read(0x8000), 0x5A);
+    }
+
+    #[test]
+    fn test_save_state_restores_banks_and_ram() {
+        use crate::state::{StateField, StateReader, StateWriter};
+
+        let mut mapper = create_test_mapper();
+        mapper.write(0x5102, 0x02);
+        mapper.write(0x5103, 0x01);
+        mapper.write(0x5104, 2); // ExRAM as RAM
+        mapper.write(0x5113, 0x03); // PRG-RAM bank 3
+        mapper.write(0x6000, 0x5A);
+        mapper.write(0x5C00, 0xA5);
+        mapper.write(0x5100, 2); // PRG mode 2
+        mapper.write(0x5115, 0x80 | 0x0A);
+        mapper.write(0x5120, 0x11);
+
+        let mut w = StateWriter::new();
+        mapper.save_state(&mut w);
+        let saved = w.into_bytes();
+
+        // Disturb every piece of state we care about.
+        mapper.write(0x6000, 0x00);
+        mapper.write(0x5C00, 0x00);
+        mapper.write(0x5100, 0);
+        mapper.write(0x5115, 0x00);
+        mapper.write(0x5120, 0x00);
+
+        let mut r = StateReader::new(&saved);
+        mapper.load_state(&mut r);
+
+        assert_eq!(mapper.read(0x6000), 0x5A, "PRG-RAM bank was not restored");
+        assert_eq!(mapper.read(0x5C00), 0xA5, "ExRAM was not restored");
+        assert_eq!(mapper.prg_mode, 2, "PRG mode was not restored");
+        assert_eq!(mapper.prg_bank_reg[2], 0x8A, "$5115 was not restored");
+        assert_eq!(mapper.chr_bank_a[0], 0x11, "CHR bank A0 was not restored");
     }
 }

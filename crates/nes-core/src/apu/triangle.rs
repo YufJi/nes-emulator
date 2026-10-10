@@ -50,6 +50,19 @@ pub struct TriangleChannel {
     enabled: bool,
 }
 
+crate::state::state_fields!(TriangleChannel {
+    timer_period,
+    timer_count,
+    sequencer_pos,
+    linear_counter,
+    linear_counter_reload,
+    linear_counter_control,
+    linear_counter_halt,
+    length_counter,
+    length_counter_enable,
+    enabled,
+});
+
 impl TriangleChannel {
     /// Create a new triangle channel in its initial state
     pub fn new() -> Self {

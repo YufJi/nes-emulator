@@ -56,6 +56,27 @@ pub struct Sunsoft5bAudio {
     clock_divider: u8,
 }
 
+crate::state::state_fields!(Sunsoft5bAudio {
+    tone_period,
+    tone_counter,
+    tone_output,
+    noise_period,
+    noise_lfsr,
+    noise_output,
+    mixer,
+    volume,
+    envelope_period,
+    envelope_counter,
+    envelope_level,
+    envelope_shape,
+    envelope_attack,
+    envelope_hold,
+    selected_register,
+    noise_phase,
+    noise_counter,
+    clock_divider,
+});
+
 impl Sunsoft5bAudio {
     /// Create a silent 5B.
     pub fn new() -> Self {

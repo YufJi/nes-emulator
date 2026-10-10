@@ -74,6 +74,9 @@ impl Mapper65 {
 }
 
 impl Mapper for Mapper65 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_bank_8000, prg_bank_a000,
+        chr_banks, mirroring, prg_banks, chr_banks_count, irq_pending);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {

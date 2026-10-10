@@ -52,6 +52,15 @@ pub struct Envelope {
     pub reset_flag: bool,
 }
 
+crate::state::state_fields!(Envelope {
+    volume,
+    constant_volume,
+    loop_flag,
+    decay_level,
+    divider,
+    reset_flag,
+});
+
 impl Envelope {
     /// Create a new envelope unit
     pub fn new() -> Self {
@@ -145,6 +154,17 @@ pub struct Sweep {
     /// Shadow copy of timer period for sweep calculations
     pub timer_shadow: u16,
 }
+
+crate::state::state_fields!(Sweep {
+    enabled,
+    period,
+    negate,
+    shift,
+    divider,
+    reload_flag,
+    is_pulse1,
+    timer_shadow,
+});
 
 impl Sweep {
     /// Create a new sweep unit
@@ -281,6 +301,8 @@ pub struct LengthCounter {
     pub enabled: bool,
 }
 
+crate::state::state_fields!(LengthCounter { counter, halt, enabled });
+
 impl LengthCounter {
     /// Create a new length counter
     pub fn new() -> Self {
@@ -344,6 +366,8 @@ pub struct Timer {
     pub counter: u16,
 }
 
+crate::state::state_fields!(Timer { period, counter });
+
 impl Timer {
     /// Create a new timer
     pub fn new() -> Self {
@@ -394,6 +418,8 @@ pub struct Sequencer {
     /// Current duty cycle mode (0-3)
     pub duty_mode: u8,
 }
+
+crate::state::state_fields!(Sequencer { position, duty_mode });
 
 impl Sequencer {
     /// Create a new sequencer
@@ -447,6 +473,15 @@ pub struct PulseChannel {
     /// Base register address ($4000 for Pulse 1, $4004 for Pulse 2)
     pub base_addr: u16,
 }
+
+crate::state::state_fields!(PulseChannel {
+    envelope,
+    sweep,
+    length_counter,
+    timer,
+    sequencer,
+    base_addr,
+});
 
 impl PulseChannel {
     /// Create a new pulse channel

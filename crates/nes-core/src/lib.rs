@@ -15,6 +15,7 @@ pub mod cpu;
 pub mod mapper;
 pub mod nes;
 pub mod ppu;
+pub mod state;
 
 pub use bus::Bus;
 pub use mapper::Mapper;
@@ -61,6 +62,21 @@ pub enum Region {
     Ntsc,
     /// PAL (Europe, Australia) - 50 FPS
     Pal,
+}
+
+impl crate::state::StateField for Region {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(match self {
+            Region::Ntsc => 0,
+            Region::Pal => 1,
+        });
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = match r.u8() {
+            1 => Region::Pal,
+            _ => Region::Ntsc,
+        };
+    }
 }
 
 impl Region {

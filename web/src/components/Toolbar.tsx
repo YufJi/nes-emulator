@@ -1,11 +1,13 @@
 interface ToolbarProps {
   state: 'idle' | 'running' | 'paused';
   hasRom: boolean;
+  hasBattery: boolean;
   muted: boolean;
   busy: boolean;
   onPick: () => void;
   onTogglePause: () => void;
   onReset: () => void;
+  onClearSave: () => void;
   onToggleMute: () => void;
   onFullscreen: () => void;
 }
@@ -13,11 +15,13 @@ interface ToolbarProps {
 export function Toolbar({
   state,
   hasRom,
+  hasBattery,
   muted,
   busy,
   onPick,
   onTogglePause,
   onReset,
+  onClearSave,
   onToggleMute,
   onFullscreen,
 }: ToolbarProps) {
@@ -33,6 +37,16 @@ export function Toolbar({
 
       <button type="button" className="button" onClick={onReset} disabled={!hasRom}>
         重置
+      </button>
+
+      <button
+        type="button"
+        className="button"
+        onClick={onClearSave}
+        disabled={!hasRom || !hasBattery}
+        title={hasBattery ? '删除该卡带的电池存档并重新开始' : '该卡带没有电池存档'}
+      >
+        清空存档
       </button>
 
       <button

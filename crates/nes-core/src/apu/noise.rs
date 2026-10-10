@@ -72,6 +72,24 @@ pub struct NoiseChannel {
     output: u8,
 }
 
+crate::state::state_fields!(NoiseChannel {
+    enabled,
+    timer_count,
+    timer_max,
+    shift_reg,
+    mode_flag,
+    length_counter,
+    length_counter_enabled,
+    env_decay_rate,
+    env_decay_counter,
+    env_volume,
+    env_decay_disable,
+    env_loop_enable,
+    env_reset,
+    master_volume,
+    output,
+});
+
 impl NoiseChannel {
     /// Create a new noise channel with default state
     pub fn new() -> Self {

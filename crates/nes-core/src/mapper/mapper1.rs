@@ -194,6 +194,10 @@ impl Mapper1 {
 }
 
 impl Mapper for Mapper1 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, irq_pending,
+        reg_buffer, reg_buffer_counter, mirroring, prg_switching_area, prg_switching_size,
+        vrom_switching_size, chr_bank_0, chr_bank_1, prg_bank, prg_rom_banks, chr_rom_banks);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             // CHR-ROM/RAM: $0000-$1FFF

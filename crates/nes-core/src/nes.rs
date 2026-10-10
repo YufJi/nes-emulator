@@ -14,6 +14,7 @@ use crate::ppu::rendering::{
 };
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
+use crate::state::{StateReader, StateWriter};
 use crate::{JsnesError, Region};
 
 /// Button indices used by [`Nes::set_button`].
@@ -29,6 +30,11 @@ pub const BUTTON_RIGHT: u8 = 7;
 /// CPU clock rate of the NTSC 2A03 in Hz.
 const CPU_CLOCK_RATE: f64 = 1_789_773.0;
 
+/// Magic prefix identifying a [`Nes::save_state`] blob.
+const STATE_MAGIC: &[u8; 5] = b"NESST";
+/// Save-state format version, bumped whenever the encoding changes.
+const STATE_VERSION: u8 = 1;
+
 /// Sample rate the APU output is resampled to.
 const AUDIO_SAMPLE_RATE: f64 = 48_000.0;
 
@@ -42,6 +48,12 @@ struct ControllerState {
     /// Whether the shift register has been latched
     latched: bool,
 }
+
+crate::state::state_fields!(ControllerState {
+    buttons,
+    shift_register,
+    latched,
+});
 
 impl ControllerState {
     fn new() -> Self {
@@ -209,6 +221,27 @@ struct NesBus {
     has_battery: bool,
     frame_ready: bool,
 }
+
+crate::state::state_fields!(NesBus {
+    cpu_ram,
+    ppu,
+    apu,
+    mapper,
+    controllers,
+    controller_strobe,
+    nmi_pending,
+    irq_pending,
+    audio_accumulator,
+    cpu_cycles,
+    dma_stall_cycles,
+    bg_renderer,
+    sprite_evaluator,
+    mirroring,
+    region,
+    open_bus,
+    has_battery,
+    frame_ready,
+});
 
 impl NesBus {
     fn new() -> Self {
@@ -796,6 +829,36 @@ impl Nes {
     pub fn region(&self) -> Region {
         self.bus.region
     }
+
+    /// Serialize the whole machine (CPU + system) into a save state.
+    ///
+    /// The cartridge's PRG-ROM image is not included, so a state must be
+    /// restored onto the same cartridge it was taken from.
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut w = StateWriter::new();
+        for byte in STATE_MAGIC {
+            w.u8(*byte);
+        }
+        w.u8(STATE_VERSION);
+        crate::state::StateField::write(&self.cpu, &mut w);
+        crate::state::StateField::write(&self.bus, &mut w);
+        w.into_bytes()
+    }
+
+    /// Restore a state produced by [`Nes::save_state`].
+    ///
+    /// Data that is not a state for this version is ignored, leaving the
+    /// machine untouched.
+    pub fn load_state(&mut self, data: &[u8]) {
+        const HEADER: usize = STATE_MAGIC.len() + 1;
+        if data.len() < HEADER || !data.starts_with(STATE_MAGIC) || data[STATE_MAGIC.len()] != STATE_VERSION {
+            return;
+        }
+
+        let mut r = StateReader::new(&data[HEADER..]);
+        crate::state::StateField::read(&mut self.cpu, &mut r);
+        crate::state::StateField::read(&mut self.bus, &mut r);
+    }
 }
 
 #[cfg(test)]
@@ -845,6 +908,54 @@ mod tests {
         bus.write(0x2006, 0x00);
         assert_eq!(bus.read(0x2007), 0x00);
         assert_eq!(bus.read(0x2007), 0x5A);
+    }
+
+    #[test]
+    fn test_save_state_rewind_replays_identically() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+
+        for _ in 0..30 {
+            nes.frame();
+        }
+        let snapshot = nes.save_state();
+        assert!(!snapshot.is_empty(), "a save state should carry data");
+
+        // Let the machine run on, then rewind and replay the same number of
+        // frames: it must land in exactly the same state.
+        for _ in 0..20 {
+            nes.frame();
+        }
+        let expected = nes.save_state();
+
+        nes.load_state(&snapshot);
+        for _ in 0..20 {
+            nes.frame();
+        }
+        assert_eq!(
+            nes.save_state(),
+            expected,
+            "rewinding and replaying diverged from the original run"
+        );
+    }
+
+    #[test]
+    fn test_load_state_ignores_foreign_data() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        for _ in 0..10 {
+            nes.frame();
+        }
+        let before = nes.save_state();
+
+        nes.load_state(b"not a save state");
+        nes.load_state(&[]);
+
+        assert_eq!(
+            nes.save_state(),
+            before,
+            "data without a valid header must leave the machine untouched"
+        );
     }
 
     #[test]

@@ -135,6 +135,19 @@ pub struct SecondaryOam {
     has_sprite_0: bool,
 }
 
+impl crate::state::StateField for SecondaryOam {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        self.data.write(w);
+        self.count.write(w);
+        self.has_sprite_0.write(w);
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        self.data.read(r);
+        self.count.read(r);
+        self.has_sprite_0.read(r);
+    }
+}
+
 impl Default for SecondaryOam {
     fn default() -> Self {
         Self::new()
@@ -229,6 +242,12 @@ pub struct SpriteEvaluator {
     /// Current sprite height (8 or 16)
     sprite_height: u8,
 }
+
+crate::state::state_fields!(SpriteEvaluator {
+    secondary_oam,
+    overflow,
+    sprite_height,
+});
 
 impl Default for SpriteEvaluator {
     fn default() -> Self {
@@ -461,6 +480,13 @@ pub struct SpriteRenderer {
     /// Y coordinate where sprite 0 hit occurred
     pub sprite_0_hit_y: i16,
 }
+
+crate::state::state_fields!(SpriteRenderer {
+    sprite_pixels,
+    sprite_0_hit,
+    sprite_0_hit_x,
+    sprite_0_hit_y,
+});
 
 impl Default for SpriteRenderer {
     fn default() -> Self {

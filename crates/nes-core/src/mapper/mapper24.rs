@@ -141,6 +141,11 @@ impl Mapper24 {
 }
 
 impl Mapper for Mapper24 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, prg_bank_16k,
+        prg_bank_8k, chr_banks, banking_style, irq_counter, irq_latch, irq_cycle_mode,
+        irq_enabled, irq_pending, irq_scanline_accumulator, audio, swap_address_bits,
+        prg_16k_bank_count, prg_8k_bank_count, chr_bank_count);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x1FFF => {

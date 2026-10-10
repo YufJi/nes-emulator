@@ -106,6 +106,33 @@ bitflags! {
     }
 }
 
+impl crate::state::StateField for PpuCtrl {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(self.bits());
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = PpuCtrl::from_bits_truncate(r.u8());
+    }
+}
+
+impl crate::state::StateField for PpuMask {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(self.bits());
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = PpuMask::from_bits_truncate(r.u8());
+    }
+}
+
+impl crate::state::StateField for PpuStatus {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(self.bits());
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = PpuStatus::from_bits_truncate(r.u8());
+    }
+}
+
 /// PPU state
 #[derive(Debug)]
 pub struct Ppu {
@@ -162,6 +189,27 @@ pub struct Ppu {
     /// Open bus latch for PPU register reads
     open_bus_latch: u8,
 }
+
+crate::state::state_fields!(Ppu {
+    vram,
+    palette,
+    oam,
+    ctrl,
+    mask,
+    status,
+    oam_addr,
+    v,
+    t,
+    x,
+    w,
+    render_v,
+    scanline,
+    cycle,
+    frame,
+    nmi_pending,
+    read_buffer,
+    open_bus_latch,
+});
 
 impl Default for Ppu {
     fn default() -> Self {

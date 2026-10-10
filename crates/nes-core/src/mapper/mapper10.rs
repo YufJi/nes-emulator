@@ -128,6 +128,10 @@ impl Mapper10 {
 }
 
 impl Mapper for Mapper10 {
+    crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, prg_bank,
+        chr_bank_0_fd, chr_bank_0_fe, chr_bank_1_fd, chr_bank_1_fe, latch_0_fe, latch_1_fe,
+        mirroring, prg_16k_bank_count, chr_4k_bank_count, irq_pending);
+
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x0FFF => {
