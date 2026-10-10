@@ -306,9 +306,14 @@ impl NesBus {
 
         match reg {
             0x02 => {
-                // PPUSTATUS - reading clears bit 7 (VBlank) and resets write toggle
+                // PPUSTATUS - a read clears VBlank, sprite overflow and sprite 0
+                // hit, and resets the write toggle. Games such as Super Mario
+                // Bros. spin on the sprite 0 flag while waiting for the status
+                // bar split, so leaving it set stalls their timing loops.
                 let status = self.ppu.status.bits();
-                self.ppu.status.set(nes_core::ppu::PpuStatus::VBLANK, false);
+                self.ppu.status.remove(
+                    PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
+                );
                 self.ppu.w = false;
                 status
             }
@@ -933,5 +938,69 @@ mod tests {
         controller.unlatch();
         let bits: Vec<u8> = (0..8).map(|_| controller.read() & 1).collect();
         assert_eq!(bits, vec![1, 0, 0, 1, 0, 0, 0, 0]);
+    }
+
+    /// PPUSTATUS reads must clear VBlank *and* the sprite flags, otherwise
+    /// games that spin on the sprite 0 hit (Super Mario Bros. does, to time its
+    /// status bar split) stall in their wait loops.
+    #[test]
+    fn ppustatus_read_clears_vblank_and_sprite_flags() {
+        let mut nes = JsNes::new();
+        nes.bus.ppu.status.insert(
+            PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
+        );
+
+        let value = nes.bus.read(0x2002);
+
+        assert_eq!(value & 0x80, 0x80, "VBlank should be reported by the read");
+        assert_eq!(value & 0x40, 0x40, "sprite 0 hit should be reported by the read");
+        assert_eq!(value & 0x20, 0x20, "sprite overflow should be reported by the read");
+        assert!(!nes.bus.ppu.status.contains(PpuStatus::VBLANK));
+        assert!(!nes.bus.ppu.status.contains(PpuStatus::SPRITE_OVERFLOW));
+        assert!(!nes.bus.ppu.status.contains(PpuStatus::SPRITE_0_HIT));
+        assert!(!nes.bus.ppu.w, "the write toggle should be reset by the read");
+    }
+
+    /// Super Mario Bros. samples the Select button on only one frame out of
+    /// every sixteen (it gates on its `$0780` counter), and its joypad routine
+    /// turns Select into a single-frame "new press" flag, so a sustained press
+    /// is only accepted when it *starts* on that sampling frame. This pins the
+    /// ROM's behaviour so a future CPU/PPU/NMI change cannot silently alter it,
+    /// and so the web UI can keep reporting raw button state without any
+    /// pulse-while-held workaround.
+    #[test]
+    fn smb_select_is_sampled_once_per_sixteen_frames() {
+        let Ok(rom) = std::fs::read("../../roms/超级玛莉.NES") else {
+            eprintln!("Skipping: SMB ROM not found");
+            return;
+        };
+
+        let mut toggled = 0;
+        for offset in 0..16u32 {
+            let mut nes = JsNes::new();
+            nes.load_rom(&rom).expect("SMB should load");
+            for _ in 0..240 + offset {
+                nes.frame();
+            }
+
+            nes.set_button(1, BUTTON_SELECT, true);
+            for _ in 0..6 {
+                nes.frame();
+            }
+            nes.set_button(1, BUTTON_SELECT, false);
+            for _ in 0..30 {
+                nes.frame();
+            }
+
+            // $077A is the player count: 0 = 1 PLAYER, 1 = 2 PLAYER.
+            if nes.bus.read(0x077A) != 0 {
+                toggled += 1;
+            }
+        }
+
+        assert_eq!(
+            toggled, 1,
+            "exactly one of the sixteen starting phases should be accepted"
+        );
     }
 }
