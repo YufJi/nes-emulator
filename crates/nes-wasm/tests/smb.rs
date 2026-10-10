@@ -121,3 +121,40 @@ fn smb_renders_world_1_1() {
         "World 1-1 never rendered a full scene (best {best} colours)"
     );
 }
+
+/// The APU must actually produce audio rather than silence.
+#[test]
+fn smb_produces_audio() {
+    let Some(mut nes) = load_smb() else {
+        eprintln!("Skipping: {} not found", ROM_PATH);
+        return;
+    };
+
+    for _ in 0..240 {
+        nes.frame();
+    }
+    nes.button_down(1, START);
+    for _ in 0..4 {
+        nes.frame();
+    }
+    nes.button_up(1, START);
+
+    let mut audible_frames = 0usize;
+    let mut peak = 0.0f32;
+    for _ in 0..600 {
+        nes.frame();
+        let samples = nes.get_audio_samples();
+        if samples.iter().any(|s| s.abs() > 1e-3) {
+            audible_frames += 1;
+        }
+        for sample in samples {
+            peak = peak.max(sample.abs());
+        }
+    }
+
+    assert!(peak > 0.05, "APU produced no audible output (peak {peak})");
+    assert!(
+        audible_frames > 60,
+        "only {audible_frames}/600 frames contained audio"
+    );
+}

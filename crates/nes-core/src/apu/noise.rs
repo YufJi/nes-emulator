@@ -98,6 +98,25 @@ impl NoiseChannel {
     ///
     /// Called by the frame counter at specific intervals.
     /// Decrements the length counter if enabled and non-zero.
+    /// Reset the channel to its power-on state.
+    pub fn reset(&mut self) {
+        self.enabled = false;
+        self.timer_count = 0;
+        self.timer_max = 0;
+        self.shift_reg = 1;
+        self.mode_flag = false;
+        self.length_counter = 0;
+        self.length_counter_enabled = false;
+        self.env_decay_rate = 0;
+        self.env_decay_counter = 0;
+        self.env_volume = 0;
+        self.env_decay_disable = false;
+        self.env_loop_enable = false;
+        self.env_reset = false;
+        self.master_volume = 0;
+        self.output = 0;
+    }
+
     pub fn clock_length_counter(&mut self) {
         if self.length_counter_enabled && self.length_counter > 0 {
             self.length_counter -= 1;

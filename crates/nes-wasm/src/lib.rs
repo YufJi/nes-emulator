@@ -29,6 +29,12 @@ pub const BUTTON_DOWN: u8 = 5;
 pub const BUTTON_LEFT: u8 = 6;
 pub const BUTTON_RIGHT: u8 = 7;
 
+/// CPU clock rate of the NTSC 2A03 in Hz.
+const CPU_CLOCK_RATE: f64 = 1_789_773.0;
+
+/// Sample rate the APU output is resampled to for the host audio API.
+const AUDIO_SAMPLE_RATE: f64 = 48_000.0;
+
 /// Controller state for one player
 #[derive(Debug, Clone, Default)]
 struct ControllerState {
@@ -169,6 +175,10 @@ struct NesBus {
     irq_pending: bool,
     /// Audio sample buffer for output
     audio_buffer: Vec<f32>,
+    /// Fractional accumulator that paces the APU resampler
+    audio_accumulator: f64,
+    /// Output sample rate for the host audio API
+    audio_sample_rate: f64,
     /// CPU cycles accumulated for audio generation
     cpu_cycles: u64,
     frame_buffer: FrameBuffer,
@@ -200,6 +210,8 @@ impl NesBus {
             nmi_pending: false,
             irq_pending: false,
             audio_buffer: Vec::with_capacity(4096),
+            audio_accumulator: 0.0,
+            audio_sample_rate: AUDIO_SAMPLE_RATE,
             cpu_cycles: 0,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
@@ -482,12 +494,27 @@ impl NesBus {
         }
     }
 
-    /// Generate audio samples for the given number of CPU cycles
-    fn generate_audio(&mut self, cycles: u16) {
-        // APU runs at CPU rate
-        // For now, generate silence
-        // TODO: Implement actual APU audio generation
-        let _ = cycles;
+    /// Advance the APU by one CPU cycle and, when the resampler is due,
+    /// append an interleaved stereo sample to the output buffer.
+    fn tick_apu_cycle(&mut self) {
+        self.apu.tick();
+
+        // The DMC asks the bus for sample bytes; service the request
+        // immediately so the channel keeps playing.
+        if let Some(addr) = self.apu.dmc_dma_request() {
+            let byte = self.read(addr);
+            self.apu.supply_dmc_byte(byte);
+        }
+
+        // Resample the CPU-rate mixer output down to the host sample rate.
+        self.audio_accumulator += self.audio_sample_rate;
+        if self.audio_accumulator >= CPU_CLOCK_RATE {
+            self.audio_accumulator -= CPU_CLOCK_RATE;
+            let sample = self.apu.output();
+            // Mono APU output, duplicated for the left and right channels.
+            self.audio_buffer.push(sample);
+            self.audio_buffer.push(sample);
+        }
     }
 
     /// Map a palette RAM address ($3F00-$3F1F) to its storage index.
@@ -650,8 +677,10 @@ impl Bus for NesBus {
             self.ppu_step();
         }
 
-        // Generate audio
-        self.generate_audio(cycles as u16);
+        // The APU runs one tick per CPU cycle.
+        for _ in 0..cycles {
+            self.tick_apu_cycle();
+        }
 
         // Update CPU cycle counter
         self.cpu_cycles += cycles as u64;
@@ -669,6 +698,7 @@ impl Bus for NesBus {
     fn irq_pending(&self) -> bool {
         self.irq_pending
             || self.apu.frame_counter_irq
+            || self.apu.dmc.irq_active()
             || self.mapper.as_ref().map_or(false, |m| m.irq_pending())
     }
 }

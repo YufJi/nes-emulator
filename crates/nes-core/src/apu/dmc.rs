@@ -66,6 +66,12 @@ pub struct DmcChannel {
     reg_4013: u8,
     /// Last byte fetched via DMA (for bus hijacking detection)
     last_fetched_byte: u8,
+    /// Address of a byte the channel is waiting for the bus to supply.
+    ///
+    /// When no `dma_callback` is installed the channel cannot read CPU memory
+    /// itself; it publishes the address here and the bus replies with
+    /// [`DmcChannel::supply_dma_byte`].
+    dma_request: Option<u16>,
     /// Callback for DMA reads from CPU memory
     dma_callback: Option<Box<dyn FnMut(u16) -> u8 + Send>>,
     /// Callback for IRQ generation
@@ -93,6 +99,7 @@ impl DmcChannel {
             reg_4012: 0,
             reg_4013: 0,
             last_fetched_byte: 0,
+            dma_request: None,
             dma_callback: None,
             irq_callback: None,
         }
@@ -193,14 +200,6 @@ impl DmcChannel {
         // If there are bytes remaining, fetch the next sample
         if self.bytes_remaining > 0 {
             self.fetch_next_sample();
-
-            // Check if this was the last byte
-            if self.bytes_remaining == 0 {
-                // Generate IRQ if in IRQ mode
-                if self.play_mode == PlayMode::Irq {
-                    self.irq_generated = true;
-                }
-            }
         }
     }
 
@@ -210,22 +209,76 @@ impl DmcChannel {
     fn fetch_next_sample(&mut self) {
         if let Some(ref mut callback) = self.dma_callback {
             // Read from current sample address
-            self.sample_buffer = callback(self.sample_address);
-            self.last_fetched_byte = self.sample_buffer;
-            self.has_sample = true;
-            self.shift_register = self.sample_buffer;
-
-            // Decrement bytes remaining and increment address
-            self.bytes_remaining -= 1;
-            self.sample_address = self.sample_address.wrapping_add(1);
-
-            // Wrap address from $FFFF to $8000
-            // Since sample_address is u16, wrapping_add already handles overflow.
-            // But we need to wrap to $8000 specifically, not $0000.
-            if self.sample_address == 0x0000 {
-                self.sample_address = 0x8000;
-            }
+            let byte = callback(self.sample_address);
+            self.load_sample_byte(byte);
+            return;
         }
+
+        // No callback: ask the bus for the byte. It replies through
+        // `supply_dma_byte` before the next timer clock.
+        if self.dma_request.is_none() {
+            self.dma_request = Some(self.sample_address);
+        }
+    }
+
+    /// Load a fetched byte into the sample buffer and advance the address.
+    fn load_sample_byte(&mut self, byte: u8) {
+        self.sample_buffer = byte;
+        self.last_fetched_byte = byte;
+        self.has_sample = true;
+        self.shift_register = byte;
+
+        // Decrement bytes remaining and increment address
+        self.bytes_remaining = self.bytes_remaining.saturating_sub(1);
+        self.sample_address = self.sample_address.wrapping_add(1);
+
+        // Wrap address from $FFFF to $8000
+        if self.sample_address == 0x0000 {
+            self.sample_address = 0x8000;
+        }
+
+        // Generate an IRQ once the final byte has been consumed.
+        if self.bytes_remaining == 0 && self.play_mode == PlayMode::Irq {
+            self.irq_generated = true;
+        }
+    }
+
+    /// Address of the byte the channel is waiting for, if any.
+    pub fn dma_request(&self) -> Option<u16> {
+        self.dma_request
+    }
+
+    /// Reset the channel to its power-on state.
+    pub fn reset(&mut self) {
+        self.is_enabled = false;
+        self.has_sample = false;
+        self.irq_generated = false;
+        self.play_mode = PlayMode::Normal;
+        self.timer_period = DMC_PERIOD_TABLE[0];
+        self.timer_counter = 0;
+        self.output_level = 0;
+        self.sample_start_address = 0xC000;
+        self.sample_address = 0xC000;
+        self.sample_length = 1;
+        self.bytes_remaining = 0;
+        self.sample_buffer = 0;
+        self.shift_register = 0;
+        self.bits_remaining = 0;
+        self.reg_4012 = 0;
+        self.reg_4013 = 0;
+        self.last_fetched_byte = 0;
+        self.dma_request = None;
+    }
+
+    /// Supply the byte requested through [`DmcChannel::dma_request`].
+    pub fn supply_dma_byte(&mut self, value: u8) {
+        self.dma_request = None;
+        self.load_sample_byte(value);
+    }
+
+    /// Clear the pending IRQ flag.
+    pub fn clear_irq(&mut self) {
+        self.irq_generated = false;
     }
 
     /// Get the IRQ status
@@ -316,11 +369,6 @@ impl DmcChannel {
                     self.fetch_next_sample();
                     self.bits_remaining = 8;
                     self.timer_counter = self.timer_period;
-
-                    // If the immediate fetch consumed the last byte, set IRQ
-                    if self.bytes_remaining == 0 && self.play_mode == PlayMode::Irq {
-                        self.irq_generated = true;
-                    }
                 }
             }
         }

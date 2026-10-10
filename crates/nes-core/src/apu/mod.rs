@@ -13,6 +13,11 @@ pub mod noise;
 pub mod pulse;
 pub mod triangle;
 
+pub use dmc::DmcChannel;
+pub use noise::NoiseChannel;
+pub use pulse::PulseChannel;
+pub use triangle::TriangleChannel;
+
 /// AudioChannel trait defines the interface for all APU channels
 pub trait AudioChannel {
     /// Tick the channel for one APU cycle
@@ -121,14 +126,18 @@ pub struct Apu {
     pub frame_counter_irq: bool,
     /// Frame counter IRQ inhibit flag
     pub frame_counter_irq_inhibit: bool,
-    
-    // Channels (placeholder for future implementation)
-    // pub pulse1: PulseChannel,
-    // pub pulse2: PulseChannel,
-    // pub triangle: TriangleChannel,
-    // pub noise: NoiseChannel,
-    // pub dmc: DmcChannel,
-    
+
+    /// Pulse channel 1 ($4000-$4003)
+    pub pulse1: PulseChannel,
+    /// Pulse channel 2 ($4004-$4007)
+    pub pulse2: PulseChannel,
+    /// Triangle channel ($4008-$400B)
+    pub triangle: TriangleChannel,
+    /// Noise channel ($400C-$400F)
+    pub noise: NoiseChannel,
+    /// Delta modulation channel ($4010-$4013)
+    pub dmc: DmcChannel,
+
     /// Lookup table for pulse channel mixing (0-30)
     pulse_table: [f32; 31],
     /// Lookup table for triangle/noise/DMC mixing (0-202)
@@ -143,6 +152,11 @@ impl Apu {
             frame_counter_mode: FrameCounterMode::FourStep,
             frame_counter_irq: false,
             frame_counter_irq_inhibit: false,
+            pulse1: PulseChannel::new(true, 0x4000),
+            pulse2: PulseChannel::new(false, 0x4004),
+            triangle: TriangleChannel::new(),
+            noise: NoiseChannel::new(),
+            dmc: DmcChannel::new(),
             pulse_table: [0.0; 31],
             tnd_table: [0.0; 203],
         };
@@ -186,27 +200,37 @@ impl Apu {
                 // Status register
                 // Bits: DMC IRQ | Frame IRQ | DMC active | Noise active | Triangle active | Pulse 2 active | Pulse 1 active
                 let mut status = 0u8;
-                
-                // Frame IRQ flag (bit 6)
+
+                if self.pulse1.is_active() {
+                    status |= 0x01;
+                }
+                if self.pulse2.is_active() {
+                    status |= 0x02;
+                }
+                if self.triangle.is_active() {
+                    status |= 0x04;
+                }
+                if self.noise.is_active() {
+                    status |= 0x08;
+                }
+                if self.dmc.is_active() {
+                    status |= 0x10;
+                }
+                if self.dmc.irq_active() {
+                    status |= 0x80;
+                }
+
+                // Frame IRQ flag (bit 6). Reading $4015 clears both IRQ flags.
                 if self.frame_counter_irq {
                     status |= 0x40;
-                    // Reading $4015 clears the frame IRQ flag
-                    self.frame_counter_irq = false;
                 }
-                
-                // TODO: Add channel status bits when channels are implemented
-                // status |= if self.pulse1.is_active() { 0x01 } else { 0 };
-                // status |= if self.pulse2.is_active() { 0x02 } else { 0 };
-                // status |= if self.triangle.is_active() { 0x04 } else { 0 };
-                // status |= if self.noise.is_active() { 0x08 } else { 0 };
-                // status |= if self.dmc.is_active() { 0x10 } else { 0 };
-                // status |= if self.dmc.irq_active() { 0x80 } else { 0 };
-                
+                self.frame_counter_irq = false;
+                self.dmc.clear_irq();
+
                 status
             }
             _ => {
                 // Most APU registers are write-only
-                // Return open bus (0 for now)
                 0
             }
         }
@@ -219,60 +243,43 @@ impl Apu {
     /// * `value` - Value to write
     pub fn write_register(&mut self, addr: u16, value: u8) {
         match addr {
-            0x4000..=0x4003 => {
-                // Pulse 1 registers
-                // TODO: Route to pulse1 channel when implemented
-            }
-            0x4004..=0x4007 => {
-                // Pulse 2 registers
-                // TODO: Route to pulse2 channel when implemented
-            }
-            0x4008..=0x400B => {
-                // Triangle registers
-                // TODO: Route to triangle channel when implemented
-            }
-            0x400C..=0x400F => {
-                // Noise registers
-                // TODO: Route to noise channel when implemented
-            }
-            0x4010..=0x4013 => {
-                // DMC registers
-                // TODO: Route to DMC channel when implemented
-            }
+            0x4000..=0x4003 => self.pulse1.write_register(addr, value),
+            0x4004..=0x4007 => self.pulse2.write_register(addr, value),
+            0x4008..=0x400B => self.triangle.write_register(addr, value),
+            0x400C..=0x400F => self.noise.write_register(addr, value),
+            0x4010..=0x4013 => self.dmc.write_register(addr, value),
             0x4015 => {
-                // Channel enable/status register
-                // TODO: Enable/disable channels when implemented
-                // Bit 0: Pulse 1
-                // Bit 1: Pulse 2
-                // Bit 2: Triangle
-                // Bit 3: Noise
-                // Bit 4: DMC
+                // Channel enable register.
+                self.pulse1.set_enabled(value & 0x01 != 0);
+                self.pulse2.set_enabled(value & 0x02 != 0);
+                self.triangle.set_enabled(value & 0x04 != 0);
+                self.noise.set_enabled(value & 0x08 != 0);
+                // The DMC handles its own enable/disable and IRQ clearing.
+                self.dmc.write_register(0x4015, value);
             }
             0x4017 => {
-                // Frame counter control
-                // Bit 7: Mode (0 = 4-step, 1 = 5-step)
-                // Bit 6: IRQ inhibit flag
-                
-                self.frame_counter_mode = if (value & 0x80) != 0 {
+                // Frame counter control:
+                //   bit 7 - mode (0 = 4-step, 1 = 5-step)
+                //   bit 6 - IRQ inhibit
+                let new_mode = if (value & 0x80) != 0 {
                     FrameCounterMode::FiveStep
                 } else {
                     FrameCounterMode::FourStep
                 };
-                
+
+                self.frame_counter.reset();
+                self.frame_counter_mode = new_mode;
                 self.frame_counter_irq_inhibit = (value & 0x40) != 0;
-                
-                // If IRQ inhibit is set, clear the frame IRQ flag
+
                 if self.frame_counter_irq_inhibit {
                     self.frame_counter_irq = false;
                 }
-                
-                // Writing to $4017 resets the frame counter
-                // If mode 1 (5-step), the frame counter immediately clocks all units
-                self.frame_counter.reset();
-                
-                if self.frame_counter_mode == FrameCounterMode::FiveStep {
-                    // In 5-step mode, immediately clock all units
-                    // TODO: Clock envelope, sweep, and length counters
+
+                // Selecting 5-step mode immediately clocks the quarter and
+                // half frame units.
+                if new_mode == FrameCounterMode::FiveStep {
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
                 }
             }
             _ => {
@@ -280,45 +287,111 @@ impl Apu {
             }
         }
     }
-    
-    /// Tick the APU for one CPU cycle
-    /// 
-    /// This advances the frame counter and handles IRQ generation.
+
+    /// Tick the APU for one CPU cycle.
+    ///
+    /// Every channel is clocked at the CPU rate; the frame counter runs
+    /// alongside it and drives the envelope, sweep and length units.
+    ///
+    /// If the DMC needs a sample byte it publishes the address through
+    /// [`Apu::dmc_dma_request`]; the caller must answer with
+    /// [`Apu::supply_dmc_byte`].
     pub fn tick(&mut self) {
-        // Tick the frame counter
-        let step_changed = self.frame_counter.tick(self.frame_counter_mode);
-        
-        if step_changed {
-            match self.frame_counter_mode {
-                FrameCounterMode::FourStep => {
-                    // 4-step mode: Steps 0-3 clock various units
-                    // Step 3 (index 3 at cycle 29828) sets IRQ flag
-                    if self.frame_counter.step == 4 {
-                        // This is the end of step 3 / beginning of step 0
-                        // IRQ is set at cycle 29828 in 4-step mode
-                        if !self.frame_counter_irq_inhibit {
-                            self.frame_counter_irq = true;
-                        }
-                    }
-                }
-                FrameCounterMode::FiveStep => {
-                    // 5-step mode: No IRQ
-                    // Steps 0-4 clock various units
-                }
-            }
-            
-            // TODO: Clock envelope, sweep, and length counters based on step
+        self.pulse1.tick();
+        self.pulse2.tick();
+        self.triangle.tick();
+        self.noise.tick();
+        self.dmc.clock_timer();
+
+        if self.frame_counter.tick(self.frame_counter_mode) {
+            self.clock_frame_sequencer();
         }
     }
-    
-    /// Reset the APU to its initial state
+
+    /// Answer the DMC's outstanding DMA request with a byte read from CPU
+    /// memory. Does nothing when no request is pending.
+    pub fn supply_dmc_byte(&mut self, value: u8) {
+        self.dmc.supply_dma_byte(value);
+    }
+
+    /// Address of the byte the DMC channel is waiting for, if any.
+    pub fn dmc_dma_request(&self) -> Option<u16> {
+        self.dmc.dma_request()
+    }
+
+    /// Clock the units driven by the current frame counter step.
+    fn clock_frame_sequencer(&mut self) {
+        match self.frame_counter.step {
+            // 7457 (both modes): quarter frame
+            1 => self.clock_quarter_frame(),
+            // 14913 (both modes): quarter + half frame
+            2 => {
+                self.clock_quarter_frame();
+                self.clock_half_frame();
+            }
+            // 22371 (both modes): quarter frame
+            3 => self.clock_quarter_frame(),
+            // 29828 (4-step only): frame IRQ
+            4 => {
+                if self.frame_counter_mode == FrameCounterMode::FourStep
+                    && !self.frame_counter_irq_inhibit
+                {
+                    self.frame_counter_irq = true;
+                }
+            }
+            // 29829 (4-step) / 37281 (5-step): quarter + half frame
+            5 => {
+                self.clock_quarter_frame();
+                self.clock_half_frame();
+            }
+            _ => {}
+        }
+    }
+
+    /// Clock the envelope units and the triangle's linear counter.
+    fn clock_quarter_frame(&mut self) {
+        self.pulse1.clock_envelope();
+        self.pulse2.clock_envelope();
+        self.noise.clock_envelope();
+        self.triangle.clock_linear_counter();
+    }
+
+    /// Clock the length counters and sweep units.
+    fn clock_half_frame(&mut self) {
+        self.pulse1.clock_length_counter();
+        self.pulse2.clock_length_counter();
+        self.triangle.clock_length_counter();
+        self.noise.clock_length_counter();
+        self.pulse1.clock_sweep();
+        self.pulse2.clock_sweep();
+    }
+
+    /// Mix the channel outputs into one analogue sample.
+    ///
+    /// Uses the non-linear mixing formula from the NES documentation: silence
+    /// is 0.0 and full scale is roughly 1.0.
+    pub fn output(&self) -> f32 {
+        let pulse_index = (self.pulse1.get_output() + self.pulse2.get_output()) as usize;
+        let tnd_index = 3 * self.triangle.get_output() as usize
+            + 2 * self.noise.get_output() as usize
+            + self.dmc.get_output() as usize;
+
+        self.pulse_table[pulse_index.min(self.pulse_table.len() - 1)]
+            + self.tnd_table[tnd_index.min(self.tnd_table.len() - 1)]
+    }
+
+    /// Reset the APU to its power-on state.
     pub fn reset(&mut self) {
         self.frame_counter.reset();
         self.frame_counter_mode = FrameCounterMode::FourStep;
         self.frame_counter_irq = false;
         self.frame_counter_irq_inhibit = false;
-        
-        // TODO: Reset all channels when implemented
+
+        self.pulse1.reset();
+        self.pulse2.reset();
+        self.triangle.reset();
+        self.noise.reset();
+        self.dmc.reset();
     }
 }
 
