@@ -111,6 +111,14 @@ pub struct Ppu {
     pub x: u8,
     /// Write toggle for $2005/$2006 (false = first write, true = second write)
     pub w: bool,
+    /// Render scroll counter.
+    ///
+    /// The rendering pipeline keeps its own copy of the scroll position so that
+    /// the CPU writing nametables through $2006/$2007 (which mutates `v`)
+    /// cannot disturb an in-progress frame. It is reloaded from `t` on the
+    /// pre-render scanline and advanced once per visible scanline, mirroring
+    /// the cntV/cntH/cntVT counters used by the reference jsnes implementation.
+    pub render_v: u16,
 
     // Rendering state
     /// Current scanline (0-261, where 0-239 are visible, 240 is post-render,
@@ -156,6 +164,7 @@ impl Ppu {
             t: 0,
             x: 0,
             w: false,
+            render_v: 0,
 
             // Rendering state
             scanline: 0,
@@ -187,6 +196,7 @@ impl Ppu {
         self.t = 0;
         self.x = 0;
         self.w = false;
+        self.render_v = 0;
 
         // Reset rendering state
         self.scanline = 0;

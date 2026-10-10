@@ -227,6 +227,45 @@ impl Default for Mirroring {
 }
 
 impl Mirroring {
+    /// Map a PPU address in $2000-$3EFF to its physical VRAM location.
+    ///
+    /// Addresses outside the nametable range are returned unchanged (masked to
+    /// 14 bits). This is the single source of truth for nametable mirroring,
+    /// used both when the renderer reads nametables and when the CPU writes
+    /// them through PPUDATA.
+    ///
+    /// # Arguments
+    /// * `addr` - PPU address ($2000-$3EFF for nametables)
+    ///
+    /// # Returns
+    /// The physical VRAM address
+    pub fn mirror_vram_addr(&self, addr: u16) -> u16 {
+        let addr = addr & 0x3FFF;
+
+        if !(0x2000..0x3F00).contains(&addr) {
+            return addr;
+        }
+
+        // $3000-$3EFF mirrors $2000-$2EFF.
+        let addr = if addr >= 0x3000 { addr - 0x1000 } else { addr };
+
+        let nametable = ((addr - 0x2000) >> 10) as u8;
+        let offset = addr & 0x3FF;
+
+        let physical_nt = match self {
+            Mirroring::Horizontal => {
+                if nametable < 2 { 0 } else { 1 }
+            }
+            Mirroring::Vertical => {
+                if nametable == 0 || nametable == 2 { 0 } else { 1 }
+            }
+            Mirroring::SingleScreen => 0,
+            Mirroring::FourScreen => nametable,
+        };
+
+        0x2000 + (physical_nt as u16 * 0x400) + offset
+    }
+
     /// Get the physical nametable address for a logical nametable index
     ///
     /// # Arguments
@@ -382,22 +421,7 @@ impl BackgroundRenderer {
     /// # Returns
     /// The mirrored address in VRAM
     fn mirror_address(&self, addr: u16) -> u16 {
-        let addr = addr & 0x0FFF; // Remove $2000 base
-        let nametable = (addr >> 10) as u8; // Which of the 4 nametables (0-3)
-        let offset = addr & 0x3FF; // Offset within nametable (0-0x3FF)
-
-        let physical_nt = match self.mirroring {
-            Mirroring::Horizontal => {
-                if nametable < 2 { 0 } else { 1 }
-            }
-            Mirroring::Vertical => {
-                if nametable == 0 || nametable == 2 { 0 } else { 1 }
-            }
-            Mirroring::SingleScreen => 0,
-            Mirroring::FourScreen => nametable,
-        };
-
-        0x2000 + (physical_nt as u16 * 0x400) + offset
+        self.mirroring.mirror_vram_addr(addr)
     }
 
     /// Fetch a tile index from the nametable
@@ -531,11 +555,68 @@ impl BackgroundRenderer {
     /// This is the main background rendering function that processes one scanline.
     /// It fetches tiles from the nametable, gets pattern data, and renders pixels.
     ///
+    /// This is the scanline-accurate entry point used while the PPU runs: the
+    /// scroll position (coarse X/Y, fine X/Y and nametable) comes from
+    /// `ppu.render_v`, which the rendering pipeline reloads from `t` on the
+    /// pre-render scanline and advances once per visible scanline.
+    ///
     /// # Arguments
     /// * `ppu` - PPU instance
-    /// * `scanline` - Current scanline (0-239 for visible scanlines)
+    /// * `scanline` - Screen row to write into the frame buffer (0-239)
     /// * `mask` - PPUMASK register value
     pub fn render_scanline(&mut self, ppu: &Ppu, scanline: u16, mask: PpuMask) {
+        let tile_y = ((ppu.render_v >> 5) & 0x1F) as u8;
+        let row_fine_y = ((ppu.render_v >> 12) & 0x07) as u8;
+        let nametable = ((ppu.render_v >> 10) & 0x03) as u8;
+        self.render_row(ppu, scanline, nametable, tile_y, row_fine_y, mask);
+    }
+
+    /// Render the entire visible frame from a single VRAM address.
+    ///
+    /// Treats `ppu.render_v` as the top-left corner of the screen and walks down the
+    /// 240 visible rows. Used by callers that render a whole frame in one pass
+    /// (and by the tests).
+    ///
+    /// # Arguments
+    /// * `ppu` - PPU instance
+    /// * `mask` - PPUMASK register value
+    pub fn render_frame(&mut self, ppu: &Ppu, mask: PpuMask) {
+        // Clear background pixel tracking
+        self.bg_pixels.fill(0);
+
+        let base_y = (((ppu.render_v >> 5) & 0x1F) * 8 + ((ppu.render_v >> 12) & 0x07)) as u16;
+        let nametable = ((ppu.render_v >> 10) & 0x03) as u8;
+
+        // Render all 240 visible scanlines
+        for scanline in 0..240u16 {
+            let effective_y = base_y + scanline;
+            let tile_y = (effective_y / 8) as u8;
+            let row_fine_y = (effective_y % 8) as u8;
+            self.render_row(ppu, scanline, nametable, tile_y, row_fine_y, mask);
+        }
+    }
+
+    /// Render one row of background tiles into the frame buffer.
+    ///
+    /// # Arguments
+    /// * `ppu` - PPU instance
+    /// * `scanline` - Screen row to write (0-239)
+    /// * `nametable` - Nametable index (0-3) of the leftmost tile
+    /// * `tile_y` - Nametable row to fetch tiles from (0-31)
+    /// * `row_fine_y` - Pixel row within the tile (0-7)
+    /// * `mask` - PPUMASK register value
+    fn render_row(
+        &mut self,
+        ppu: &Ppu,
+        scanline: u16,
+        nametable: u8,
+        tile_y: u8,
+        row_fine_y: u8,
+        mask: PpuMask,
+    ) {
+        let row_start = scanline as usize * 256;
+        self.bg_pixels[row_start..row_start + 256].fill(0);
+
         // Skip if background rendering is disabled
         if !mask.contains(PpuMask::SHOW_BG) {
             // Fill with backdrop color
@@ -547,29 +628,16 @@ impl BackgroundRenderer {
         }
 
         let pattern_table_addr = self.get_bg_pattern_table_addr(ppu.ctrl);
-        let nametable_base = self.get_nametable_base_addr(ppu.ctrl);
 
-        // Get scroll position
+        // Get horizontal scroll position
         let fine_x = ppu.x; // Fine X scroll (0-7)
-        let coarse_x = (ppu.v & 0x001F) as u8; // Coarse X tile (0-31)
-        let coarse_y = ((ppu.v >> 5) & 0x001F) as u8; // Coarse Y tile (0-31)
-        let fine_y = ((ppu.v >> 12) & 0x07) as u8; // Fine Y scroll (0-7)
-        let nametable = ((ppu.v >> 10) & 0x03) as u8; // Current nametable (0-3)
-
-        // Calculate effective Y position including scroll
-        let effective_y = (coarse_y as u16 * 8) + fine_y as u16 + scanline as u16;
-        let tile_y = (effective_y / 8) as u8;
-        let row_fine_y = (effective_y % 8) as u8;
-
-        // Determine starting X position
-        let start_tile_x = coarse_x;
-        let start_fine_x = fine_x;
+        let coarse_x = (ppu.render_v & 0x001F) as u8; // Coarse X tile (0-31)
 
         // Render 33 tiles to cover the full 256 pixels plus potential scroll offset
-        let mut pixel_x: i16 = -(start_fine_x as i16);
+        let mut pixel_x: i16 = -(fine_x as i16);
 
         for tile_offset in 0..33 {
-            let tile_x = start_tile_x.wrapping_add(tile_offset);
+            let tile_x = coarse_x.wrapping_add(tile_offset);
 
             // Handle horizontal nametable wrapping
             let (effective_tile_x, effective_nametable) = if tile_x >= 32 {
@@ -608,45 +676,27 @@ impl BackgroundRenderer {
                     let bit = 7 - px;
                     let low_bit = (pattern_low >> bit) & 0x01;
                     let high_bit = (pattern_high >> bit) & 0x01;
-                    let color_idx = ((high_bit << 1) | low_bit) as u8;
-
-                    // Get the actual color
-                    let color = self.get_bg_palette_color(ppu, palette_idx, color_idx);
+                    let color_idx = (high_bit << 1) | low_bit;
 
                     // Apply left-edge clipping if enabled
                     let clipped = screen_x < 8 && !mask.contains(PpuMask::SHOW_BG_LEFT);
 
-                    if clipped {
-                        // Use backdrop color for clipped area
-                        let backdrop = self.get_bg_palette_color(ppu, 0, 0);
-                        self.frame_buffer.set_pixel(screen_x as usize, scanline as usize, backdrop);
+                    let color = if clipped {
+                        self.get_bg_palette_color(ppu, 0, 0)
                     } else {
-                        self.frame_buffer.set_pixel(screen_x as usize, scanline as usize, color);
-                    }
+                        self.get_bg_palette_color(ppu, palette_idx, color_idx)
+                    };
+                    self.frame_buffer
+                        .set_pixel(screen_x as usize, scanline as usize, color);
 
                     // Mark this pixel as having background (for sprite priority)
-                    if color_idx != 0 {
-                        self.bg_pixels[scanline as usize * 256 + screen_x as usize] = 1;
+                    if color_idx != 0 && !clipped {
+                        self.bg_pixels[row_start + screen_x as usize] = 1;
                     }
                 }
             }
 
             pixel_x += 8;
-        }
-    }
-
-    /// Render the entire frame
-    ///
-    /// # Arguments
-    /// * `ppu` - PPU instance
-    /// * `mask` - PPUMASK register value
-    pub fn render_frame(&mut self, ppu: &Ppu, mask: PpuMask) {
-        // Clear background pixel tracking
-        self.bg_pixels.fill(0);
-
-        // Render all 240 visible scanlines
-        for scanline in 0..240 {
-            self.render_scanline(ppu, scanline, mask);
         }
     }
 
@@ -853,20 +903,35 @@ impl ScanlineProcessor {
     ///
     /// This is called at the end of each visible scanline.
     fn increment_y(ppu: &mut Ppu) {
-        // Increment fine Y
-        if (ppu.v & 0x7000) != 0x7000 {
+        ppu.v = Self::increment_scroll_y(ppu.v);
+    }
+
+    /// Advance the vertical scroll position by one scanline.
+    ///
+    /// Increments fine Y, and on overflow resets it and increments coarse Y.
+    /// Wrapping past coarse Y 29 toggles the vertical nametable.
+    ///
+    /// # Arguments
+    /// * `v` - Current scroll VRAM address
+    ///
+    /// # Returns
+    /// The scroll address for the next scanline
+    pub fn increment_scroll_y(v: u16) -> u16 {
+        let mut v = v;
+
+        if (v & 0x7000) != 0x7000 {
             // Fine Y < 7, just increment
-            ppu.v += 0x1000;
+            v += 0x1000;
         } else {
             // Fine Y overflow, reset to 0 and increment coarse Y
-            ppu.v &= !0x7000; // Clear fine Y
+            v &= !0x7000; // Clear fine Y
 
-            let mut coarse_y = (ppu.v >> 5) & 0x1F;
+            let mut coarse_y = (v >> 5) & 0x1F;
 
             if coarse_y == 29 {
                 // Coarse Y = 29, wrap to 0 and switch vertical nametable
                 coarse_y = 0;
-                ppu.v ^= 0x0800; // Toggle vertical nametable
+                v ^= 0x0800; // Toggle vertical nametable
             } else if coarse_y == 31 {
                 // Coarse Y = 31, wrap to 0 without switching nametable
                 coarse_y = 0;
@@ -876,8 +941,10 @@ impl ScanlineProcessor {
             }
 
             // Write coarse Y back to v
-            ppu.v = (ppu.v & !0x03E0) | (coarse_y << 5);
+            v = (v & !0x03E0) | (coarse_y << 5);
         }
+
+        v
     }
 
     /// Get the number of cycles per scanline

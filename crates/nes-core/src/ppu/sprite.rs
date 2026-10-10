@@ -109,10 +109,12 @@ impl Sprite {
     /// The row within the sprite (0-7 for 8x8, 0-15 for 8x16)
     pub fn get_fine_y(&self, scanline: u16, sprite_height: u8, vertical_flip: bool) -> u8 {
         let sprite_y = self.y as u16 + 1;
-        let row = (scanline - sprite_y) as u8;
+        // Callers are expected to check `is_on_scanline` first; clamp anyway so
+        // an out-of-range sprite can never underflow.
+        let row = (scanline.saturating_sub(sprite_y)) as u8;
 
         if vertical_flip {
-            sprite_height - 1 - row
+            (sprite_height - 1).saturating_sub(row)
         } else {
             row
         }
@@ -463,6 +465,14 @@ impl SpriteRenderer {
     /// Reset the sprite renderer
     pub fn reset(&mut self) {
         self.sprite_pixels.fill(0);
+        self.clear_sprite_0_hit();
+    }
+
+    /// Clear the latched sprite-0 hit.
+    ///
+    /// The PPU clears the sprite-0 hit flag on the pre-render scanline, so the
+    /// renderer must forget the previous frame's hit before rendering the next.
+    pub fn clear_sprite_0_hit(&mut self) {
         self.sprite_0_hit = false;
         self.sprite_0_hit_x = -1;
         self.sprite_0_hit_y = -1;
@@ -559,6 +569,12 @@ impl SpriteRenderer {
         mask: PpuMask,
         is_sprite_0: bool,
     ) {
+        // A sprite in secondary OAM only contributes if it actually covers this
+        // scanline; otherwise the pattern fetch would index outside the tile.
+        if !sprite.is_on_scanline(scanline, sprite_height) {
+            return;
+        }
+
         let attrs = sprite.attrs();
         let behind_bg = attrs.behind_background();
         let palette_idx = attrs.palette();

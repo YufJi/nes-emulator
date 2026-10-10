@@ -68,6 +68,18 @@ impl Cpu {
     /// # Returns
     /// Total cycles consumed by the instruction
     pub fn execute_instruction(&mut self, bus: &mut dyn Bus, opcode: u8) -> u8 {
+        // Interrupts are taken between instructions.
+        //
+        // NMI is edge-triggered and cannot be masked. IRQ is level-triggered
+        // and is ignored while the I flag is set.
+        if bus.nmi_pending() {
+            bus.clear_nmi();
+            return self.service_interrupt(bus, 0xFFFA);
+        }
+        if bus.irq_pending() && !self.status.contains(StatusFlags::I) {
+            return self.service_interrupt(bus, 0xFFFE);
+        }
+
         let op = &OPCODE_TABLE[opcode as usize];
         
         // Fetch operands based on addressing mode
@@ -659,6 +671,34 @@ impl Cpu {
         let hi = self.pull(bus) as u16;
         self.pc = (hi << 8) | lo;
         0
+    }
+
+    /// Service a hardware interrupt (NMI or IRQ).
+    ///
+    /// Pushes the program counter and processor status, sets the interrupt
+    /// disable flag, and jumps to the handler address stored in `vector`.
+    /// Hardware interrupts push the status with the B flag clear.
+    ///
+    /// Returns the 7 cycles consumed, matching the real 6502.
+    ///
+    /// # Arguments
+    /// * `bus` - Memory bus used for the stack pushes and vector fetch
+    /// * `vector` - Address of the interrupt vector ($FFFA for NMI, $FFFE for IRQ)
+    fn service_interrupt(&mut self, bus: &mut dyn Bus, vector: u16) -> u8 {
+        self.push(bus, (self.pc >> 8) as u8);
+        self.push(bus, (self.pc & 0xFF) as u8);
+
+        // Hardware interrupts push the status with B clear and U set.
+        let status = (self.status | StatusFlags::U) & !StatusFlags::B;
+        self.push(bus, status.bits());
+
+        self.status.insert(StatusFlags::I);
+
+        let lo = bus.read(vector) as u16;
+        let hi = bus.read(vector.wrapping_add(1)) as u16;
+        self.pc = (hi << 8) | lo;
+
+        7
     }
 
     // ========================================================================

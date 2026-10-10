@@ -889,7 +889,7 @@ mod tests {
     fn get_nestest_rom_path() -> PathBuf {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         let mut path = PathBuf::from(manifest_dir);
-        path.pop();
+        // CARGO_MANIFEST_DIR is <repo>/crates/nes-core; climb back to <repo>.
         path.pop();
         path.pop();
         path.push("roms");

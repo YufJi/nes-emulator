@@ -7,8 +7,9 @@ use nes_core::apu::Apu;
 use nes_core::bus::Bus;
 use nes_core::cpu::Cpu;
 use nes_core::mapper::{create_mapper, Mapper};
-use nes_core::ppu::rendering::{BackgroundRenderer, FrameBuffer, Mirroring};
-use nes_core::ppu::{Ppu, PpuMask};
+use nes_core::ppu::rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor};
+use nes_core::ppu::sprite::SpriteEvaluator;
+use nes_core::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
 use nes_core::JsnesError;
 use wasm_bindgen::prelude::*;
 
@@ -62,6 +63,14 @@ impl ControllerState {
             }
         }
         self.latched = true;
+    }
+
+    /// Release the latch so subsequent reads shift out button states.
+    ///
+    /// The strobe line going low is what freezes the shift register; without
+    /// this the controller would report the A button forever.
+    fn unlatch(&mut self) {
+        self.latched = false;
     }
 
     /// Read one bit from the shift register and shift
@@ -164,6 +173,10 @@ struct NesBus {
     cpu_cycles: u64,
     frame_buffer: FrameBuffer,
     bg_renderer: BackgroundRenderer,
+    /// Sprite evaluator for the current scanline
+    sprite_evaluator: SpriteEvaluator,
+    /// Nametable mirroring mode from the cartridge header
+    mirroring: Mirroring,
     frame_ready: bool,
     /// PPU read buffer for $2007
     ppu_read_buffer: u8,
@@ -174,6 +187,10 @@ impl NesBus {
         let ppu = Ppu::new();
 
         Self {
+            // Real NES RAM powers up with undefined contents, so emulators pick
+            // a fixed pattern. 0x00 is the usual convention: this cartridge's
+            // boot code reads an uninitialised byte as the starting world
+            // number, and 0x00 selects World 1-1.
             cpu_ram: [0; 0x800],
             ppu,
             apu: Apu::new(),
@@ -186,6 +203,8 @@ impl NesBus {
             cpu_cycles: 0,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
+            sprite_evaluator: SpriteEvaluator::new(),
+            mirroring: Mirroring::Horizontal,
             frame_ready: false,
             ppu_read_buffer: 0,
         }
@@ -218,10 +237,10 @@ impl NesBus {
         let mapper = create_mapper(header.mapper_number, prg_rom, chr_rom)?;
         self.mapper = Some(mapper);
 
-        // Set PPU mirroring
-        // Note: PPU mirroring is typically handled by the mapper
-        // For now, we'll store it but the actual implementation depends on mapper integration
-        let _ = header.mirroring;
+        // Apply the cartridge's nametable mirroring to both the renderer
+        // (which reads nametables) and the bus (which mirrors PPUDATA writes).
+        self.mirroring = header.mirroring;
+        self.bg_renderer.set_mirroring(header.mirroring);
 
         Ok(())
     }
@@ -305,9 +324,10 @@ impl NesBus {
                 // Update read buffer
                 if vram_addr >= 0x3F00 {
                     // Palette reads don't have the delayed read
-                    self.ppu_read_buffer = self.ppu.palette[(vram_addr & 0x1F) as usize];
+                    self.ppu_read_buffer = self.ppu.palette[Self::palette_index(vram_addr)];
                 } else {
-                    self.ppu_read_buffer = self.ppu.vram[vram_addr as usize];
+                    self.ppu_read_buffer =
+                        self.ppu.vram[self.mirroring.mirror_vram_addr(vram_addr) as usize];
                 }
 
                 // Increment VRAM address
@@ -383,21 +403,16 @@ impl NesBus {
                 let vram_addr = self.ppu.v & 0x3FFF;
 
                 if vram_addr >= 0x3F00 {
-                    // Palette write
-                    let palette_addr = (vram_addr & 0x1F) as usize;
+                    // Palette write. The sprite backdrop entries
+                    // ($3F10/$3F14/$3F18/$3F1C) alias the background ones
+                    // ($3F00/$3F04/$3F08/$3F0C) in both directions.
+                    let palette_addr = Self::palette_index(vram_addr);
                     self.ppu.palette[palette_addr] = value;
-                    // Mirror $3F00-$3F0F to $3F10-$3F1F
-                    if palette_addr == 0x00 {
-                        self.ppu.palette[0x10] = value;
-                    } else if palette_addr == 0x04 {
-                        self.ppu.palette[0x14] = value;
-                    } else if palette_addr == 0x08 {
-                        self.ppu.palette[0x18] = value;
-                    } else if palette_addr == 0x0C {
-                        self.ppu.palette[0x1C] = value;
+                    if palette_addr % 4 == 0 {
+                        self.ppu.palette[palette_addr + 0x10] = value;
                     }
                 } else {
-                    self.ppu.vram[vram_addr as usize] = value;
+                    self.ppu.vram[self.mirroring.mirror_vram_addr(vram_addr) as usize] = value;
                 }
 
                 // Increment VRAM address
@@ -451,6 +466,9 @@ impl NesBus {
                 if self.controller_strobe {
                     self.controllers[0].latch();
                     self.controllers[1].latch();
+                } else {
+                    self.controllers[0].unlatch();
+                    self.controllers[1].unlatch();
                 }
             }
             _ => {
@@ -465,6 +483,93 @@ impl NesBus {
         // For now, generate silence
         // TODO: Implement actual APU audio generation
         let _ = cycles;
+    }
+
+    /// Map a palette RAM address ($3F00-$3F1F) to its storage index.
+    ///
+    /// The four sprite backdrop entries at $3F10/$3F14/$3F18/$3F1C are mirrors
+    /// of the background ones at $3F00/$3F04/$3F08/$3F0C, so they share storage.
+    fn palette_index(addr: u16) -> usize {
+        let index = (addr & 0x1F) as usize;
+        if index >= 0x10 && index % 4 == 0 {
+            index - 0x10
+        } else {
+            index
+        }
+    }
+    /// Advance the PPU by the single cycle that was just counted.
+    ///
+    /// Rendering works off `ppu.render_v` (a dedicated scroll counter) rather
+    /// than `ppu.v`, so the CPU writing nametables through $2006/$2007 during
+    /// VBlank cannot disturb an in-progress frame.
+    fn ppu_step(&mut self) {
+        let scanline = self.ppu.scanline;
+        let cycle = self.ppu.cycle;
+
+        match scanline {
+            // Visible scanlines
+            0..=239 => {
+                if cycle == 256 {
+                    // Reload the horizontal scroll for this line from t.
+                    self.ppu.render_v =
+                        (self.ppu.render_v & !0x041F) | (self.ppu.t & 0x041F);
+
+                    // Background + sprites for this scanline.
+                    let mask = self.ppu.mask;
+                    self.bg_renderer
+                        .render_scanline(&self.ppu, scanline, mask);
+                    self.bg_renderer
+                        .render_sprites_for_scanline(&self.ppu, scanline, mask);
+                    if self.bg_renderer.check_sprite_0_hit() {
+                        self.ppu.status.insert(PpuStatus::SPRITE_0_HIT);
+                    }
+
+                    // Advance the vertical scroll for the next scanline.
+                    self.ppu.render_v = ScanlineProcessor::increment_scroll_y(self.ppu.render_v);
+
+                    // Evaluate sprites for the next scanline.
+                    let next_scanline = scanline + 1;
+                    if next_scanline < 240 {
+                        let overflow = self.sprite_evaluator.evaluate(
+                            &self.ppu.oam,
+                            next_scanline,
+                            self.ppu.ctrl,
+                            self.ppu.oam_addr,
+                        );
+                        if overflow {
+                            self.ppu.status.insert(PpuStatus::SPRITE_OVERFLOW);
+                        }
+                        self.bg_renderer.secondary_oam =
+                            self.sprite_evaluator.secondary_oam.clone();
+                    }
+                }
+            }
+            // Start of VBlank
+            241 => {
+                if cycle == 1 {
+                    self.ppu.status.insert(PpuStatus::VBLANK);
+                    if self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE) {
+                        self.nmi_pending = true;
+                    }
+                }
+            }
+            // Pre-render scanline
+            261 => {
+                if cycle == 1 {
+                    self.ppu.status.remove(PpuStatus::VBLANK);
+                    self.ppu.status.remove(PpuStatus::SPRITE_OVERFLOW);
+                    self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
+                    // The hit latch must also be forgotten, otherwise the
+                    // renderer would keep reporting last frame's hit.
+                    self.bg_renderer.sprite_renderer.clear_sprite_0_hit();
+                }
+                if cycle == 304 {
+                    // Vertical + horizontal scroll both reload from t.
+                    self.ppu.render_v = self.ppu.t;
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -534,30 +639,10 @@ impl Bus for NesBus {
                         }
                     }
 
-                    let mask = self.ppu.mask;
-                    self.bg_renderer.render_frame(&self.ppu, mask);
                     self.frame_buffer.pixels.copy_from_slice(self.bg_renderer.get_frame());
                 }
-
-                // VBlank start at scanline 241
-                if self.ppu.scanline == 241 {
-                    self.ppu.status.set(nes_core::ppu::PpuStatus::VBLANK, true);
-                    if self.ppu.ctrl.contains(nes_core::ppu::PpuCtrl::NMI_ENABLE) {
-                        self.nmi_pending = true;
-                    }
-                }
-
-                // VBlank end at scanline 261 (pre-render line)
-                if self.ppu.scanline == 261 {
-                    self.ppu.status.set(nes_core::ppu::PpuStatus::VBLANK, false);
-                    self.ppu
-                        .status
-                        .set(nes_core::ppu::PpuStatus::SPRITE_0_HIT, false);
-                    self.ppu
-                        .status
-                        .set(nes_core::ppu::PpuStatus::SPRITE_OVERFLOW, false);
-                }
             }
+            self.ppu_step();
         }
 
         // Generate audio
@@ -566,6 +651,7 @@ impl Bus for NesBus {
         // Update CPU cycle counter
         self.cpu_cycles += cycles as u64;
     }
+
 
     fn nmi_pending(&self) -> bool {
         self.nmi_pending
@@ -731,6 +817,7 @@ impl JsNes {
     pub fn clear_frame_ready(&mut self) {
         self.bus.frame_ready = false;
     }
+
 }
 
 impl Default for JsNes {
@@ -826,5 +913,25 @@ mod tests {
         // Test read
         let bit = controller.read();
         assert_eq!(bit & 1, 1); // A button should be 1
+    }
+
+    #[test]
+    fn test_controller_serial_read_shifts_buttons() {
+        let mut controller = ControllerState::new();
+
+        // Press A and Start.
+        controller.set_button(BUTTON_A, true);
+        controller.set_button(BUTTON_START, true);
+
+        // While the strobe is high the controller keeps reporting button A.
+        controller.latch();
+        assert_eq!(controller.read() & 1, 1);
+        assert_eq!(controller.read() & 1, 1);
+
+        // Releasing the strobe freezes the shift register and reads walk
+        // through the buttons in order: A, B, Select, Start, ...
+        controller.unlatch();
+        let bits: Vec<u8> = (0..8).map(|_| controller.read() & 1).collect();
+        assert_eq!(bits, vec![1, 0, 0, 1, 0, 0, 0, 0]);
     }
 }
