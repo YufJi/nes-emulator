@@ -21,11 +21,12 @@
 //! Only PPU banking mode 0 is emulated, which is what every commercial VRC6
 //! game uses: 1KB CHR banks with vertical / horizontal / one-screen mirroring
 //! selected by $B003 bits 2-3. ROM nametables ($B003 bit 4) and the VRC6
-//! expansion audio are not emulated.
+
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_024
 
 use super::Mapper;
+use crate::apu::vrc6::Vrc6Audio;
 use crate::ppu::rendering::Mirroring;
 
 /// Konami VRC6 mapper (Mappers 24 and 26)
@@ -54,6 +55,8 @@ pub struct Mapper24 {
     irq_pending: bool,
     /// Cycles accumulated while in scanline mode
     irq_scanline_accumulator: u16,
+    /// The chip's expansion audio
+    audio: Vrc6Audio,
     /// Whether this is the VRC6b revision (mapper 26)
     swap_address_bits: bool,
     prg_16k_bank_count: usize,
@@ -94,6 +97,7 @@ impl Mapper24 {
             irq_enabled: false,
             irq_pending: false,
             irq_scanline_accumulator: 0,
+            audio: Vrc6Audio::new(),
             swap_address_bits,
             }
     }
@@ -174,8 +178,11 @@ impl Mapper for Mapper24 {
             0x6000..=0x7FFF => self.prg_ram[(addr - 0x6000) as usize] = value,
             0x8000..=0xFFFF => match self.register_index(addr) {
                 0x8000 => self.prg_bank_16k = value & 0x0F,
-                // $9000-$B002 carry VRC6 audio registers, which are not
-                // emulated yet.
+                // $9000-$9003, $A000-$A002 and $B000-$B002 are the chip's
+                // expansion audio registers.
+                0x9000..=0x9003 | 0xA000..=0xA002 | 0xB000..=0xB002 => {
+                    self.audio.write_register(self.register_index(addr), value)
+                }
                 0xB003 => self.banking_style = value,
                 0xC000 => self.prg_bank_8k = value & 0x1F,
                 0xD000..=0xD003 => self.chr_banks[(self.register_index(addr) - 0xD000) as usize] = value,
@@ -232,7 +239,16 @@ impl Mapper for Mapper24 {
 
     /// VRC6 can count CPU cycles or "scanlines", which the hardware measures as
     /// a fixed number of CPU cycles. The latter is approximated here.
+    fn audio_output(&self) -> f32 {
+        self.audio.output()
+    }
+
+    /// Clock the IRQ counter and the expansion audio.
     fn on_cpu_cycles(&mut self, cycles: u8) {
+        for _ in 0..cycles {
+            self.audio.tick();
+        }
+
         if !self.irq_enabled || self.irq_cycle_mode {
             if self.irq_enabled {
                 for _ in 0..cycles {
@@ -322,4 +338,5 @@ mod tests {
         mapper.write(0xD002, 5);
         assert_eq!(mapper.chr_banks[1], 5);
     }
+
 }

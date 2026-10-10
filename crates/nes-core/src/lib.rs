@@ -13,10 +13,12 @@ pub mod apu;
 pub mod bus;
 pub mod cpu;
 pub mod mapper;
+pub mod nes;
 pub mod ppu;
 
 pub use bus::Bus;
 pub use mapper::Mapper;
+pub use nes::Nes;
 
 /// Result type for JSNES operations
 pub type Result<T> = core::result::Result<T, JsnesError>;

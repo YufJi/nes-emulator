@@ -9,14 +9,20 @@
 //! Reference: https://www.nesdev.org/wiki/APU
 
 pub mod dmc;
+pub mod mmc5;
 pub mod noise;
 pub mod pulse;
+pub mod sunsoft5b;
 pub mod triangle;
+pub mod vrc6;
 
 pub use dmc::DmcChannel;
+pub use mmc5::Mmc5Audio;
 pub use noise::NoiseChannel;
 pub use pulse::PulseChannel;
 pub use triangle::TriangleChannel;
+pub use sunsoft5b::Sunsoft5bAudio;
+pub use vrc6::Vrc6Audio;
 
 /// AudioChannel trait defines the interface for all APU channels
 pub trait AudioChannel {

@@ -21,6 +21,7 @@
 //! See https://www.nesdev.org/wiki/Sunsoft_FME-7
 
 use super::Mapper;
+use crate::apu::sunsoft5b::Sunsoft5bAudio;
 use crate::ppu::rendering::Mirroring;
 
 /// Sunsoft FME-7 mapper (Mapper 69)
@@ -42,6 +43,8 @@ pub struct Mapper69 {
     /// Whether the counter may raise an IRQ
     irq_enabled: bool,
     irq_pending: bool,
+    /// The board's Sunsoft 5B sound chip
+    audio: Sunsoft5bAudio,
     prg_bank_count: usize,
     chr_bank_count: usize,
 }
@@ -65,6 +68,7 @@ impl Mapper69 {
             irq_counter: 0,
             irq_enabled: false,
             irq_pending: false,
+            audio: Sunsoft5bAudio::new(),
         }
     }
 
@@ -147,8 +151,15 @@ impl Mapper for Mapper69 {
             }
             0x8000..=0x9FFF => self.command = value & 0x0F,
             0xA000..=0xBFFF => self.write_subregister(value),
-            0xC000..=0xDFFF => self.irq_enabled = value & 0x80 != 0,
-            0xE000..=0xFFFF => self.irq_pending = false,
+            0xC000..=0xDFFF => {
+                self.irq_enabled = value & 0x80 != 0;
+                // $C000 also selects the 5B's internal register.
+                self.audio.write_select(value);
+            }
+            0xE000..=0xFFFF => {
+                self.irq_pending = false;
+                self.audio.write_data(value);
+            }
             _ => {}
         }
     }
@@ -165,9 +176,16 @@ impl Mapper for Mapper69 {
         Some(self.mirroring)
     }
 
+    fn audio_output(&self) -> f32 {
+        self.audio.output()
+    }
+
     /// The FME-7 counter runs at the CPU clock rate and raises an IRQ when it
-    /// wraps past $FFFF.
+    /// wraps past $FFFF. The 5B sound chip is clocked alongside it.
     fn on_cpu_cycles(&mut self, cycles: u8) {
+        for _ in 0..cycles {
+            self.audio.tick();
+        }
         for _ in 0..cycles {
             self.irq_counter = self.irq_counter.wrapping_add(1);
             if self.irq_counter == 0 && self.irq_enabled {

@@ -7,6 +7,7 @@
 //! See https://www.nesdev.org/wiki/MMC5
 
 use super::Mapper;
+use crate::apu::mmc5::Mmc5Audio;
 
 /// MMC5 mapper (Mapper 5)
 #[derive(Debug)]
@@ -17,6 +18,8 @@ pub struct Mapper5 {
     prg_ram: [u8; 0x10000],
     /// 1KB ExRAM (internal to MMC5)
     exram: [u8; 0x400],
+    /// The board's expansion audio (two pulses + PCM)
+    audio: Mmc5Audio,
     /// Whether CHR is RAM (writable) instead of ROM
     chr_is_ram: bool,
 
@@ -97,6 +100,7 @@ impl Mapper5 {
             chr_rom,
             prg_ram: [0u8; 0x10000],
             exram: [0u8; 0x400],
+            audio: Mmc5Audio::new(),
             chr_is_ram,
             prg_mode: 3, // Power-on default: mode 3 (8K banks)
             prg_bank_reg: [0; 5],
@@ -357,6 +361,15 @@ impl Mapper for Mapper5 {
     }
 
     fn write(&mut self, addr: u16, value: u8) {
+        // The MMC5's pulse channels and PCM DAC live at $5000-$5015.
+        if (0x5000..=0x5015).contains(&addr) {
+            self.audio.write_register(addr, value);
+            // $5010 stays part of the mapper's own register set.
+            if (0x5000..=0x5007).contains(&addr) || addr == 0x5011 || addr == 0x5015 {
+                return;
+            }
+        }
+
         match addr {
             // CHR-RAM writes (if enabled)
             0x0000..=0x1FFF => {
@@ -477,6 +490,17 @@ impl Mapper for Mapper5 {
     /// MMC5 counts scanlines: the counter restarts on the pre-render line and
     /// increments once per visible scanline, raising an IRQ when it reaches
     /// the value written to $5203.
+    fn audio_output(&self) -> f32 {
+        self.audio.output()
+    }
+
+    /// The MMC5's pulse channels run at the CPU clock rate.
+    fn on_cpu_cycles(&mut self, cycles: u8) {
+        for _ in 0..cycles {
+            self.audio.tick();
+        }
+    }
+
     fn on_scanline(&mut self, scanline: u16, _rendering: bool) {
         if scanline >= 261 {
             // Pre-render line (261 on NTSC, 311 on PAL): start of frame.

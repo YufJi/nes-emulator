@@ -67,6 +67,15 @@ pub trait Mapper: Send + Sync + Debug {
         None
     }
 
+    /// Current expansion-audio level, mixed in with the APU output.
+    ///
+    /// Mappers with extra sound hardware (VRC6, MMC5, FDS, Sunsoft 5B, N163)
+    /// return their channel mix here and advance it from
+    /// [`Mapper::on_cpu_cycles`].
+    fn audio_output(&self) -> f32 {
+        0.0
+    }
+
     /// Called once per executed CPU instruction with the cycles it consumed.
     ///
     /// Mappers whose IRQ counter runs at the CPU clock rate (Sunsoft FME-7)
