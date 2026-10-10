@@ -28,6 +28,52 @@ pub trait Mapper: Send + Sync + Debug {
 
     /// Clear the pending IRQ flag
     fn clear_irq(&mut self);
+
+    /// Called by the PPU at the start of every scanline.
+    ///
+    /// Mappers with a scanline counter (MMC3, MMC5, VRC4…) clock it here and
+    /// raise an IRQ when it expires. This is a scanline approximation of the
+    /// hardware's A12 rise.
+    ///
+    /// # Arguments
+    /// * `scanline` - NES scanline that is about to start (0-239 visible,
+    ///   241-260 VBlank, pre-render last)
+    /// * `rendering` - whether background or sprite rendering is enabled
+    fn on_scanline(&mut self, scanline: u16, rendering: bool) {
+        let _ = (scanline, rendering);
+    }
+
+    /// Contents of the cartridge's battery-backed work RAM, if it has any.
+    ///
+    /// The bus persists this when the cartridge header marks the board as
+    /// battery-backed, and restores it through [`Mapper::load_save_ram`].
+    fn save_ram(&self) -> Option<&[u8]> {
+        None
+    }
+
+    /// Restore battery-backed work RAM previously obtained from
+    /// [`Mapper::save_ram`]. Extra bytes are ignored and missing bytes are
+    /// left untouched.
+    fn load_save_ram(&mut self, data: &[u8]) {
+        let _ = data;
+    }
+
+    /// Nametable mirroring currently selected by the mapper.
+    ///
+    /// `None` means the mapper does not control mirroring and the cartridge
+    /// header's value should be used. Mappers that switch mirroring at runtime
+    /// (MMC1, MMC3, AxROM…) return `Some` so the PPU can follow along.
+    fn mirroring(&self) -> Option<crate::ppu::rendering::Mirroring> {
+        None
+    }
+
+    /// Called once per executed CPU instruction with the cycles it consumed.
+    ///
+    /// Mappers whose IRQ counter runs at the CPU clock rate (Sunsoft FME-7)
+    /// advance it here.
+    fn on_cpu_cycles(&mut self, cycles: u8) {
+        let _ = cycles;
+    }
 }
 
 /// Mapper factory - creates appropriate mapper based on mapper number
@@ -42,10 +88,22 @@ pub fn create_mapper(
         2 => Ok(Box::new(mapper2::Mapper2::new(prg_rom, chr_rom))),
         3 => Ok(Box::new(mapper3::Mapper3::new(prg_rom, chr_rom))),
         4 => Ok(Box::new(mapper4::Mapper4::new(prg_rom, chr_rom))),
+        32 => Ok(Box::new(mapper32::Mapper32::new(prg_rom, chr_rom))),
+        33 => Ok(Box::new(mapper33::Mapper33::new(prg_rom, chr_rom))),
+        48 => Ok(Box::new(mapper33::Mapper33::new_with_irq(prg_rom, chr_rom))),
+        65 => Ok(Box::new(mapper65::Mapper65::new(prg_rom, chr_rom))),
+        69 => Ok(Box::new(mapper69::Mapper69::new(prg_rom, chr_rom))),
         5 => Ok(Box::new(mapper5::Mapper5::new(prg_rom, chr_rom))),
         7 => Ok(Box::new(mapper7::Mapper7::new(prg_rom, chr_rom))),
         9 => Ok(Box::new(mapper9::Mapper9::new(prg_rom, chr_rom))),
+        10 => Ok(Box::new(mapper10::Mapper10::new(prg_rom, chr_rom))),
         11 => Ok(Box::new(mapper11::Mapper11::new(prg_rom, chr_rom))),
+        21 => Ok(Box::new(mapper21::Mapper21::new_vrc4a(prg_rom, chr_rom))),
+        22 => Ok(Box::new(mapper21::Mapper21::new_vrc2a(prg_rom, chr_rom))),
+        23 => Ok(Box::new(mapper21::Mapper21::new_vrc4f(prg_rom, chr_rom))),
+        25 => Ok(Box::new(mapper21::Mapper21::new_vrc4b(prg_rom, chr_rom))),
+        24 => Ok(Box::new(mapper24::Mapper24::new(prg_rom, chr_rom))),
+        26 => Ok(Box::new(mapper24::Mapper24::new_swapped(prg_rom, chr_rom))),
         34 => Ok(Box::new(mapper34::Mapper34::new(prg_rom, chr_rom))),
         38 => Ok(Box::new(mapper38::Mapper38::new(prg_rom, chr_rom))),
         66 => Ok(Box::new(mapper66::Mapper66::new(prg_rom, chr_rom))),
@@ -64,20 +122,27 @@ pub fn create_mapper(
 
 pub mod mapper0;
 pub mod mapper1;
+pub mod mapper10;
 pub mod mapper11;
 pub mod mapper118;
 pub mod mapper119;
 pub mod mapper140;
 pub mod mapper180;
 pub mod mapper2;
+pub mod mapper21;
 pub mod mapper240;
 pub mod mapper241;
+pub mod mapper24;
 pub mod mapper3;
+pub mod mapper32;
+pub mod mapper33;
 pub mod mapper34;
 pub mod mapper38;
 pub mod mapper4;
 pub mod mapper5;
+pub mod mapper65;
 pub mod mapper66;
+pub mod mapper69;
 pub mod mapper7;
 pub mod mapper71;
 pub mod mapper79;

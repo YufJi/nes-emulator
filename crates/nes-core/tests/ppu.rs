@@ -16,7 +16,7 @@
 
 use nes_core::ppu::{
     Ppu, PpuCtrl, PpuMask, PpuStatus,
-    rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor, NES_PALETTE},
+    rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor, VramChr, NES_PALETTE},
     sprite::{Sprite, SpriteAttributes, SpriteEvaluator, SecondaryOam, SpritePatternFetcher, SpriteRenderer},
 };
 
@@ -586,7 +586,7 @@ fn test_fetch_tile_pattern() {
     ppu.vram[0x0000] = 0xFF;
     ppu.vram[0x0008] = 0x00;
 
-    let (low, high) = renderer.fetch_tile_pattern(&ppu, 0x0000, 0, 0);
+    let (low, high) = renderer.fetch_tile_pattern(&ppu, &mut VramChr, 0x0000, 0, 0);
     assert_eq!(low, 0xFF);
     assert_eq!(high, 0x00);
 }
@@ -603,7 +603,7 @@ fn test_render_scanline_disabled() {
     let mask = PpuMask::empty();
 
     // Render a scanline
-    renderer.render_scanline(&ppu, 0, mask);
+    renderer.render_scanline(&ppu, &mut VramChr, 0, mask);
 
     // All pixels should be backdrop color
     let backdrop_color = NES_PALETTE[0x0F];
@@ -633,7 +633,7 @@ fn test_render_scanline_enabled() {
     ppu.ctrl = PpuCtrl::empty();
     ppu.v = 0x0000;
 
-    renderer.render_scanline(&ppu, 0, mask);
+    renderer.render_scanline(&ppu, &mut VramChr, 0, mask);
 
     let white = NES_PALETTE[0x20];
     for x in 0..8 {
@@ -868,7 +868,7 @@ fn test_sprite_pattern_fetcher_8x8() {
     ppu.vram[0x0008] = 0x00;
 
     let ctrl = PpuCtrl::empty(); // Pattern table $0000
-    let (low, high) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 11, 8, ctrl);
+    let (low, high) = SpritePatternFetcher::fetch_pattern(&ppu, &mut VramChr, &sprite, 11, 8, ctrl);
 
     assert_eq!(low, 0xFF);
     assert_eq!(high, 0x00);
@@ -895,11 +895,11 @@ fn test_sprite_pattern_fetcher_8x16() {
     let ctrl = PpuCtrl::SPRITE_SIZE; // 8x16 mode
 
     // First scanline (row 0 of top tile)
-    let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 11, 16, ctrl);
+    let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut VramChr, &sprite, 11, 16, ctrl);
     assert_eq!(low, 0xAA);
 
     // Ninth scanline (row 0 of bottom tile)
-    let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 19, 16, ctrl);
+    let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut VramChr, &sprite, 19, 16, ctrl);
     assert_eq!(low, 0x55);
 }
 
@@ -918,7 +918,7 @@ fn test_reverse_bits() {
     ppu.vram[0x0008] = 0x00;
     
     let ctrl = PpuCtrl::empty();
-    let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 11, 8, ctrl);
+    let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut VramChr, &sprite, 11, 8, ctrl);
     
     assert_eq!(low, 0b0000_0001);
 }
@@ -959,7 +959,7 @@ fn test_sprite_0_hit_detection() {
     let mask = PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES;
 
     // Render frame
-    renderer.render_frame(&ppu, mask);
+    renderer.render_frame(&ppu, &mut VramChr, mask);
 
     // Check if sprite 0 hit was detected
     // Note: This test may need adjustment based on actual implementation
@@ -1006,6 +1006,7 @@ fn test_vblank_flag_timing() {
         let _nmi = ScanlineProcessor::process_scanline(
             &mut ppu,
             &mut renderer,
+            &mut VramChr,
             scanline,
             &mut evaluator,
         );
@@ -1032,6 +1033,7 @@ fn test_vblank_flag_clear() {
     ScanlineProcessor::process_scanline(
         &mut ppu,
         &mut renderer,
+        &mut VramChr,
         261,
         &mut evaluator,
     );
@@ -1056,6 +1058,7 @@ fn test_nmi_generation() {
     let nmi = ScanlineProcessor::process_scanline(
         &mut ppu,
         &mut renderer,
+        &mut VramChr,
         241,
         &mut evaluator,
     );
@@ -1080,6 +1083,7 @@ fn test_no_nmi_when_disabled() {
     let nmi = ScanlineProcessor::process_scanline(
         &mut ppu,
         &mut renderer,
+        &mut VramChr,
         241,
         &mut evaluator,
     );
@@ -1117,7 +1121,7 @@ fn test_frame_generation() {
     let mask = PpuMask::SHOW_BG;
 
     // Render frame
-    renderer.render_frame(&ppu, mask);
+    renderer.render_frame(&ppu, &mut VramChr, mask);
 
     // Check that frame was generated
     assert_eq!(renderer.frame_buffer.pixels.len(), 256 * 240);
@@ -1161,7 +1165,7 @@ fn test_render_full_frame() {
     let mask = PpuMask::SHOW_BG;
 
     // Render frame
-    renderer.render_frame(&ppu, mask);
+    renderer.render_frame(&ppu, &mut VramChr, mask);
 
     // Verify frame buffer has been filled
     let mut non_black_pixels = 0;
@@ -1399,7 +1403,7 @@ fn test_multiple_frame_rendering() {
 
     // Render multiple frames
     for _ in 0..10 {
-        renderer.render_frame(&ppu, mask);
+        renderer.render_frame(&ppu, &mut VramChr, mask);
     }
 
     // Should complete without errors
@@ -1595,7 +1599,7 @@ fn test_rendering_pipeline_basic() {
     let mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT;
     ppu.v = 0x0000;
 
-    renderer.render_scanline(&ppu, 0, mask);
+    renderer.render_scanline(&ppu, &mut VramChr, 0, mask);
 
     let pixel0 = renderer.frame_buffer.get_pixel(0, 0);
     let pixel1 = renderer.frame_buffer.get_pixel(1, 0);
@@ -1634,7 +1638,7 @@ fn test_rendering_with_scroll() {
     let mask = PpuMask::SHOW_BG;
 
     // Render scanline
-    renderer.render_scanline(&ppu, 0, mask);
+    renderer.render_scanline(&ppu, &mut VramChr, 0, mask);
 
     // With scroll, we should see part of tile 0 then tile 1
     // First 4 pixels should be from tile 0 (black)
@@ -1674,7 +1678,7 @@ fn test_left_edge_clipping_background() {
     let mask = PpuMask::SHOW_BG; // SHOW_BG_LEFT is not set
 
     // Render
-    renderer.render_scanline(&ppu, 0, mask);
+    renderer.render_scanline(&ppu, &mut VramChr, 0, mask);
 
     // Left 8 pixels should be black (backdrop)
     let black = NES_PALETTE[0x0F];

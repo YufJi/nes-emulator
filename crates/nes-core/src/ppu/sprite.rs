@@ -7,7 +7,7 @@
 //! Reference: https://www.nesdev.org/wiki/PPU_sprite_evaluation
 
 use crate::ppu::{Ppu, PpuCtrl, PpuMask};
-use crate::ppu::rendering::NES_PALETTE;
+
 
 /// Sprite attributes byte layout
 ///
@@ -285,10 +285,17 @@ impl SpriteEvaluator {
         let mut n = start_n as usize;
         let mut first_sprite = true;
         let mut evaluated = 0;
+        // Byte index used while hunting for a 9th sprite. The hardware bug
+        // increments this alongside the sprite index, so the Y comparisons
+        // drift diagonally through OAM.
+        let mut overflow_m = 0usize;
 
         // Scan through OAM looking for sprites on this scanline
         loop {
-            let m = if first_sprite {
+            let m = if self.secondary_oam.count >= 8 {
+                // Overflow detection mode: use the buggy counter.
+                overflow_m
+            } else if first_sprite {
                 start_m as usize
             } else {
                 0
@@ -309,12 +316,14 @@ impl SpriteEvaluator {
             {
                 // Sprite is on this scanline
                 if self.secondary_oam.count < 8 {
-                    // Copy sprite to secondary OAM
+                    // Copy the four bytes starting at the address we actually
+                    // read, so a misaligned OAMADDR copies garbled data just
+                    // like the hardware.
                     let sprite = Sprite {
-                        y: oam[(n * 4) & 0xFF],
-                        tile: oam[(n * 4 + 1) & 0xFF],
-                        attributes: oam[(n * 4 + 2) & 0xFF],
-                        x: oam[(n * 4 + 3) & 0xFF],
+                        y: oam[(n * 4 + m) & 0xFF],
+                        tile: oam[(n * 4 + m + 1) & 0xFF],
+                        attributes: oam[(n * 4 + m + 2) & 0xFF],
+                        x: oam[(n * 4 + m + 3) & 0xFF],
                     };
 
                     // Check if this is sprite 0 (first in evaluation order)
@@ -325,6 +334,13 @@ impl SpriteEvaluator {
                     self.overflow = true;
                     break;
                 }
+            } else if self.secondary_oam.count >= 8 {
+                // Sprite overflow bug: once eight sprites have been found,
+                // the hardware increments the byte index as well as the sprite
+                // index on every failed check, reading tile, attribute and X
+                // bytes as if they were Y coordinates. This produces both
+                // false positives and false negatives for the overflow flag.
+                overflow_m = (overflow_m + 1) & 0x03;
             }
 
             n = (n + 1) & 0x3F;
@@ -365,6 +381,7 @@ impl SpritePatternFetcher {
     /// Tuple of (low_byte, high_byte) for the pattern data
     pub fn fetch_pattern(
         ppu: &Ppu,
+        chr: &mut dyn crate::ppu::rendering::ChrSource,
         sprite: &Sprite,
         scanline: u16,
         sprite_height: u8,
@@ -407,8 +424,8 @@ impl SpritePatternFetcher {
         } as u16;
 
         // Fetch pattern data
-        let low_byte = ppu.vram[(pattern_addr + row) as usize];
-        let high_byte = ppu.vram[(pattern_addr + row + 8) as usize];
+        let low_byte = chr.read_pattern(ppu, pattern_addr + row);
+        let high_byte = chr.read_pattern(ppu, pattern_addr + row + 8);
 
         // Apply horizontal flip if needed
         if attrs.horizontal_flip() {
@@ -495,8 +512,7 @@ impl SpriteRenderer {
             0
         } else {
             let palette_addr = 0x10 + ((palette_index & 0x03) * 4) + (color_index & 0x03);
-            let color_value = ppu.palette[palette_addr as usize] & 0x3F;
-            NES_PALETTE[color_value as usize]
+            crate::ppu::rendering::nes_color(ppu.palette[palette_addr as usize], ppu.mask)
         }
     }
 
@@ -512,6 +528,7 @@ impl SpriteRenderer {
     pub fn render_scanline(
         &mut self,
         ppu: &Ppu,
+        chr: &mut dyn crate::ppu::rendering::ChrSource,
         frame_buffer: &mut crate::ppu::rendering::FrameBuffer,
         bg_pixels: &[u8],
         secondary_oam: &SecondaryOam,
@@ -535,6 +552,7 @@ impl SpriteRenderer {
             if let Some(sprite) = secondary_oam.get_sprite(i) {
                 self.render_sprite(
                     ppu,
+                    chr,
                     frame_buffer,
                     bg_pixels,
                     &sprite,
@@ -561,6 +579,7 @@ impl SpriteRenderer {
     fn render_sprite(
         &mut self,
         ppu: &Ppu,
+        chr: &mut dyn crate::ppu::rendering::ChrSource,
         frame_buffer: &mut crate::ppu::rendering::FrameBuffer,
         bg_pixels: &[u8],
         sprite: &Sprite,
@@ -581,7 +600,7 @@ impl SpriteRenderer {
 
         // Fetch pattern data
         let (pattern_low, pattern_high) =
-            SpritePatternFetcher::fetch_pattern(ppu, sprite, scanline, sprite_height, ppu.ctrl);
+            SpritePatternFetcher::fetch_pattern(ppu, chr, sprite, scanline, sprite_height, ppu.ctrl);
 
         // Render 8 pixels horizontally
         for px in 0..8 {
@@ -872,6 +891,53 @@ mod tests {
         assert_eq!(evaluator.secondary_oam.count(), 8); // Max 8 sprites
     }
 
+    /// Eight sprites are actually in range, but the overflow scan reads a tile
+    /// byte as a Y coordinate and reports a false overflow.
+    #[test]
+    fn test_sprite_overflow_bug_reports_false_positive() {
+        let mut evaluator = SpriteEvaluator::new();
+        let mut oam = [0u8; 256];
+
+        // Scanline 20 with 8x8 sprites: in range for Y in 0..=19.
+        for i in 0..8 {
+            oam[i * 4] = 19; // Y -> visible on scanline 20
+        }
+        // Sprite 8 is off-screen, so the buggy scan moves on to sprite 9 and
+        // reads its *tile* byte, which we make look like an in-range Y.
+        oam[8 * 4] = 0x00; // sprite 8 Y: out of range
+        oam[9 * 4 + 1] = 19; // sprite 9 tile, read as Y by the buggy scan
+
+        let overflow = evaluator.evaluate(&oam, 20, PpuCtrl::empty(), 0);
+
+        assert!(overflow, "the sprite overflow bug should report a false positive");
+        assert_eq!(evaluator.secondary_oam.count(), 8);
+    }
+
+    /// Nine sprites are genuinely in range, but the buggy scan drifts past the
+    /// ninth one and never reports overflow.
+    #[test]
+    fn test_sprite_overflow_bug_can_miss_a_real_overflow() {
+        let mut evaluator = SpriteEvaluator::new();
+        let mut oam = [0u8; 256];
+
+        for i in 0..8 {
+            oam[i * 4] = 19;
+        }
+        // Sprite 8 is off-screen; sprite 9 *is* on the scanline but the scan
+        // reads its tile byte (0x00) instead of its Y.
+        oam[8 * 4] = 0x00;
+        oam[9 * 4] = 19; // sprite 9 Y: in range, never examined correctly
+        oam[9 * 4 + 1] = 0x00; // tile byte read instead
+
+        let overflow = evaluator.evaluate(&oam, 20, PpuCtrl::empty(), 0);
+
+        assert!(
+            !overflow,
+            "the sprite overflow bug should be able to miss a real overflow"
+        );
+        assert_eq!(evaluator.secondary_oam.count(), 8);
+    }
+
     #[test]
     fn test_sprite_pattern_fetcher_8x8() {
         use crate::ppu::Ppu;
@@ -890,7 +956,7 @@ mod tests {
         ppu.vram[0x0008] = 0x00;
 
         let ctrl = PpuCtrl::empty(); // Pattern table $0000
-        let (low, high) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 11, 8, ctrl);
+        let (low, high) = SpritePatternFetcher::fetch_pattern(&ppu, &mut crate::ppu::rendering::VramChr, &sprite, 11, 8, ctrl);
 
         assert_eq!(low, 0xFF);
         assert_eq!(high, 0x00);
@@ -919,11 +985,11 @@ mod tests {
         let ctrl = PpuCtrl::SPRITE_SIZE; // 8x16 mode
 
         // First scanline (row 0 of top tile)
-        let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 11, 16, ctrl);
+        let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut crate::ppu::rendering::VramChr, &sprite, 11, 16, ctrl);
         assert_eq!(low, 0xAA);
 
         // Ninth scanline (row 0 of bottom tile)
-        let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &sprite, 19, 16, ctrl);
+        let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut crate::ppu::rendering::VramChr, &sprite, 19, 16, ctrl);
         assert_eq!(low, 0x55);
     }
 

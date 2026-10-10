@@ -121,6 +121,15 @@ impl Mapper for Mapper66 {
     fn clear_irq(&mut self) {
         self.irq_pending = false;
     }
+
+    /// GxROM mirroring select: 0 = vertical, 1 = horizontal.
+    fn mirroring(&self) -> Option<crate::ppu::rendering::Mirroring> {
+        Some(if self.mirroring_select {
+            crate::ppu::rendering::Mirroring::Horizontal
+        } else {
+            crate::ppu::rendering::Mirroring::Vertical
+        })
+    }
 }
 
 #[cfg(test)]

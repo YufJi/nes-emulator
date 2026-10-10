@@ -276,12 +276,13 @@ impl Mapper for Mapper4 {
                         // PRG RAM protect (not implemented)
                     }
                     0xC000 => {
-                        // IRQ counter
-                        self.irq_counter = value;
-                    }
-                    0xC001 => {
                         // IRQ latch
                         self.irq_latch = value;
+                    }
+                    0xC001 => {
+                        // IRQ reload: the counter is reloaded from the latch
+                        // on the next clock.
+                        self.irq_counter = 0;
                     }
                     0xE000 => {
                         // IRQ disable
@@ -305,6 +306,38 @@ impl Mapper for Mapper4 {
 
     fn clear_irq(&mut self) {
         self.irq_pending = false;
+    }
+
+    /// Clock the scanline counter once per rendered scanline.
+    ///
+    /// The hardware toggles A12 eight times per scanline; games only care about
+    /// the resulting count, so clocking once per visible scanline is enough.
+    /// Nothing is clocked while rendering is disabled, which is how games keep
+    /// the counter under control.
+    fn on_scanline(&mut self, scanline: u16, rendering: bool) {
+        if rendering && scanline < 240 {
+            self.clock_irq_counter();
+        }
+    }
+
+    /// Battery-backed work RAM ($6000-$7FFF).
+    fn save_ram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    /// Restore battery-backed work RAM.
+    fn load_save_ram(&mut self, data: &[u8]) {
+        let n = data.len().min(self.prg_ram.len());
+        self.prg_ram[..n].copy_from_slice(&data[..n]);
+    }
+
+    /// MMC3 mirroring register: 0 = vertical, 1 = horizontal.
+    fn mirroring(&self) -> Option<crate::ppu::rendering::Mirroring> {
+        Some(if self.mirroring & 0x01 == 0 {
+            crate::ppu::rendering::Mirroring::Vertical
+        } else {
+            crate::ppu::rendering::Mirroring::Horizontal
+        })
     }
 }
 
@@ -456,19 +489,19 @@ mod tests {
         let chr = vec![0u8; 8192];
         let mut mapper = Mapper4::new(prg, chr);
 
-        // Set IRQ latch
-        mapper.write(0xC001, 5);
-        assert_eq!(mapper.irq_latch, 5);
-
-        // Set IRQ counter directly
+        // $C000 sets the latch, $C001 requests a reload.
         mapper.write(0xC000, 3);
-        assert_eq!(mapper.irq_counter, 3);
+        assert_eq!(mapper.irq_latch, 3);
+        mapper.write(0xC001, 0);
+        assert_eq!(mapper.irq_counter, 0, "reload clears the counter");
 
         // Enable IRQ
         mapper.write(0xE001, 0);
         assert!(mapper.irq_enabled);
 
         // Clock the counter down to 0
+        mapper.clock_irq_counter(); // reload to 3
+        assert!(!mapper.irq_pending());
         mapper.clock_irq_counter(); // 3 -> 2
         assert!(!mapper.irq_pending());
         mapper.clock_irq_counter(); // 2 -> 1
@@ -484,7 +517,7 @@ mod tests {
         let mut mapper = Mapper4::new(prg, chr);
 
         // Set IRQ latch to 2
-        mapper.write(0xC001, 2);
+        mapper.write(0xC000, 2);
 
         // Enable IRQ
         mapper.write(0xE001, 0);
@@ -509,7 +542,7 @@ mod tests {
         let mut mapper = Mapper4::new(prg, chr);
 
         // Set up and trigger IRQ
-        mapper.write(0xC001, 1);
+        mapper.write(0xC000, 1);
         mapper.write(0xE001, 0);
         mapper.clock_irq_counter(); // reload to 1
         mapper.clock_irq_counter(); // 1 -> 0, triggers
@@ -546,5 +579,31 @@ mod tests {
         let mapper = Mapper4::new(prg, chr);
         assert!(mapper.chr_is_ram);
         assert_eq!(mapper.chr_rom.len(), 8192);
+    }
+
+    #[test]
+    fn test_on_scanline_clocks_only_while_rendering() {
+        let mut mapper = Mapper4::new(vec![0u8; 0x20000], vec![0u8; 8192]);
+
+        mapper.write(0xC000, 2); // latch
+        mapper.write(0xC001, 0); // reload
+        mapper.write(0xE001, 0); // enable
+
+        // Rendering disabled: the counter must not move.
+        mapper.on_scanline(10, false);
+        mapper.on_scanline(10, false);
+        assert!(!mapper.irq_pending());
+
+        // VBlank scanlines are not clocked either.
+        mapper.on_scanline(250, true);
+        assert!(!mapper.irq_pending());
+
+        // Visible scanlines advance the counter: the first clock reloads from
+        // the latch (2), then it counts 2 -> 1 -> 0 and raises the IRQ.
+        mapper.on_scanline(10, true); // reload to 2
+        mapper.on_scanline(11, true); // 2 -> 1
+        assert!(!mapper.irq_pending());
+        mapper.on_scanline(12, true); // 1 -> 0 -> IRQ
+        assert!(mapper.irq_pending());
     }
 }

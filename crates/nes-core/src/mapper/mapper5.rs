@@ -473,6 +473,33 @@ impl Mapper for Mapper5 {
     fn clear_irq(&mut self) {
         self.irq_pending = false;
     }
+
+    /// MMC5 counts scanlines: the counter restarts on the pre-render line and
+    /// increments once per visible scanline, raising an IRQ when it reaches
+    /// the value written to $5203.
+    fn on_scanline(&mut self, scanline: u16, _rendering: bool) {
+        if scanline >= 261 {
+            // Pre-render line (261 on NTSC, 311 on PAL): start of frame.
+            self.in_frame = true;
+            self.irq_counter = 0;
+        } else if scanline < 240 {
+            self.irq_counter = self.irq_counter.wrapping_add(1);
+            if self.irq_target != 0 && self.irq_counter == self.irq_target {
+                self.irq_pending = true;
+            }
+        }
+    }
+
+    /// Battery-backed work RAM ($6000-$7FFF).
+    fn save_ram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    /// Restore battery-backed work RAM.
+    fn load_save_ram(&mut self, data: &[u8]) {
+        let n = data.len().min(self.prg_ram.len());
+        self.prg_ram[..n].copy_from_slice(&data[..n]);
+    }
 }
 
 #[cfg(test)]
@@ -804,5 +831,28 @@ mod tests {
 
         mapper.write(0x5107, 0x03);
         assert_eq!(mapper.fill_attr, 0x03);
+    }
+
+    #[test]
+    fn test_on_scanline_counts_and_fires_irq() {
+        let mut mapper = create_test_mapper();
+        mapper.irq_target = 3;
+
+        // Pre-render line starts the frame and resets the counter.
+        mapper.on_scanline(261, true);
+        assert_eq!(mapper.irq_counter, 0);
+        assert!(!mapper.irq_pending());
+
+        mapper.on_scanline(0, true);
+        mapper.on_scanline(1, true);
+        assert!(!mapper.irq_pending());
+
+        mapper.on_scanline(2, true); // counter reaches 3
+        assert!(mapper.irq_pending());
+
+        // VBlank lines do not advance the counter.
+        mapper.clear_irq();
+        mapper.on_scanline(245, true);
+        assert!(!mapper.irq_pending());
     }
 }

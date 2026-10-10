@@ -9,6 +9,40 @@
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
 use crate::ppu::sprite::{SpriteRenderer, SecondaryOam};
 use crate::ppu::sprite::SpriteEvaluator;
+use crate::mapper::Mapper;
+
+/// Supplies pattern-table bytes to the renderers.
+///
+/// Reading through the cartridge on every fetch keeps mid-frame CHR bank
+/// switches correct: MMC3 games flip banks from their IRQ handler and MMC4
+/// switches on PPU fetches, neither of which a once-per-frame snapshot can
+/// represent. Tests that build the pattern tables directly in VRAM use
+/// [`VramChr`].
+pub trait ChrSource {
+    /// Read a byte from the pattern tables ($0000-$1FFF).
+    fn read_pattern(&mut self, ppu: &Ppu, addr: u16) -> u8;
+}
+
+/// Reads pattern data straight out of the PPU's VRAM.
+///
+/// This is the pre-refresh model used by unit tests and by carts where the
+/// pattern data already lives in `Ppu::vram`.
+pub struct VramChr;
+
+impl ChrSource for VramChr {
+    fn read_pattern(&mut self, ppu: &Ppu, addr: u16) -> u8 {
+        ppu.vram[(addr & 0x1FFF) as usize]
+    }
+}
+
+/// Reads pattern data through the cartridge mapper.
+pub struct MapperChr<'a>(pub &'a mut dyn Mapper);
+
+impl ChrSource for MapperChr<'_> {
+    fn read_pattern(&mut self, _ppu: &Ppu, addr: u16) -> u8 {
+        self.0.read(addr & 0x1FFF)
+    }
+}
 
 /// NES color palette (64 colors, 6-bit values converted to ARGB)
 /// These are the standard NES NTSC palette colors.
@@ -22,6 +56,46 @@ pub const NES_PALETTE: [u32; 64] = [
     0xFFFFFEFF, 0xFFC0DFFF, 0xFFD3D2FF, 0xFFE8C8FF, 0xFFFBC2FF, 0xFFFEC4EA, 0xFFFECCC5, 0xFFF7D8A5,
     0xFFE4E594, 0xFFCFEF96, 0xFFBDF4AB, 0xFFB3F3CC, 0xFFB5EBF2, 0xFFB8B8B8, 0xFF000000, 0xFF000000,
 ];
+
+/// How much the two non-emphasised channels are darkened when a colour
+/// emphasis bit is set.
+const EMPHASIS_ATTENUATION: f32 = 0.75;
+
+/// Convert a 6-bit NES colour index into an ARGB pixel.
+///
+/// Applies the PPUMASK grayscale bit, which clamps the colour index to the
+/// `$x0` column of the palette, and the three colour-emphasis bits, which
+/// darken the two channels that are not emphasised.
+///
+/// # Arguments
+/// * `color_index` - Palette RAM value (only the low 6 bits are used)
+/// * `mask` - PPUMASK register
+pub fn nes_color(color_index: u8, mask: PpuMask) -> u32 {
+    let mut index = color_index & 0x3F;
+    if mask.contains(PpuMask::GRAYSCALE) {
+        index &= 0x30;
+    }
+
+    let argb = NES_PALETTE[index as usize];
+    let mut r = ((argb >> 16) & 0xFF) as f32;
+    let mut g = ((argb >> 8) & 0xFF) as f32;
+    let mut b = (argb & 0xFF) as f32;
+
+    if mask.contains(PpuMask::EMPHASIZE_RED) {
+        g *= EMPHASIS_ATTENUATION;
+        b *= EMPHASIS_ATTENUATION;
+    }
+    if mask.contains(PpuMask::EMPHASIZE_GREEN) {
+        r *= EMPHASIS_ATTENUATION;
+        b *= EMPHASIS_ATTENUATION;
+    }
+    if mask.contains(PpuMask::EMPHASIZE_BLUE) {
+        r *= EMPHASIS_ATTENUATION;
+        g *= EMPHASIS_ATTENUATION;
+    }
+
+    0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
 
 /// Background rendering state
 ///
@@ -214,8 +288,11 @@ pub enum Mirroring {
     /// Vertical mirroring: nametables 0 and 2 are the same, 1 and 3 are the same
     /// Used for horizontal scrolling games
     Vertical,
-    /// Single screen mirroring: all nametables point to the same physical nametable
+    /// Single screen mirroring: all nametables point to the lower physical
+    /// nametable ($2000)
     SingleScreen,
+    /// Single screen mirroring onto the upper physical nametable ($2400)
+    SingleScreenUpper,
     /// Four screen mirroring: all 4 nametables are unique (requires extra VRAM on cartridge)
     FourScreen,
 }
@@ -260,6 +337,7 @@ impl Mirroring {
                 if nametable == 0 || nametable == 2 { 0 } else { 1 }
             }
             Mirroring::SingleScreen => 0,
+            Mirroring::SingleScreenUpper => 1,
             Mirroring::FourScreen => nametable,
         };
 
@@ -295,6 +373,10 @@ impl Mirroring {
             Mirroring::SingleScreen => {
                 // All nametables point to $2000
                 0x2000
+            }
+            Mirroring::SingleScreenUpper => {
+                // All nametables point to $2400
+                0x2400
             }
             Mirroring::FourScreen => {
                 // Each nametable is unique
@@ -512,6 +594,7 @@ impl BackgroundRenderer {
     pub fn fetch_tile_pattern(
         &self,
         ppu: &Ppu,
+        chr: &mut dyn ChrSource,
         pattern_table_addr: u16,
         tile_index: u8,
         fine_y: u8,
@@ -519,8 +602,8 @@ impl BackgroundRenderer {
         let tile_addr = pattern_table_addr + (tile_index as u16 * 16);
         let row_offset = (fine_y & 0x07) as u16;
 
-        let low_byte = ppu.vram[(tile_addr + row_offset) as usize];
-        let high_byte = ppu.vram[(tile_addr + row_offset + 8) as usize];
+        let low_byte = chr.read_pattern(ppu, tile_addr + row_offset);
+        let high_byte = chr.read_pattern(ppu, tile_addr + row_offset + 8);
 
         (low_byte, high_byte)
     }
@@ -541,13 +624,13 @@ impl BackgroundRenderer {
         let color_addr = palette_addr + (color_index & 0x03);
 
         // $3F00 is the universal background color
-        if color_index == 0 {
-            let color_value = ppu.palette[0] & 0x3F;
-            NES_PALETTE[color_value as usize]
+        let color_value = if color_index == 0 {
+            ppu.palette[0]
         } else {
-            let color_value = ppu.palette[color_addr as usize] & 0x3F;
-            NES_PALETTE[color_value as usize]
-        }
+            ppu.palette[color_addr as usize]
+        };
+
+        nes_color(color_value, ppu.mask)
     }
 
     /// Render a single scanline of background
@@ -564,11 +647,17 @@ impl BackgroundRenderer {
     /// * `ppu` - PPU instance
     /// * `scanline` - Screen row to write into the frame buffer (0-239)
     /// * `mask` - PPUMASK register value
-    pub fn render_scanline(&mut self, ppu: &Ppu, scanline: u16, mask: PpuMask) {
+    pub fn render_scanline(
+        &mut self,
+        ppu: &Ppu,
+        chr: &mut dyn ChrSource,
+        scanline: u16,
+        mask: PpuMask,
+    ) {
         let tile_y = ((ppu.render_v >> 5) & 0x1F) as u8;
         let row_fine_y = ((ppu.render_v >> 12) & 0x07) as u8;
         let nametable = ((ppu.render_v >> 10) & 0x03) as u8;
-        self.render_row(ppu, scanline, nametable, tile_y, row_fine_y, mask);
+        self.render_row(ppu, chr, scanline, nametable, tile_y, row_fine_y, mask);
     }
 
     /// Render the entire visible frame from a single VRAM address.
@@ -580,7 +669,7 @@ impl BackgroundRenderer {
     /// # Arguments
     /// * `ppu` - PPU instance
     /// * `mask` - PPUMASK register value
-    pub fn render_frame(&mut self, ppu: &Ppu, mask: PpuMask) {
+    pub fn render_frame(&mut self, ppu: &Ppu, chr: &mut dyn ChrSource, mask: PpuMask) {
         // Clear background pixel tracking
         self.bg_pixels.fill(0);
 
@@ -592,7 +681,7 @@ impl BackgroundRenderer {
             let effective_y = base_y + scanline;
             let tile_y = (effective_y / 8) as u8;
             let row_fine_y = (effective_y % 8) as u8;
-            self.render_row(ppu, scanline, nametable, tile_y, row_fine_y, mask);
+            self.render_row(ppu, chr, scanline, nametable, tile_y, row_fine_y, mask);
         }
     }
 
@@ -608,6 +697,7 @@ impl BackgroundRenderer {
     fn render_row(
         &mut self,
         ppu: &Ppu,
+        chr: &mut dyn ChrSource,
         scanline: u16,
         nametable: u8,
         tile_y: u8,
@@ -664,7 +754,7 @@ impl BackgroundRenderer {
 
             // Fetch pattern data for this tile
             let (pattern_low, pattern_high) =
-                self.fetch_tile_pattern(ppu, pattern_table_addr, tile_index, row_fine_y);
+                self.fetch_tile_pattern(ppu, chr, pattern_table_addr, tile_index, row_fine_y);
 
             // Render 8 pixels of this tile
             for px in 0..8 {
@@ -728,11 +818,13 @@ impl BackgroundRenderer {
     pub fn render_sprites_for_scanline(
         &mut self,
         ppu: &Ppu,
+        chr: &mut dyn ChrSource,
         scanline: u16,
         mask: PpuMask,
     ) {
         self.sprite_renderer.render_scanline(
             ppu,
+            chr,
             &mut self.frame_buffer,
             &self.bg_pixels,
             &self.secondary_oam,
@@ -806,6 +898,7 @@ impl ScanlineProcessor {
     pub fn process_scanline(
         ppu: &mut Ppu,
         renderer: &mut BackgroundRenderer,
+        chr: &mut dyn ChrSource,
         scanline: u16,
         sprite_evaluator: &mut SpriteEvaluator,
     ) -> bool {
@@ -837,10 +930,10 @@ impl ScanlineProcessor {
                     // Render one pixel per cycle
                     // For efficiency, we render the whole scanline at cycle 256
                     if ppu.cycle == 256 {
-                        renderer.render_scanline(ppu, scanline, ppu.mask);
-                        
+                        renderer.render_scanline(ppu, chr, scanline, ppu.mask);
+
                         // Render sprites for this scanline
-                        renderer.render_sprites_for_scanline(ppu, scanline, ppu.mask);
+                        renderer.render_sprites_for_scanline(ppu, chr, scanline, ppu.mask);
                         
                         // Check for sprite 0 hit and update status
                         if renderer.check_sprite_0_hit() {
@@ -958,6 +1051,81 @@ impl ScanlineProcessor {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_nes_color_without_effects_matches_palette() {
+        assert_eq!(nes_color(0x21, PpuMask::empty()), NES_PALETTE[0x21]);
+        assert_eq!(nes_color(0x21, PpuMask::SHOW_BG), NES_PALETTE[0x21]);
+    }
+
+    /// The renderer must fetch pattern data through the `ChrSource` so that
+    /// mid-frame CHR bank switches take effect.
+    #[test]
+    fn test_render_scanline_reads_patterns_through_chr_source() {
+        struct CountingChr {
+            calls: Vec<u16>,
+        }
+        impl ChrSource for CountingChr {
+            fn read_pattern(&mut self, _ppu: &Ppu, addr: u16) -> u8 {
+                self.calls.push(addr);
+                0
+            }
+        }
+
+        let mut ppu = Ppu::new();
+        let mut renderer = BackgroundRenderer::new();
+        let mut chr = CountingChr { calls: Vec::new() };
+
+        // A nametable full of tile 0, background rendering enabled.
+        ppu.ctrl = PpuCtrl::empty();
+        let mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT;
+        renderer.render_scanline(&ppu, &mut chr, 0, mask);
+
+        assert!(!chr.calls.is_empty(), "no pattern fetches went through ChrSource");
+        assert!(
+            chr.calls.iter().all(|addr| *addr < 0x2000),
+            "pattern fetches must stay inside the pattern tables"
+        );
+    }
+
+    #[test]
+    fn test_nes_color_grayscale_masks_to_grey_column() {
+        // Grayscale forces the low four bits of the index to zero.
+        assert_eq!(
+            nes_color(0x2A, PpuMask::GRAYSCALE),
+            NES_PALETTE[0x20]
+        );
+        assert_eq!(
+            nes_color(0x15, PpuMask::GRAYSCALE),
+            NES_PALETTE[0x10]
+        );
+    }
+
+    #[test]
+    fn test_nes_color_emphasis_darkens_the_other_channels() {
+        let base = NES_PALETTE[0x30]; // white
+        let emphasized = nes_color(0x30, PpuMask::EMPHASIZE_RED);
+
+        let base_g = (base >> 8) & 0xFF;
+        let base_b = base & 0xFF;
+        let em_g = (emphasized >> 8) & 0xFF;
+        let em_b = emphasized & 0xFF;
+
+        // Red stays at full intensity, green and blue drop to 75%.
+        assert_eq!((emphasized >> 16) & 0xFF, (base >> 16) & 0xFF);
+        assert_eq!(em_g, (base_g as f32 * 0.75) as u32);
+        assert_eq!(em_b, (base_b as f32 * 0.75) as u32);
+    }
+
+    #[test]
+    fn test_nes_color_all_emphasis_bits_compound() {
+        // All three bits set: every channel is attenuated twice.
+        let white = NES_PALETTE[0x30];
+        let mask = PpuMask::EMPHASIZE_RED | PpuMask::EMPHASIZE_GREEN | PpuMask::EMPHASIZE_BLUE;
+        let color = nes_color(0x30, mask);
+
+        let expected = ((white >> 16) & 0xFF) as f32 * 0.75 * 0.75;
+        assert_eq!((color >> 16) & 0xFF, expected as u32);
+    }
     #[test]
     fn test_bg_render_state_new() {
         let state = BgRenderState::new();
@@ -1133,7 +1301,7 @@ mod tests {
         ppu.vram[0x0000] = 0xFF; // Low plane, row 0: all pixels have bit 0 set
         ppu.vram[0x0008] = 0x00; // High plane, row 0: no pixels have bit 1 set
 
-        let (low, high) = renderer.fetch_tile_pattern(&ppu, 0x0000, 0, 0);
+        let (low, high) = renderer.fetch_tile_pattern(&ppu, &mut VramChr, 0x0000, 0, 0);
         assert_eq!(low, 0xFF);
         assert_eq!(high, 0x00);
     }

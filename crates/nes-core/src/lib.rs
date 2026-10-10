@@ -85,4 +85,38 @@ impl Region {
             Region::Pal => 50.0,
         }
     }
+
+    /// Scanline number of the pre-render line, i.e. the last scanline of a
+    /// frame. PAL adds 50 extra vblank scanlines.
+    pub fn last_scanline(&self) -> u16 {
+        match self {
+            Region::Ntsc => 261,
+            Region::Pal => 311,
+        }
+    }
+
+    /// CPU cycles in one frame (341 PPU dots per scanline, 3 dots per CPU
+    /// cycle).
+    pub fn cpu_cycles_per_frame(&self) -> u32 {
+        let scanlines = self.last_scanline() as u32 + 1;
+        scanlines * 341 / 3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_region_frame_timing() {
+        // NTSC: 262 scanlines, PAL: 312. The PPU runs three dots per CPU cycle.
+        assert_eq!(Region::Ntsc.last_scanline(), 261);
+        assert_eq!(Region::Pal.last_scanline(), 311);
+
+        assert_eq!(Region::Ntsc.cpu_cycles_per_frame(), 29780);
+        assert_eq!(Region::Pal.cpu_cycles_per_frame(), 35464);
+
+        assert!(Region::Ntsc.cpu_cycles_per_frame() < Region::Pal.cpu_cycles_per_frame());
+        assert_eq!(Region::Pal.fps(), 50.0);
+    }
 }

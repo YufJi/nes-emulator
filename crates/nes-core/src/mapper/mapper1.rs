@@ -256,6 +256,27 @@ impl Mapper for Mapper1 {
     fn clear_irq(&mut self) {
         self.irq_pending = false;
     }
+
+    /// Battery-backed work RAM ($6000-$7FFF).
+    fn save_ram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    /// Restore battery-backed work RAM.
+    fn load_save_ram(&mut self, data: &[u8]) {
+        let n = data.len().min(self.prg_ram.len());
+        self.prg_ram[..n].copy_from_slice(&data[..n]);
+    }
+
+    /// MMC1 mirroring register: 0/1 single screen, 2 vertical, 3 horizontal.
+    fn mirroring(&self) -> Option<crate::ppu::rendering::Mirroring> {
+        Some(match self.mirroring & 0x03 {
+            0 => crate::ppu::rendering::Mirroring::SingleScreen,
+            1 => crate::ppu::rendering::Mirroring::SingleScreenUpper,
+            2 => crate::ppu::rendering::Mirroring::Vertical,
+            _ => crate::ppu::rendering::Mirroring::Horizontal,
+        })
+    }
 }
 
 #[cfg(test)]

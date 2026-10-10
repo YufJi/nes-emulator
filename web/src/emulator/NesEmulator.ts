@@ -36,6 +36,8 @@ const FPS_SAMPLE_MS = 500;
 export interface NesEmulatorOptions {
   onStateChange?: (state: EmulatorState) => void;
   onFpsChange?: (fps: number) => void;
+  /** Called whenever the cartridge's battery RAM changes. */
+  onSaveRamChange?: (data: Uint8Array) => void;
 }
 
 let wasmInit: Promise<unknown> | null = null;
@@ -81,6 +83,8 @@ export class NesEmulator {
   private frameAccumulator = 0;
   private framesSinceSample = 0;
   private lastFpsSample = 0;
+  private framesSinceSaveCheck = 0;
+  private lastSaveRam: Uint8Array | null = null;
 
   private currentState: EmulatorState = 'idle';
   private disposed = false;
@@ -267,6 +271,40 @@ export class NesEmulator {
     for (let i = 0; i < count; i += 1) {
       this.nes?.frame();
     }
+    this.pollSaveRam(count);
+  }
+
+  /**
+   * Battery RAM can only change while the emulated console runs, so poll it a
+   * few times per second and hand any change to the host.
+   */
+  private pollSaveRam(frames: number): void {
+    const nes = this.nes;
+    const handler = this.options.onSaveRamChange;
+    if (!nes || !handler) return;
+
+    this.framesSinceSaveCheck += frames;
+    if (this.framesSinceSaveCheck < SAVE_RAM_POLL_FRAMES) return;
+    this.framesSinceSaveCheck = 0;
+
+    if (!nes.has_battery()) return;
+
+    const current = nes.get_save_ram();
+    if (this.lastSaveRam && sameBytes(this.lastSaveRam, current)) return;
+    this.lastSaveRam = current;
+    handler(current);
+  }
+
+  /** Snapshot of the cartridge's battery RAM, or null when it has none. */
+  getSaveRam(): Uint8Array | null {
+    if (!this.nes?.has_battery()) return null;
+    return this.nes.get_save_ram();
+  }
+
+  /** Restore a previously saved snapshot into the cartridge. */
+  setSaveRam(data: Uint8Array): void {
+    this.nes?.set_save_ram(data);
+    this.lastSaveRam = null;
   }
 
   /** Push a button state straight through to the emulated controller. */
@@ -336,4 +374,15 @@ export class NesEmulator {
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/** Poll battery RAM roughly twice a second. */
+const SAVE_RAM_POLL_FRAMES = 30;
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

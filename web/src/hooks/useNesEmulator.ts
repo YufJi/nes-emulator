@@ -9,6 +9,7 @@ import {
 import { KEY_BINDINGS, type ButtonName } from '../emulator/constants';
 import { NesEmulator, initWasm, type EmulatorState } from '../emulator/NesEmulator';
 import { readRomFile } from '../emulator/rom';
+import { readSaveRam, writeSaveRam } from '../emulator/saveRam';
 
 export interface UseNesEmulatorResult {
   canvasRef: RefObject<HTMLCanvasElement>;
@@ -43,6 +44,9 @@ export function useNesEmulator(): UseNesEmulatorResult {
   const [fps, setFps] = useState(0);
   const [muted, setMuted] = useState(false);
   const [busy, setBusy] = useState(true);
+  // The save-RAM callback is created once with the emulator, so it reads the
+  // current ROM name through a ref instead of a captured value.
+  const romNameRef = useRef<string | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -51,6 +55,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
     const emulator = new NesEmulator(canvas, {
       onStateChange: setState,
       onFpsChange: setFps,
+      onSaveRamChange: (data) => {
+        const name = romNameRef.current;
+        if (name) writeSaveRam(name, data);
+      },
     });
     emulatorRef.current = emulator;
 
@@ -130,6 +138,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
     try {
       const data = await readRomFile(file);
       await emulator.loadRom(data);
+      // Restore any save the cartridge kept from an earlier session.
+      const previous = readSaveRam(file.name);
+      if (previous) emulator.setSaveRam(previous);
+      romNameRef.current = file.name;
       setRomName(file.name);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

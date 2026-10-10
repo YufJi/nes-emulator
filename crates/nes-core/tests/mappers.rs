@@ -269,8 +269,8 @@ fn test_mapper4_irq_integration() {
     let chr = vec![0u8; 8192];
     let mut mapper = Mapper4::new(prg, chr);
 
-    // Set IRQ latch to 3
-    mapper.write(0xC001, 3);
+    // $C000 sets the IRQ latch on MMC3.
+    mapper.write(0xC000, 3);
 
     // Enable IRQ
     mapper.write(0xE001, 0);
@@ -995,7 +995,7 @@ fn test_mapper_irq_clear_behavior() {
     let mut mapper = Mapper4::new(prg, chr);
 
     // Set up and trigger IRQ
-    mapper.write(0xC001, 1);
+    mapper.write(0xC000, 1);
     mapper.write(0xE001, 0);
     mapper.clock_irq_counter(); // reload
     mapper.clock_irq_counter(); // trigger

@@ -7,10 +7,12 @@ use nes_core::apu::Apu;
 use nes_core::bus::Bus;
 use nes_core::cpu::Cpu;
 use nes_core::mapper::{create_mapper, Mapper};
-use nes_core::ppu::rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor};
+use nes_core::ppu::rendering::{
+    BackgroundRenderer, ChrSource, FrameBuffer, MapperChr, Mirroring, ScanlineProcessor, VramChr,
+};
 use nes_core::ppu::sprite::SpriteEvaluator;
 use nes_core::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
-use nes_core::JsnesError;
+use nes_core::{JsnesError, Region};
 use wasm_bindgen::prelude::*;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
@@ -100,6 +102,8 @@ struct RomHeader {
     chr_rom_size: usize,
     mapper_number: u16,
     mirroring: Mirroring,
+    region: Region,
+    has_battery: bool,
     has_trainer: bool,
 }
 
@@ -133,15 +137,28 @@ impl RomHeader {
         };
 
         let has_trainer = flags6 & 0x04 != 0;
+        let has_battery = flags6 & 0x02 != 0;
 
         // Mapper number from flags6 (high nibble) and flags7 (high nibble)
         let mapper_number = ((flags7 & 0xF0) as u16) | ((flags6 & 0xF0) as u16 >> 4);
+
+        // TV system: byte 9 bit 0 is the classic PAL flag, byte 10 bits 0-1
+        // encode it more reliably (0b10 = PAL).
+        let flags9 = data[9];
+        let flags10 = data[10];
+        let region = if flags9 & 0x01 != 0 || (flags10 & 0x03) == 0x02 {
+            Region::Pal
+        } else {
+            Region::Ntsc
+        };
 
         let header = Self {
             prg_rom_size,
             chr_rom_size,
             mapper_number,
             mirroring,
+            region,
+            has_battery,
             has_trainer,
         };
 
@@ -181,12 +198,20 @@ struct NesBus {
     audio_sample_rate: f64,
     /// CPU cycles accumulated for audio generation
     cpu_cycles: u64,
+    /// CPU cycles the next OAM/DMC DMA transfer still has to steal
+    dma_stall_cycles: u16,
     frame_buffer: FrameBuffer,
     bg_renderer: BackgroundRenderer,
     /// Sprite evaluator for the current scanline
     sprite_evaluator: SpriteEvaluator,
     /// Nametable mirroring mode from the cartridge header
     mirroring: Mirroring,
+    /// TV system (NTSC or PAL) from the cartridge header
+    region: Region,
+    /// Last value driven onto the data bus, returned by unmapped reads
+    open_bus: u8,
+    /// Whether the cartridge declares battery-backed work RAM
+    has_battery: bool,
     frame_ready: bool,
     /// PPU read buffer for $2007
     ppu_read_buffer: u8,
@@ -213,10 +238,14 @@ impl NesBus {
             audio_accumulator: 0.0,
             audio_sample_rate: AUDIO_SAMPLE_RATE,
             cpu_cycles: 0,
+            dma_stall_cycles: 0,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
             sprite_evaluator: SpriteEvaluator::new(),
             mirroring: Mirroring::Horizontal,
+            region: Region::Ntsc,
+            open_bus: 0,
+            has_battery: false,
             frame_ready: false,
             ppu_read_buffer: 0,
         }
@@ -253,8 +282,30 @@ impl NesBus {
         // (which reads nametables) and the bus (which mirrors PPUDATA writes).
         self.mirroring = header.mirroring;
         self.bg_renderer.set_mirroring(header.mirroring);
+        self.region = header.region;
+        self.has_battery = header.has_battery;
 
         Ok(())
+    }
+
+    /// Whether the loaded cartridge has battery-backed work RAM.
+    fn has_battery(&self) -> bool {
+        self.has_battery
+    }
+
+    /// Snapshot the cartridge's battery RAM.
+    fn save_ram(&self) -> Option<Vec<u8>> {
+        if !self.has_battery {
+            return None;
+        }
+        self.mapper.as_ref().and_then(|m| m.save_ram()).map(|r| r.to_vec())
+    }
+
+    /// Restore a snapshot produced by [`NesBus::save_ram`].
+    fn load_save_ram(&mut self, data: &[u8]) {
+        if let Some(ref mut mapper) = self.mapper {
+            mapper.load_save_ram(data);
+        }
     }
 
     /// Reset the system
@@ -274,7 +325,8 @@ impl NesBus {
         // Total PPU cycles per frame = 262 * 341 = 89,342
         // Total CPU cycles per frame = 89,342 / 3 ≈ 29,780
 
-        let target_cpu_cycles = 29780; // Approximate cycles per frame for NTSC
+        // One frame of CPU cycles for the cartridge's TV system.
+        let target_cpu_cycles = self.region.cpu_cycles_per_frame() as u64;
         let start_cycles = cpu.cycles();
 
         while cpu.cycles() - start_cycles < target_cpu_cycles && !self.frame_ready {
@@ -282,8 +334,21 @@ impl NesBus {
             let opcode = self.read(cpu.pc());
             let cycles = cpu.execute_instruction(self, opcode);
 
+            // Mappers whose IRQ counter runs at the CPU clock rate.
+            if let Some(ref mut mapper) = self.mapper {
+                mapper.on_cpu_cycles(cycles);
+            }
+
             // Update PPU and APU based on cycles consumed
             self.on_cpu_cycle(cycles);
+
+            // The CPU is halted while OAM or DMC DMA runs; the rest of the
+            // machine keeps ticking.
+            if self.dma_stall_cycles > 0 {
+                let stall = self.dma_stall_cycles;
+                self.dma_stall_cycles = 0;
+                self.advance_cycles(stall);
+            }
         }
 
         self.frame_ready
@@ -327,7 +392,8 @@ impl NesBus {
                     PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
                 );
                 self.ppu.w = false;
-                status
+                // Bits 0-4 are not driven and read back as open bus.
+                (status & 0xE0) | (self.open_bus & 0x1F)
             }
             0x04 => {
                 // OAMDATA - read from OAM
@@ -342,6 +408,12 @@ impl NesBus {
                 if vram_addr >= 0x3F00 {
                     // Palette reads don't have the delayed read
                     self.ppu_read_buffer = self.ppu.palette[Self::palette_index(vram_addr)];
+                } else if vram_addr < 0x2000 {
+                    // Pattern tables live on the cartridge (CHR ROM or RAM).
+                    self.ppu_read_buffer = match self.mapper {
+                        Some(ref mut mapper) => mapper.read(vram_addr),
+                        None => 0,
+                    };
                 } else {
                     self.ppu_read_buffer =
                         self.ppu.vram[self.mirroring.mirror_vram_addr(vram_addr) as usize];
@@ -358,8 +430,8 @@ impl NesBus {
                 value
             }
             _ => {
-                // Open bus for other registers
-                0
+                // Write-only or unused registers read back as open bus.
+                self.open_bus
             }
         }
     }
@@ -428,6 +500,12 @@ impl NesBus {
                     if palette_addr % 4 == 0 {
                         self.ppu.palette[palette_addr + 0x10] = value;
                     }
+                } else if vram_addr < 0x2000 {
+                    // CHR-RAM uploads must land on the cartridge so the
+                    // renderer sees them.
+                    if let Some(ref mut mapper) = self.mapper {
+                        mapper.write(vram_addr, value);
+                    }
                 } else {
                     self.ppu.vram[self.mirroring.mirror_vram_addr(vram_addr) as usize] = value;
                 }
@@ -459,7 +537,10 @@ impl NesBus {
                 // Controller 2 data
                 self.controllers[1].read()
             }
-            _ => 0,
+            _ => {
+                // Write-only or expansion-area registers read back as open bus.
+                self.open_bus
+            }
         }
     }
 
@@ -467,15 +548,15 @@ impl NesBus {
     fn write_apu_register(&mut self, addr: u16, value: u8) {
         match addr {
             0x4014 => {
-                // OAMDMA - sprite DMA transfer
-                // This transfers 256 bytes from CPU memory to OAM
+                // OAMDMA - sprite DMA transfer of 256 bytes into OAM.
                 let source_addr = (value as u16) << 8;
                 for i in 0..256 {
                     let byte = self.read(source_addr + i);
                     self.ppu.oam[self.ppu.oam_addr.wrapping_add(i as u8) as usize] = byte;
                 }
-                // DMA takes 513 or 514 CPU cycles (odd cycle alignment)
-                // For simplicity, we'll just note this
+                // The transfer halts the CPU for 513 cycles, or 514 when it
+                // starts on an even cycle because of the extra alignment read.
+                self.dma_stall_cycles = 513 + (self.cpu_cycles & 1) as u16;
             }
             0x4016 => {
                 // Controller strobe
@@ -504,6 +585,8 @@ impl NesBus {
         if let Some(addr) = self.apu.dmc_dma_request() {
             let byte = self.read(addr);
             self.apu.supply_dmc_byte(byte);
+            // A DMC sample fetch steals four cycles from the CPU.
+            self.dma_stall_cycles = self.dma_stall_cycles.saturating_add(4);
         }
 
         // Resample the CPU-rate mixer output down to the host sample rate.
@@ -537,21 +620,33 @@ impl NesBus {
     fn ppu_step(&mut self) {
         let scanline = self.ppu.scanline;
         let cycle = self.ppu.cycle;
+        let pre_render = self.region.last_scanline();
 
-        match scanline {
+        if scanline < 240 {
             // Visible scanlines
-            0..=239 => {
-                if cycle == 256 {
+            if cycle == 256 {
                     // Reload the horizontal scroll for this line from t.
                     self.ppu.render_v =
                         (self.ppu.render_v & !0x041F) | (self.ppu.t & 0x041F);
 
-                    // Background + sprites for this scanline.
+                    // Background + sprites for this scanline. Pattern data is
+                    // read through the cartridge so mid-frame CHR bank
+                    // switches take effect immediately.
                     let mask = self.ppu.mask;
-                    self.bg_renderer
-                        .render_scanline(&self.ppu, scanline, mask);
-                    self.bg_renderer
-                        .render_sprites_for_scanline(&self.ppu, scanline, mask);
+                    match self.mapper.as_deref_mut() {
+                        Some(mapper) => {
+                            let mut chr = MapperChr(mapper);
+                            self.bg_renderer.render_scanline(&self.ppu, &mut chr, scanline, mask);
+                            self.bg_renderer
+                                .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
+                        }
+                        None => {
+                            let mut chr = VramChr;
+                            self.bg_renderer.render_scanline(&self.ppu, &mut chr, scanline, mask);
+                            self.bg_renderer
+                                .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
+                        }
+                    }
                     if self.bg_renderer.check_sprite_0_hit() {
                         self.ppu.status.insert(PpuStatus::SPRITE_0_HIT);
                     }
@@ -574,40 +669,36 @@ impl NesBus {
                         self.bg_renderer.secondary_oam =
                             self.sprite_evaluator.secondary_oam.clone();
                     }
-                }
             }
+        } else if scanline == 241 {
             // Start of VBlank
-            241 => {
-                if cycle == 1 {
-                    self.ppu.status.insert(PpuStatus::VBLANK);
-                    if self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE) {
-                        self.nmi_pending = true;
-                    }
+            if cycle == 1 {
+                self.ppu.status.insert(PpuStatus::VBLANK);
+                if self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE) {
+                    self.nmi_pending = true;
                 }
             }
+        } else if scanline == pre_render {
             // Pre-render scanline
-            261 => {
-                if cycle == 1 {
-                    self.ppu.status.remove(PpuStatus::VBLANK);
-                    self.ppu.status.remove(PpuStatus::SPRITE_OVERFLOW);
-                    self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
-                    // The hit latch must also be forgotten, otherwise the
-                    // renderer would keep reporting last frame's hit.
-                    self.bg_renderer.sprite_renderer.clear_sprite_0_hit();
-                }
-                if cycle == 304 {
-                    // Vertical + horizontal scroll both reload from t.
-                    self.ppu.render_v = self.ppu.t;
-                }
+            if cycle == 1 {
+                self.ppu.status.remove(PpuStatus::VBLANK);
+                self.ppu.status.remove(PpuStatus::SPRITE_OVERFLOW);
+                self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
+                // The hit latch must also be forgotten, otherwise the
+                // renderer would keep reporting last frame's hit.
+                self.bg_renderer.sprite_renderer.clear_sprite_0_hit();
             }
-            _ => {}
+            if cycle == 304 {
+                // Vertical + horizontal scroll both reload from t.
+                self.ppu.render_v = self.ppu.t;
+            }
         }
     }
 }
 
 impl Bus for NesBus {
     fn read(&mut self, addr: u16) -> u8 {
-        match addr {
+        let value = match addr {
             // CPU internal RAM ($0000-$07FF, mirrored to $1FFF)
             0x0000..=0x1FFF => self.cpu_ram[(addr & 0x07FF) as usize],
             // PPU registers ($2000-$3FFF, mirrored every 8 bytes)
@@ -619,13 +710,20 @@ impl Bus for NesBus {
                 if let Some(ref mut mapper) = self.mapper {
                     mapper.read(addr)
                 } else {
-                    0 // Open bus
+                    self.open_bus
                 }
             }
-        }
+        };
+
+        // Every read drives the data bus; the last value lingers for unmapped
+        // addresses.
+        self.open_bus = value;
+        value
     }
 
     fn write(&mut self, addr: u16, value: u8) {
+        self.open_bus = value;
+
         match addr {
             // CPU internal RAM
             0x0000..=0x1FFF => {
@@ -649,43 +747,8 @@ impl Bus for NesBus {
     }
 
     fn on_cpu_cycle(&mut self, cycles: u8) {
-        // Update PPU (3 PPU cycles per CPU cycle)
-        let ppu_cycles = cycles as u16 * 3;
-
-        for _ in 0..ppu_cycles {
-            // Advance PPU cycle
-            self.ppu.cycle += 1;
-
-            if self.ppu.cycle > 340 {
-                self.ppu.cycle = 0;
-                self.ppu.scanline += 1;
-
-                if self.ppu.scanline > 261 {
-                    self.ppu.scanline = 0;
-                    self.ppu.frame += 1;
-                    self.frame_ready = true;
-
-                    if let Some(ref mut mapper) = self.mapper {
-                        for addr in 0..0x2000u16 {
-                            self.ppu.vram[addr as usize] = mapper.read(addr);
-                        }
-                    }
-
-                    self.frame_buffer.pixels.copy_from_slice(self.bg_renderer.get_frame());
-                }
-            }
-            self.ppu_step();
-        }
-
-        // The APU runs one tick per CPU cycle.
-        for _ in 0..cycles {
-            self.tick_apu_cycle();
-        }
-
-        // Update CPU cycle counter
-        self.cpu_cycles += cycles as u64;
+        self.advance_cycles(cycles as u16);
     }
-
 
     fn nmi_pending(&self) -> bool {
         self.nmi_pending
@@ -700,6 +763,63 @@ impl Bus for NesBus {
             || self.apu.frame_counter_irq
             || self.apu.dmc.irq_active()
             || self.mapper.as_ref().map_or(false, |m| m.irq_pending())
+    }
+}
+
+impl NesBus {
+    /// Advance the PPU and APU by `cycles` CPU cycles without executing any
+    /// CPU instructions. Used for normal instruction timing and for the cycles
+    /// stolen by OAM/DMC DMA.
+    fn advance_cycles(&mut self, cycles: u16) {
+        // Update PPU (3 PPU cycles per CPU cycle)
+        let ppu_cycles = cycles * 3;
+
+        for _ in 0..ppu_cycles {
+            // Advance PPU cycle
+            self.ppu.cycle += 1;
+
+            if self.ppu.cycle > 340 {
+                self.ppu.cycle = 0;
+                self.ppu.scanline += 1;
+
+                if self.ppu.scanline > self.region.last_scanline() {
+                    self.ppu.scanline = 0;
+                    self.ppu.frame += 1;
+                    self.frame_ready = true;
+
+                    self.frame_buffer.pixels.copy_from_slice(self.bg_renderer.get_frame());
+                }
+
+                // Let mappers with a scanline counter tick here.
+                let scanline = self.ppu.scanline;
+                let rendering = self
+                    .ppu
+                    .mask
+                    .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+                if let Some(ref mut mapper) = self.mapper {
+                    mapper.on_scanline(scanline, rendering);
+
+                    // Mappers such as MMC1 and MMC3 can switch nametable
+                    // mirroring while the game runs; follow whatever they
+                    // report so rendering and PPUDATA stay in sync.
+                    if let Some(mode) = mapper.mirroring() {
+                        if mode != self.mirroring {
+                            self.mirroring = mode;
+                            self.bg_renderer.set_mirroring(mode);
+                        }
+                    }
+                }
+            }
+            self.ppu_step();
+        }
+
+        // The APU runs one tick per CPU cycle.
+        for _ in 0..cycles {
+            self.tick_apu_cycle();
+        }
+
+        // Update CPU cycle counter
+        self.cpu_cycles += cycles as u64;
     }
 }
 
@@ -833,6 +953,26 @@ impl JsNes {
     #[wasm_bindgen]
     pub fn reset(&mut self) {
         self.bus.reset(&mut self.cpu);
+    }
+
+    /// Whether the loaded cartridge keeps battery-backed save RAM.
+    #[wasm_bindgen]
+    pub fn has_battery(&self) -> bool {
+        self.bus.has_battery()
+    }
+
+    /// Snapshot the cartridge's battery RAM so the host can persist it.
+    ///
+    /// Returns an empty vector when the cartridge has no battery RAM.
+    #[wasm_bindgen]
+    pub fn get_save_ram(&self) -> Vec<u8> {
+        self.bus.save_ram().unwrap_or_default()
+    }
+
+    /// Restore a snapshot previously returned by `get_save_ram`.
+    #[wasm_bindgen]
+    pub fn set_save_ram(&mut self, data: &[u8]) {
+        self.bus.load_save_ram(data);
     }
 
     /// Get the current frame number
@@ -1032,5 +1172,237 @@ mod tests {
             toggled, 1,
             "exactly one of the sixteen starting phases should be accepted"
         );
+    }
+
+    #[test]
+    fn test_open_bus_returns_the_last_value_on_the_data_bus() {
+        let mut bus = NesBus::new();
+
+        // Unmapped APU/expansion registers read back whatever was last driven
+        // onto the data bus.
+        bus.write(0x0000, 0x5A);
+        assert_eq!(bus.read(0x401F), 0x5A);
+        assert_eq!(bus.read(0x5000), 0x5A);
+
+        bus.write(0x0000, 0xC3);
+        assert_eq!(bus.read(0x4018), 0xC3);
+    }
+
+    #[test]
+    fn test_ppustatus_returns_open_bus_in_unused_bits() {
+        let mut bus = NesBus::new();
+
+        bus.write(0x0000, 0xFF);
+        let status = bus.read(0x2002);
+        assert_eq!(status & 0x1F, 0x1F, "bits 0-4 should come from open bus");
+    }
+
+    /// Minimal MMC3 cartridge whose IRQ handler bumps a RAM marker.
+    ///
+    /// The code lives in the fixed bank at $E000 and enables rendering so the
+    /// scanline counter runs.
+    fn mmc3_irq_rom() -> Vec<u8> {
+        let mut rom = Vec::new();
+        rom.extend_from_slice(b"NES\x1a");
+        rom.push(2); // 32KB PRG
+        rom.push(1); // 8KB CHR
+        // Mapper number = (flags7 & 0xF0) | (flags6 >> 4).
+        rom.extend_from_slice(&[0x40, 0x00]); // flags6, flags7 -> mapper 4
+        rom.extend_from_slice(&[0u8; 8]); // padding
+
+        let mut prg = vec![0u8; 0x8000];
+        let code: &[u8] = &[
+            0x78, // SEI
+            0xD8, // CLD
+            0xA9, 0x00, 0x8D, 0x00, 0x20, // LDA #$00 / STA $2000 (NMI off)
+            0x8D, 0x01, 0x20, // STA $2001 (rendering off)
+            0xA9, 0x0A, 0x8D, 0x00, 0xC0, // latch = 10
+            0x8D, 0x01, 0xC0, // reload
+            0xA9, 0x01, 0x8D, 0x01, 0xE0, // enable IRQ
+            0xA9, 0x18, 0x8D, 0x01, 0x20, // STA $2001 (BG + sprites on)
+            0xA9, 0x00, 0x85, 0x10, // marker = 0
+            0x8D, 0x00, 0xA0, // STA $A000 -> vertical mirroring
+            0x58, // CLI
+            0x4C, 0x21, 0xE0, // JMP $E021
+        ];
+        // Fixed bank is the last 8KB, mapped at $E000.
+        let base = 0x6000;
+        prg[base..base + code.len()].copy_from_slice(code);
+
+        // IRQ handler at $E030: bump the marker, acknowledge, return.
+        let irq: &[u8] = &[0xE6, 0x10, 0xA9, 0x00, 0x8D, 0x00, 0xE0, 0x40];
+        prg[base + 0x30..base + 0x30 + irq.len()].copy_from_slice(irq);
+
+        // Vectors.
+        prg[0x7FFA] = 0x38; // NMI   -> $E038
+        prg[0x7FFB] = 0xE0;
+        prg[0x7FFC] = 0x00; // RESET -> $E000
+        prg[0x7FFD] = 0xE0;
+        prg[0x7FFE] = 0x30; // IRQ   -> $E030
+        prg[0x7FFF] = 0xE0;
+        prg[base + 0x38] = 0x40; // NMI handler: RTI
+        rom.extend_from_slice(&prg);
+        rom.extend_from_slice(&[0u8; 0x2000]); // CHR
+        rom
+    }
+
+    #[test]
+    fn test_mmc3_scanline_irq_reaches_the_cpu() {
+        let mut nes = JsNes::new();
+        nes.load_rom(&mmc3_irq_rom()).expect("load MMC3 test ROM");
+
+        for _ in 0..5 {
+            nes.frame();
+        }
+
+        let marker = nes.bus.read(0x0010);
+        assert!(
+            marker >= 1,
+            "the MMC3 scanline IRQ handler never ran (marker {marker})"
+        );
+
+        // The cart header asks for horizontal mirroring, but the program
+        // switched MMC3 to vertical; the PPU must follow the mapper.
+        assert_eq!(
+            nes.bus.mirroring,
+            nes_core::ppu::rendering::Mirroring::Vertical,
+            "runtime mirroring should follow the mapper"
+        );
+    }
+
+    /// Minimal battery-backed NROM cartridge: it copies $6000 into $0010 and
+    /// then writes $42 to $6000.
+    fn battery_rom() -> Vec<u8> {
+        let mut rom = Vec::new();
+        rom.extend_from_slice(b"NES\x1a");
+        rom.push(1); // 16KB PRG
+        rom.push(1); // 8KB CHR
+        rom.extend_from_slice(&[0x02, 0x00]); // flags6 bit 1 = battery
+        rom.extend_from_slice(&[0u8; 8]);
+
+        let mut prg = vec![0u8; 0x4000];
+        let code: &[u8] = &[
+            0x78, // SEI
+            0xD8, // CLD
+            0xA9, 0x00, 0x8D, 0x00, 0x20, // STA $2000
+            0x8D, 0x01, 0x20, // STA $2001
+            0xAD, 0x00, 0x60, // LDA $6000
+            0x85, 0x10, // STA $10
+            0xA9, 0x42, 0x8D, 0x00, 0x60, // LDA #$42 / STA $6000
+            0x4C, 0x14, 0x80, // JMP $8014
+        ];
+        prg[..code.len()].copy_from_slice(code);
+        prg[0x00] = 0x78;
+        // Vectors: NMI/IRQ return immediately.
+        prg[0x3FF0] = 0x40;
+        prg[0x3FFA] = 0xF0;
+        prg[0x3FFB] = 0xBF;
+        prg[0x3FFC] = 0x00;
+        prg[0x3FFD] = 0x80;
+        prg[0x3FFE] = 0xF0;
+        prg[0x3FFF] = 0xBF;
+        rom.extend_from_slice(&prg);
+        rom.extend_from_slice(&[0u8; 0x2000]);
+        rom
+    }
+
+    #[test]
+    fn test_battery_ram_round_trips_through_the_host() {
+        let rom = battery_rom();
+
+        // Cold boot: PRG RAM starts empty and the program writes $42.
+        let mut nes = JsNes::new();
+        nes.load_rom(&rom).unwrap();
+        for _ in 0..3 {
+            nes.frame();
+        }
+        assert!(nes.has_battery());
+        assert_eq!(nes.bus.read(0x0010), 0x00, "cold boot sees empty RAM");
+        let saved = nes.get_save_ram();
+        assert_eq!(saved.len(), 0x2000);
+        assert_eq!(saved[0], 0x42);
+
+        // Warm boot: restoring the snapshot lets the program observe it.
+        let mut restored: Vec<u8> = saved.clone();
+        restored[0] = 0x77;
+        let mut nes = JsNes::new();
+        nes.load_rom(&rom).unwrap();
+        nes.set_save_ram(&restored);
+        for _ in 0..3 {
+            nes.frame();
+        }
+        assert_eq!(
+            nes.bus.read(0x0010),
+            0x77,
+            "the restored save RAM should be visible to the program"
+        );
+    }
+
+    #[test]
+    fn test_cartridge_without_battery_reports_no_save_ram() {
+        let mut rom = battery_rom();
+        rom[6] = 0x00; // clear the battery flag
+
+        let mut nes = JsNes::new();
+        nes.load_rom(&rom).unwrap();
+        for _ in 0..3 {
+            nes.frame();
+        }
+
+        assert!(!nes.has_battery());
+        assert!(nes.get_save_ram().is_empty());
+    }
+
+    /// ROM whose reset code lives in the last 8KB PRG bank and writes a marker
+    /// to zero page. Works for any mapper that fixes its last bank at $E000.
+    fn marker_rom(mapper: u8) -> Vec<u8> {
+        let mut rom = Vec::new();
+        rom.extend_from_slice(b"NES\x1a");
+        rom.push(8); // 128KB PRG, so banked mappers have room
+        rom.push(1); // 8KB CHR
+        rom.push(mapper << 4);
+        rom.push(mapper & 0xF0);
+        rom.extend_from_slice(&[0u8; 8]);
+
+        let mut prg = vec![0u8; 16 * 0x2000];
+        let base = 15 * 0x2000; // last 8KB bank -> $E000
+        let code: &[u8] = &[
+            0x78, // SEI
+            0xD8, // CLD
+            0xA9, 0x00, 0x8D, 0x00, 0x20, // STA $2000
+            0x8D, 0x01, 0x20, // STA $2001
+            0xA9, 0x5A, 0x85, 0x10, // LDA #$5A / STA $10
+            0x4C, 0x10, 0xE0, // JMP $E010
+        ];
+        prg[base..base + code.len()].copy_from_slice(code);
+        prg[base + 0x10] = 0x40; // RTI for stray interrupts
+        // Vectors live in the final six bytes of the ROM ($FFFA-$FFFF).
+        let vectors = prg.len() - 6;
+        prg[vectors] = 0x10; // NMI   -> $E010
+        prg[vectors + 1] = 0xE0;
+        prg[vectors + 2] = 0x00; // RESET -> $E000
+        prg[vectors + 3] = 0xE0;
+        prg[vectors + 4] = 0x10; // IRQ   -> $E010
+        prg[vectors + 5] = 0xE0;
+        rom.extend_from_slice(&prg);
+        rom.extend_from_slice(&[0u8; 0x2000]);
+        rom
+    }
+
+    #[test]
+    fn test_new_mappers_boot_a_rom() {
+        for mapper in [10u8, 21, 22, 23, 24, 25, 26, 32, 33, 48, 65, 69] {
+            let mut nes = JsNes::new();
+            nes.load_rom(&marker_rom(mapper))
+                .unwrap_or_else(|e| panic!("mapper {mapper} rejected the ROM: {e:?}"));
+            for _ in 0..2 {
+                nes.frame();
+            }
+            assert_eq!(
+                nes.bus.read(0x0010),
+                0x5A,
+                "mapper {mapper} did not boot into its fixed bank"
+            );
+        }
     }
 }

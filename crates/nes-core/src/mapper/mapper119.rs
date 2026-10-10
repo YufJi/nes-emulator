@@ -428,6 +428,17 @@ impl Mapper for Mapper119 {
     fn clear_irq(&mut self) {
         self.irq_pending = false;
     }
+
+    /// Battery-backed work RAM ($6000-$7FFF).
+    fn save_ram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    /// Restore battery-backed work RAM.
+    fn load_save_ram(&mut self, data: &[u8]) {
+        let n = data.len().min(self.prg_ram.len());
+        self.prg_ram[..n].copy_from_slice(&data[..n]);
+    }
 }
 
 #[cfg(test)]

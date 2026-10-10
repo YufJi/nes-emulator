@@ -91,6 +91,15 @@ impl Mapper for Mapper7 {
     fn clear_irq(&mut self) {
         self.irq_pending = false;
     }
+
+    /// AxROM selects one 1KB nametable at a time.
+    fn mirroring(&self) -> Option<crate::ppu::rendering::Mirroring> {
+        Some(if self.mirroring_select {
+            crate::ppu::rendering::Mirroring::SingleScreenUpper
+        } else {
+            crate::ppu::rendering::Mirroring::SingleScreen
+        })
+    }
 }
 
 #[cfg(test)]
