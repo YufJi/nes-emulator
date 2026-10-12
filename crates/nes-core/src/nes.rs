@@ -16,7 +16,7 @@ use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::prelude::*;
 use crate::state::{StateReader, StateWriter};
-use crate::{Config, NesError, Region};
+use crate::{Config, NesError, Region, DEFAULT_SAMPLE_RATE};
 
 /// Button indices used by [`Nes::set_button`].
 pub const BUTTON_A: u8 = 0;
@@ -28,16 +28,26 @@ pub const BUTTON_DOWN: u8 = 5;
 pub const BUTTON_LEFT: u8 = 6;
 pub const BUTTON_RIGHT: u8 = 7;
 
-/// CPU clock rate of the NTSC 2A03 in Hz.
-const CPU_CLOCK_RATE: f64 = 1_789_773.0;
-
 /// Magic prefix identifying a [`Nes::save_state`] blob.
 const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// Save-state format version, bumped whenever the encoding changes.
 const STATE_VERSION: u8 = 1;
 
-/// Sample rate the APU output is resampled to.
-const AUDIO_SAMPLE_RATE: f64 = 48_000.0;
+/// PPU dots the machine advances per CPU cycle.
+const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
+
+/// How much audio the core buffers before it starts dropping the oldest
+/// samples, in milliseconds.
+///
+/// A host that stops pulling — a muted audio device, a stalled callback —
+/// must not make the buffer grow without bound, and stale samples are worse
+/// than none, so the oldest audio goes first.
+const AUDIO_BUFFER_MS: f64 = 500.0;
+
+/// Floats needed to hold `ms` of interleaved stereo audio at `sample_rate`.
+fn audio_capacity_floats(sample_rate: u32, ms: f64) -> usize {
+    (sample_rate as f64 * ms / 1000.0) as usize * 2
+}
 
 /// Controller state for one player
 #[derive(Debug, Clone, Default)]
@@ -196,12 +206,14 @@ struct NesBus {
     nmi_pending: bool,
     /// IRQ pending flag (from APU or mapper)
     irq_pending: bool,
-    /// Audio sample buffer for output
-    audio_buffer: Vec<f32>,
+    /// Interleaved stereo audio waiting for the host to pull it
+    audio_buffer: VecDeque<f32>,
     /// Fractional accumulator that paces the APU resampler
     audio_accumulator: f64,
-    /// Output sample rate for the host audio API
-    audio_sample_rate: f64,
+    /// Rate the APU output is resampled to, for the host's audio device
+    audio_sample_rate: u32,
+    /// Cap on `audio_buffer`, derived from the sample rate
+    audio_capacity: usize,
     /// CPU cycles accumulated for audio generation
     cpu_cycles: u64,
     /// CPU cycles the next OAM/DMC DMA transfer still has to steal
@@ -263,9 +275,13 @@ impl NesBus {
             controller_strobe: false,
             nmi_pending: false,
             irq_pending: false,
-            audio_buffer: Vec::with_capacity(4096),
+            audio_buffer: VecDeque::with_capacity(audio_capacity_floats(
+                DEFAULT_SAMPLE_RATE,
+                AUDIO_BUFFER_MS,
+            )),
             audio_accumulator: 0.0,
-            audio_sample_rate: AUDIO_SAMPLE_RATE,
+            audio_sample_rate: DEFAULT_SAMPLE_RATE,
+            audio_capacity: audio_capacity_floats(DEFAULT_SAMPLE_RATE, AUDIO_BUFFER_MS),
             cpu_cycles: 0,
             dma_stall_cycles: 0,
             frame_buffer: FrameBuffer::new(),
@@ -281,13 +297,27 @@ impl NesBus {
         }
     }
 
-    /// Apply the host's configuration: TV-system override and audio capture.
+    /// Apply the host's configuration: TV-system override and audio settings.
     ///
     /// These are host settings rather than machine state, so they stay out of
     /// the save-state encoding and survive a [`NesBus::load_rom`].
     fn apply_config(&mut self, config: &Config) {
         self.region_override = config.region_override;
         self.enable_audio = config.enable_audio;
+        self.set_sample_rate(config.sample_rate);
+    }
+
+    /// Retarget the resampler, dropping audio that was queued at the old rate.
+    ///
+    /// Zero keeps the current rate, so an unset config value cannot silence the
+    /// machine.
+    fn set_sample_rate(&mut self, sample_rate: u32) {
+        if sample_rate == 0 || sample_rate == self.audio_sample_rate {
+            return;
+        }
+        self.audio_sample_rate = sample_rate;
+        self.audio_capacity = audio_capacity_floats(sample_rate, AUDIO_BUFFER_MS);
+        self.audio_buffer.clear();
     }
 
     /// Load a ROM into the system
@@ -357,7 +387,6 @@ impl NesBus {
     /// Returns true if a frame was completed
     fn run_frame(&mut self, cpu: &mut Cpu) -> bool {
         self.frame_ready = false;
-        self.audio_buffer.clear();
 
         // NTSC: 262 scanlines per frame, 341 PPU cycles per scanline
         // Each CPU cycle = 3 PPU cycles
@@ -379,8 +408,7 @@ impl NesBus {
     ///
     /// The `frame_ready` flag is cleared up front, exactly as
     /// [`NesBus::run_frame`] does, so a caller can tell whether a frame boundary
-    /// fell inside this slice. Unlike `run_frame` the audio buffer is *not*
-    /// cleared: sub-frame callers accumulate samples and drain them explicitly.
+    /// fell inside this slice.
     ///
     /// Returns the number of CPU cycles actually run, which is less than the
     /// requested amount when a frame ended first.
@@ -430,9 +458,25 @@ impl NesBus {
         &self.frame_buffer
     }
 
-    /// Get the audio samples
-    fn audio_samples(&self) -> &[f32] {
-        &self.audio_buffer
+    /// Interleaved stereo frames waiting to be pulled, not yet filled.
+    fn buffered_audio_frames(&self) -> usize {
+        self.audio_buffer.len() / 2
+    }
+
+    /// Copy as much buffered audio as fits into `out`, interleaved left/right,
+    /// and return how many floats were written (always a whole number of frames).
+    fn fill_audio(&mut self, out: &mut [f32]) -> usize {
+        let mut written = 0;
+        while written < out.len() {
+            match self.audio_buffer.pop_front() {
+                Some(sample) => {
+                    out[written] = sample;
+                    written += 1;
+                }
+                None => break,
+            }
+        }
+        written
     }
 
     /// Drop every buffered audio sample.
@@ -542,23 +586,40 @@ impl NesBus {
             self.dma_stall_cycles = self.dma_stall_cycles.saturating_add(4);
         }
 
-        // Resample the CPU-rate mixer output down to the host sample rate.
+        // Resample the CPU-rate mixer output down to the host's device rate.
         // The APU keeps ticking when audio capture is off because its frame
         // IRQ and the DMC DMA requests above change CPU timing; only the
         // samples handed to the host are skipped.
         if !self.enable_audio {
             return;
         }
-        self.audio_accumulator += self.audio_sample_rate;
-        if self.audio_accumulator >= CPU_CLOCK_RATE {
-            self.audio_accumulator -= CPU_CLOCK_RATE;
+
+        // The machine advances three PPU dots per CPU cycle, so this is the
+        // rate the APU is really ticked at — not the cartridge's nominal CPU
+        // clock, which PAL boards do not match under that ratio.
+        let cpu_clock_rate = self.region.ppu_clock_rate() as f64 / PPU_DOTS_PER_CPU_CYCLE;
+        self.audio_accumulator += self.audio_sample_rate as f64;
+        if self.audio_accumulator >= cpu_clock_rate {
+            self.audio_accumulator -= cpu_clock_rate;
             // The cartridge's own sound hardware (VRC6, MMC5, ...) mixes on
             // top of the 2A03 output.
             let expansion = self.mapper.as_ref().map_or(0.0, |m| m.audio_output());
             let sample = self.apu.output() + expansion;
             // Mono APU output, duplicated for the left and right channels.
-            self.audio_buffer.push(sample);
-            self.audio_buffer.push(sample);
+            self.audio_buffer.push_back(sample);
+            self.audio_buffer.push_back(sample);
+            self.trim_audio_buffer();
+        }
+    }
+
+    /// Drop the oldest samples once the host has fallen behind the buffer cap.
+    ///
+    /// Discarding is `pop_front` per sample, which is O(1), so a stalled host
+    /// does not pay a buffer shift for every new sample it produces.
+    fn trim_audio_buffer(&mut self) {
+        let excess = self.audio_buffer.len().saturating_sub(self.audio_capacity);
+        for _ in 0..excess {
+            self.audio_buffer.pop_front();
         }
     }
 
@@ -827,6 +888,8 @@ impl Nes {
     }
 
     /// Run one frame of emulation.
+    ///
+    /// Audio produced along the way stays queued for [`Nes::fill_audio`].
     pub fn frame(&mut self) {
         self.bus.run_frame(&mut self.cpu);
     }
@@ -835,9 +898,8 @@ impl Nes {
     ///
     /// Returns the cycles actually run. For hosts that pace the console in
     /// sub-frame slices — a cycle-driven audio clock, or a debugger — rather
-    /// than a frame at a time. Check [`Nes::is_frame_ready`] afterwards, and
-    /// note that, unlike [`Nes::frame`], audio samples accumulate across calls
-    /// until [`Nes::clear_audio_samples`] drains them.
+    /// than a frame at a time. Check [`Nes::is_frame_ready`] afterwards, then
+    /// pull the audio with [`Nes::fill_audio`].
     pub fn run_cycles(&mut self, cycles: u32) -> u32 {
         self.bus.run_cycles(&mut self.cpu, cycles)
     }
@@ -845,8 +907,7 @@ impl Nes {
     /// Execute a single CPU instruction and return the cycles it consumed.
     ///
     /// The finest-grained entry point, meant for stepping through code one
-    /// instruction at a time. Like [`Nes::run_cycles`] it leaves the audio
-    /// buffer untouched.
+    /// instruction at a time.
     pub fn step_instruction(&mut self) -> u8 {
         self.bus.step_instruction(&mut self.cpu)
     }
@@ -866,23 +927,52 @@ impl Nes {
         self.bus.set_button(player, button, pressed);
     }
 
-    /// Audio samples produced by the last frame, interleaved left/right.
-    pub fn audio_samples(&self) -> &[f32] {
-        self.bus.audio_samples()
+    /// Rate the core resamples audio to, in Hz.
+    ///
+    /// This is [`Config::sample_rate`], so a host can size its device buffers
+    /// from the same number the core produces.
+    pub fn audio_sample_rate(&self) -> u32 {
+        self.bus.audio_sample_rate
     }
 
-    /// Drop every buffered audio sample.
+    /// Change the audio sample rate, e.g. to follow a device that switched to
+    /// 44_100 Hz. Queued samples are dropped; zero keeps the current rate.
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        self.bus.set_sample_rate(sample_rate);
+        if sample_rate > 0 {
+            self.config.sample_rate = sample_rate;
+        }
+    }
+
+    /// Stereo frames emulated but not yet pulled with [`Nes::fill_audio`].
+    pub fn buffered_audio_frames(&self) -> usize {
+        self.bus.buffered_audio_frames()
+    }
+
+    /// Copy the oldest buffered audio into `out`, interleaved left/right.
     ///
-    /// [`Nes::frame`] clears the buffer at the start of every frame, so hosts
-    /// that run frame by frame never need this; sub-frame hosts do, once they
-    /// have consumed the samples reported by [`Nes::audio_samples`].
+    /// This is the interface an audio device callback wants: the host owns the
+    /// buffer, asks for as much as its device period needs, and gets back how
+    /// many floats were written — zero when the console has not produced
+    /// anything since the last call, less than `out.len()` when it has produced
+    /// only part.
+    ///
+    /// Audio is already resampled to [`Nes::audio_sample_rate`], so hosts never
+    /// resample it themselves: a 44.1 kHz device asks for 44_100 at startup and
+    /// is handed samples at exactly that rate. The count is always a whole
+    /// number of stereo frames, i.e. even.
+    ///
+    /// Samples accumulate as the console runs — [`Nes::frame`] no longer clears
+    /// them — and the oldest are dropped once roughly half a second is queued,
+    /// so a host that stops pulling loses stale sound instead of growing a
+    /// backlog it can never drain.
+    pub fn fill_audio(&mut self, out: &mut [f32]) -> usize {
+        self.bus.fill_audio(out)
+    }
+
+    /// Drop every buffered audio sample, e.g. when loading a cartridge.
     pub fn clear_audio_samples(&mut self) {
         self.bus.clear_audio_samples();
-    }
-
-    /// Pointer to the audio sample buffer.
-    pub fn audio_samples_ptr(&self) -> *const f32 {
-        self.bus.audio_samples().as_ptr()
     }
 
     /// Whether the cartridge keeps battery-backed save RAM.
@@ -1429,7 +1519,7 @@ mod tests {
         let mut loud = Nes::new();
         loud.load_rom(&rom).unwrap();
         loud.frame();
-        assert!(!loud.audio_samples().is_empty());
+        assert!(loud.buffered_audio_frames() > 0);
 
         let mut silent = Nes::with_config(Config {
             enable_audio: false,
@@ -1439,7 +1529,93 @@ mod tests {
         silent.frame();
         // The console still ran a whole frame; only sample capture is off.
         assert_eq!(silent.frame_number(), 1);
-        assert!(silent.audio_samples().is_empty());
+        assert_eq!(silent.buffered_audio_frames(), 0);
+    }
+
+    #[test]
+    fn test_fill_audio_drains_into_the_host_buffer() {
+        let rom = marker_rom(0);
+        let mut nes = Nes::new();
+        nes.load_rom(&rom).unwrap();
+        nes.frame();
+
+        let queued = nes.buffered_audio_frames();
+        assert!(queued > 100, "a frame should carry audio, got {queued} frames");
+
+        // A device period shorter than the queue takes only part of it.
+        let mut period = vec![0.0f32; 100];
+        assert_eq!(nes.fill_audio(&mut period), 100);
+        assert_eq!(nes.buffered_audio_frames(), queued - 50);
+
+        // An oversized request takes the rest, then reports nothing left.
+        let mut rest = vec![0.0f32; 8192];
+        assert_eq!(nes.fill_audio(&mut rest), (queued - 50) * 2);
+        assert_eq!(nes.fill_audio(&mut rest), 0);
+        assert_eq!(nes.buffered_audio_frames(), 0);
+    }
+
+    #[test]
+    fn test_audio_sample_rate_is_taken_from_the_config() {
+        let rom = marker_rom(0);
+        let mut nes = Nes::with_config(Config {
+            sample_rate: 32_000,
+            ..Config::default()
+        });
+        nes.load_rom(&rom).unwrap();
+        assert_eq!(nes.audio_sample_rate(), 32_000);
+
+        nes.frame();
+        // A frame lasts 1/fps, so it carries sample_rate/fps stereo frames.
+        let expected = 32_000.0 / Region::Ntsc.fps();
+        let queued = nes.buffered_audio_frames() as f64;
+        assert!((queued - expected).abs() <= 2.0, "{queued} vs {expected}");
+    }
+
+    #[test]
+    fn test_audio_rate_is_correct_for_every_region() {
+        // The machine advances three PPU dots per CPU cycle, so the rate the
+        // APU is ticked at follows the PPU clock rather than the cartridge's
+        // nominal CPU clock, which PAL boards do not match under that ratio.
+        let rom = marker_rom(0);
+
+        for region in [Region::Ntsc, Region::Pal] {
+            let mut nes = Nes::with_config(Config {
+                region_override: Some(region),
+                ..Config::default()
+            });
+            nes.load_rom(&rom).unwrap();
+            nes.frame();
+
+            let expected = nes.audio_sample_rate() as f64 / region.fps();
+            let queued = nes.buffered_audio_frames() as f64;
+            assert!(
+                (queued - expected).abs() <= 2.0,
+                "{region:?}: {queued} frames per frame, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_queued_audio_is_bounded_and_drops_the_oldest() {
+        let rom = marker_rom(0);
+        let mut nes = Nes::new();
+        nes.load_rom(&rom).unwrap();
+
+        // Ten seconds without ever pulling: the queue must stop growing rather
+        // than let a stalled host eat memory.
+        for _ in 0..600 {
+            nes.frame();
+        }
+
+        let cap = (nes.audio_sample_rate() as f64 * 0.5) as usize;
+        let queued = nes.buffered_audio_frames();
+        assert!(
+            queued <= cap,
+            "queue grew to {queued} frames, above the {cap} cap"
+        );
+        // Dropping is per-sample, so it stays near the cap instead of
+        // collapsing to something useless.
+        assert!(queued > cap - 1000, "queue collapsed to {queued} frames");
     }
 
     /// Running a frame in sub-frame slices must land on exactly the state a
@@ -1543,6 +1719,23 @@ mod tests {
         rom
     }
 
+    /// Peak level of everything the console queued, pulled out of the core the
+    /// way an audio device callback would.
+    fn drain_audio_peak(nes: &mut Nes) -> f32 {
+        let mut buffer = vec![0.0f32; 4096];
+        let mut peak = 0.0f32;
+        loop {
+            let written = nes.fill_audio(&mut buffer);
+            for sample in &buffer[..written] {
+                peak = peak.max(sample.abs());
+            }
+            if written < buffer.len() {
+                break;
+            }
+        }
+        peak
+    }
+
     #[test]
     fn test_vrc6_expansion_audio_reaches_the_mixer() {
         let mut nes = Nes::new();
@@ -1551,9 +1744,7 @@ mod tests {
         let mut peak = 0.0f32;
         for _ in 0..10 {
             nes.frame();
-            for sample in nes.audio_samples() {
-                peak = peak.max(sample.abs());
-            }
+            peak = peak.max(drain_audio_peak(&mut nes));
         }
 
         assert_eq!(nes.peek(0x0010), 0x5A, "the VRC6 test program never ran");
@@ -1620,9 +1811,7 @@ mod tests {
         let mut peak = 0.0f32;
         for _ in 0..10 {
             nes.frame();
-            for sample in nes.audio_samples() {
-                peak = peak.max(sample.abs());
-            }
+            peak = peak.max(drain_audio_peak(&mut nes));
         }
         assert_eq!(nes.peek(0x0010), 0x5A, "the 5B test program never ran");
         assert!(
@@ -1649,9 +1838,7 @@ mod tests {
         let mut peak = 0.0f32;
         for _ in 0..10 {
             nes.frame();
-            for sample in nes.audio_samples() {
-                peak = peak.max(sample.abs());
-            }
+            peak = peak.max(drain_audio_peak(&mut nes));
         }
         assert_eq!(nes.peek(0x0010), 0x5A, "the MMC5 test program never ran");
         assert!(

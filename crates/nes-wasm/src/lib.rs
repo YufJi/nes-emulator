@@ -112,8 +112,8 @@ impl Nes {
 
     /// Run at most `cycles` CPU cycles, stopping early at a frame boundary.
     ///
-    /// Returns the cycles actually run; check `is_frame_ready` afterwards.
-    /// Unlike `frame`, audio samples accumulate until `clear_audio_samples`.
+    /// Returns the cycles actually run; check `is_frame_ready` afterwards, then
+    /// pull the audio with `fill_audio`.
     #[wasm_bindgen]
     pub fn run_cycles(&mut self, cycles: u32) -> u32 {
         self.nes.run_cycles(cycles)
@@ -125,7 +125,7 @@ impl Nes {
         self.nes.step_instruction()
     }
 
-    /// Drop the buffered audio samples.
+    /// Drop every queued audio sample, e.g. when loading a cartridge.
     #[wasm_bindgen]
     pub fn clear_audio_samples(&mut self) {
         self.nes.clear_audio_samples();
@@ -173,22 +173,36 @@ impl Nes {
         self.nes.set_button(player, button, false);
     }
 
-    /// Audio samples captured during the last frame, interleaved left/right.
+    /// Rate the core resamples audio to, in Hz. Size device buffers from this.
     #[wasm_bindgen]
-    pub fn get_audio_samples(&self) -> Vec<f32> {
-        self.nes.audio_samples().to_vec()
+    pub fn get_audio_sample_rate(&self) -> u32 {
+        self.nes.audio_sample_rate()
     }
 
-    /// Pointer to the audio sample buffer.
+    /// Retarget the audio resampler, e.g. to a 44_100 Hz device.
+    ///
+    /// Set this before loading a cartridge; queued samples are dropped.
     #[wasm_bindgen]
-    pub fn get_audio_samples_ptr(&self) -> *const f32 {
-        self.nes.audio_samples_ptr()
+    pub fn set_audio_sample_rate(&mut self, sample_rate: u32) {
+        self.nes.set_sample_rate(sample_rate);
     }
 
-    /// Number of audio samples captured during the last frame.
+    /// Stereo frames emulated but not yet pulled with `fill_audio`.
     #[wasm_bindgen]
-    pub fn get_audio_samples_len(&self) -> usize {
-        self.nes.audio_samples().len()
+    pub fn get_buffered_audio_frames(&self) -> usize {
+        self.nes.buffered_audio_frames()
+    }
+
+    /// Copy queued audio into `out`, interleaved left/right, and return how
+    /// many floats were written.
+    ///
+    /// The audio-device callback shape: the caller owns the buffer, asks for a
+    /// device period's worth, and gets back a count that is zero when nothing
+    /// was produced and less than `out.length` when only part was available.
+    /// Samples are already resampled to `get_audio_sample_rate()`.
+    #[wasm_bindgen]
+    pub fn fill_audio(&mut self, out: &mut [f32]) -> usize {
+        self.nes.fill_audio(out)
     }
 
     /// Reset the console, as if the reset button was pressed.

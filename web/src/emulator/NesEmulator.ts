@@ -51,6 +51,8 @@ export class NesEmulator {
   private readonly options: NesEmulatorOptions;
   private readonly width: number;
   private readonly height: number;
+  /** Scratch buffer the core fills with audio, reused every frame. */
+  private readonly audioChunk = new Float32Array(8192);
 
   private nes: Nes | null = null;
   private buttons: Record<ButtonName, number> | null = null;
@@ -128,9 +130,12 @@ export class NesEmulator {
 
     this.setState('running');
     this.startLoop();
-    void this.audio.ensureStarted().catch((error) => {
-      console.warn('音频初始化失败，将继续静音运行。', error);
-    });
+    void this.audio
+      .ensureStarted()
+      .then(() => this.matchDeviceSampleRate())
+      .catch((error) => {
+        console.warn('音频初始化失败，将继续静音运行。', error);
+      });
   }
 
   /** Warp back to the cartridge's reset vector. */
@@ -156,7 +161,10 @@ export class NesEmulator {
     this.clock?.reset();
     this.setState('running');
     this.startLoop();
-    void this.audio.ensureStarted().catch(() => undefined);
+    void this.audio
+      .ensureStarted()
+      .then(() => this.matchDeviceSampleRate())
+      .catch(() => undefined);
   }
 
   togglePause(): void {
@@ -184,7 +192,25 @@ export class NesEmulator {
 
   /** Called from user-gesture handlers to satisfy the browser autoplay policy. */
   wakeAudio(): void {
-    void this.audio.ensureStarted().catch(() => undefined);
+    void this.audio
+      .ensureStarted()
+      .then(() => this.matchDeviceSampleRate())
+      .catch(() => undefined);
+  }
+
+  /**
+   * Ask the core to resample to the audio device's own rate.
+   *
+   * The device rate is only known once the audio graph exists — and it can
+   * change, as it does when a phone switches output route — so this runs after
+   * every successful start rather than once at construction.
+   */
+  private matchDeviceSampleRate(): void {
+    const nes = this.nes;
+    const deviceRate = this.audio.sampleRate;
+    if (!nes || deviceRate <= 0 || deviceRate === nes.get_audio_sample_rate()) return;
+
+    nes.set_audio_sample_rate(deviceRate);
   }
 
   dispose(): void {
@@ -329,8 +355,15 @@ export class NesEmulator {
   }
 
   private pumpAudio(): void {
-    if (!this.nes) return;
-    this.audio.enqueue(this.nes.get_audio_samples());
+    const nes = this.nes;
+    if (!nes) return;
+
+    // Pull a device period's worth out of the core; a quiet frame can bring
+    // back nothing, and a busy one can leave a remainder for the next tick.
+    const written = nes.fill_audio(this.audioChunk);
+    if (written > 0) {
+      this.audio.enqueue(this.audioChunk.subarray(0, written));
+    }
   }
 
   /** Hand the core's measured frame rate to the UI whenever it changes. */

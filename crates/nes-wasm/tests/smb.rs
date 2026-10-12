@@ -141,10 +141,13 @@ fn smb_produces_audio() {
 
     let mut audible_frames = 0usize;
     let mut peak = 0.0f32;
+    let mut period = vec![0.0f32; 8192];
     for _ in 0..600 {
         nes.frame();
-        let samples = nes.get_audio_samples();
-        if samples.iter().any(|s| s.abs() > 1e-3) {
+        // Pull the way a device callback would, then look at what came back.
+        let written = nes.fill_audio(&mut period);
+        let samples = &period[..written];
+        if samples.iter().any(|sample| sample.abs() > 1e-3) {
             audible_frames += 1;
         }
         for sample in samples {

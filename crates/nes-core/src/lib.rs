@@ -37,6 +37,7 @@ pub use ppu::rendering::{PixelFormat, HEIGHT, PIXEL_FORMAT, WIDTH};
 /// without `std`; under `std` these names resolve to the exact same types.
 pub(crate) mod prelude {
     pub use alloc::boxed::Box;
+    pub use alloc::collections::VecDeque;
     pub use alloc::string::ToString;
     pub use alloc::vec;
     pub use alloc::vec::Vec;
@@ -88,6 +89,12 @@ pub struct Config {
     /// requests change CPU timing — so this only controls whether samples are
     /// buffered for the host to play.
     pub enable_audio: bool,
+    /// Rate the core resamples its audio to, in Hz.
+    ///
+    /// Set this to the audio device's own rate so the host never has to
+    /// resample: a 44.1 kHz device asks for 44_100 and reads the result with
+    /// [`Nes::fill_audio`]. Zero means "use the default" (48_000).
+    pub sample_rate: u32,
 }
 
 impl Default for Config {
@@ -95,9 +102,13 @@ impl Default for Config {
         Self {
             region_override: None,
             enable_audio: true,
+            sample_rate: DEFAULT_SAMPLE_RATE,
         }
     }
 }
+
+/// Sample rate used when [`Config::sample_rate`] is left at zero.
+pub const DEFAULT_SAMPLE_RATE: u32 = 48_000;
 
 /// PPU dots per scanline. Each CPU cycle covers three of them.
 pub const PPU_CYCLES_PER_SCANLINE: u32 = 341;

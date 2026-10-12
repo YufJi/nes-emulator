@@ -24,6 +24,16 @@ export class AudioOutput {
     return this.context !== null;
   }
 
+  /**
+   * The device's own sample rate, or 0 before the audio graph exists.
+   *
+   * The core resamples to whatever this reports, so playback never has to
+   * drift on hardware that is not 48 kHz.
+   */
+  get sampleRate(): number {
+    return this.context?.sampleRate ?? 0;
+  }
+
   /** Create the audio graph on first use and resume playback. */
   async ensureStarted(): Promise<void> {
     if (this.context) {

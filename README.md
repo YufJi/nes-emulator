@@ -22,6 +22,10 @@
   FPS 统计都在内核里；帧率按卡带制式精确推导（NTSC 60.0985 Hz、PAL 50.0067 Hz），
   而非约定俗成的 60/50。子帧接口 `run_cycles` / `step_instruction` 供更细粒度的
   驱动与调试使用，前端不必再各自实现定时器与追帧逻辑。
+- **音频直出**：采样率由宿主按声卡配置（`Config::sample_rate`，默认 48 kHz），
+  重采样在内核按制式完成（跟随 PPU 时钟，PAL 不再走音）；`fill_audio` 让宿主以设备
+  周期为单位把音频拉进自己的缓冲，Oboe / CoreAudio / Web Audio 都不用再各写一遍
+  重采样。队列有上限，宿主长时间不取就丢弃最旧的样本，不会无限积压。
 - **前端**：拖拽 / 链接 / 游戏列表三种载入方式、虚拟手柄、整数倍像素缩放、
   AudioWorklet 音频输出、4 槽即时存档；界面基于
   [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件库。
