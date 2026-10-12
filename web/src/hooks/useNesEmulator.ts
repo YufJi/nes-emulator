@@ -184,10 +184,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
         const emulator = emulatorRef.current;
         if (!emulator) return;
 
-        await emulator.loadRom(data);
-        // Restore any save the cartridge kept from an earlier session.
-        const previous = readSaveRam(source.key);
-        if (previous) emulator.setSaveRam(previous);
+        // Hand the stored battery RAM to the loader rather than writing it
+        // afterwards: it has to be in place before the first emulated frame,
+        // which boot code can already depend on.
+        await emulator.loadRom(data, readSaveRam(source.key));
         romKeyRef.current = source.key;
         setRomKey(source.key);
         setRomName(source.name);

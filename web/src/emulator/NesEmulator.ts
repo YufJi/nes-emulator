@@ -97,8 +97,14 @@ export class NesEmulator {
     return this.nes !== null;
   }
 
-  /** Load a validated ROM image and start running it. */
-  async loadRom(data: Uint8Array): Promise<void> {
+  /**
+   * Load a validated ROM image and start running it.
+   *
+   * `saveRam` is the cartridge's stored battery RAM, written back before the
+   * first frame: boot code may read its save as early as that, and a frame
+   * emulated against blank SRAM would look like "no save" to the game.
+   */
+  async loadRom(data: Uint8Array, saveRam: Uint8Array | null = null): Promise<void> {
     await initWasm();
     this.assertUsable();
 
@@ -114,6 +120,12 @@ export class NesEmulator {
 
     this.nes?.free();
     this.nes = next;
+    if (saveRam) {
+      next.set_save_ram(saveRam);
+    }
+    // Seed the change detector: the restored bytes (or none) are the baseline,
+    // so the first poll does not treat them as a change and write them back.
+    this.lastSaveRam = saveRam;
     this.buttons = readButtonIndices();
 
     // Pace at the cartridge's own rate — PAL runs at ~50.007 Hz — and start
@@ -292,12 +304,6 @@ export class NesEmulator {
   /** Whether the loaded cartridge keeps battery-backed save RAM. */
   hasBattery(): boolean {
     return this.nes?.has_battery() ?? false;
-  }
-
-  /** Restore a previously saved snapshot into the cartridge. */
-  setSaveRam(data: Uint8Array): void {
-    this.nes?.set_save_ram(data);
-    this.lastSaveRam = null;
   }
 
   /** Serialize the whole machine into a save state, or null before loading. */
