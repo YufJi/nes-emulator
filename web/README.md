@@ -36,6 +36,21 @@ npm run build:wasm  # 用 wasm-pack 重新生成 src/wasm/ 下的内核绑定
 - 图标一律取自 `naive-icons`（库的运行时依赖），不使用 emoji 或自制 SVG。
 - 加载失败提示走 `Notification` 命令式接口，「清空存档」的二次确认走 `Modal`。
 
+## 产物体积
+
+`vite.config.ts` 里的 `trimIslandAssets` 插件会从库的样式表中删掉两类本项目用不上的声明，
+把 `dist/` 从约 4.6 MB 压到约 730 KB：
+
+- **Noto Sans SC 的 6 个 `@font-face`**（3 个简体中文字面各约 1.15 MB，且没有 `unicode-range`，
+  浏览器可能全部下载）。库里每个 `font-family` 列表都紧接着写了系统字体
+  （`PingFang SC` / `Microsoft YaHei`），所以删掉字面只会让中文改用系统字体，其余排版不变；
+  拉丁字母仍用 Nunito（3 个拉丁子集共约 48 KB）。
+- **4 张装饰性场景插画**（约 316 KB）。它们只服务于 `Background type="sweet-corner" |
+  "coffee-break"` 与 `Progress` 的 `variant`，本项目都没用到；以后要用就删掉插件里对应的
+  那一行正则。
+
+库一旦换字体或换图片，插件会在构建时输出警告而不是静默失效。
+
 ## 目录结构
 
 ```
