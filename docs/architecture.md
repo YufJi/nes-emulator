@@ -174,7 +174,109 @@ sequenceDiagram
 
 ---
 
-## 4. 内存与总线
+## 4. 全链路：从 ROM 文件到可玩
+
+前几节讲的是"机器怎么转"，这一节讲**"一个 `.nes` 文件从被选中到能操作角色，中间到底经历了什么"**。
+整条链路只做三件事：**校验 → 装卡带并复位 → 让机器以正确节奏一帧一帧地跑**。
+
+### 4.1 全景时序
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 用户
+    participant FE as 前端 useNesEmulator / rom.ts
+    participant EM as NesEmulator
+    participant W as wasm 绑定
+    participant N as nes-core
+    participant IO as 显示 / 音频
+
+    U->>FE: 拖入文件 / 选择文件 / 点游戏列表
+    FE->>FE: 取字节流（File.arrayBuffer 或 fetch URL）
+    FE->>FE: 校验 iNES 魔数 / 体积 / Mapper 是否支持
+    FE->>EM: loadRom(bytes, 电池存档)
+    EM->>W: initWasm()
+    EM->>W: new Nes() → load_rom(bytes)
+    W->>N: Nes::load_rom
+    N->>N: 解析 iNES 头 → 切分 PRG/CHR → create_mapper → 应用镜像与制式
+    N->>N: bus.reset(cpu)：读 $FFFC/$FFFD 复位向量 → 设置 PC
+    N-->>W: Ok（卡带已装入，PC 指向游戏入口，尚未执行任何指令）
+    EM->>N: set_save_ram(存档) — 必须在跑任何一帧之前
+    EM->>N: frame() — 预跑一帧，首帧不留白
+    EM->>IO: 上传首帧画面
+    EM->>W: new FrameClock(nes.frame_rate())
+    EM->>IO: ensureStarted() → 把设备采样率交给内核
+    Note over EM: 状态切到 running，启动 rAF 循环
+    loop 每个显示帧
+        EM->>W: clock.frames_due(时间戳)
+        EM->>N: frame() × n
+        EM->>IO: 上传画面 / fill_audio() → AudioWorklet
+    end
+    U->>EM: 按键
+    EM->>N: set_button(player, button, pressed)
+```
+
+### 4.2 内核侧：装卡带并复位（`Nes::load_rom`）
+
+| 步骤 | 代码位置 | 说明 |
+| --- | --- | --- |
+| 解析 iNES 头 | `RomHeader::parse` | 魔数 `NES\x1a`；PRG/CHR 大小（16 KB / 8 KB 为单位）；Mapper 号 = flags7 高半字节 + flags6 高半字节；镜像方式；制式（flags9 bit0 / flags10）；电池标志（flags6 bit1）；有 trainer 时跳过 512 字节 |
+| 切分 ROM | `NesBus::load_rom` | PRG 必须完整，否则 `InvalidRomFormat`；CHR 长度为 0 表示 CHR-RAM，由 Mapper 自建 |
+| 造卡带 | `create_mapper` | 编号未实现时返回 `UnsupportedMapper`（前端在更早一步已拦过，这里是兜底） |
+| 应用卡带属性 | `NesBus::load_rom` | 镜像同时写给渲染器与总线；制式优先取 `Config::region_override`，否则用头部声明 |
+| 复位 CPU | `Cpu::reset` | `SP -= 3`、置 I 标志、**PC = [$FFFC] \| [$FFFD] << 8**、周期计数清零 |
+
+**关键点：`load_rom` 只负责"装好 + 复位"，不执行任何一条指令。**
+函数返回时机器处于"刚按下复位键"的瞬间：PC 已经指向卡带里的游戏入口，但游戏代码一行都还没跑。
+
+### 4.3 复位之后：游戏自己把机器点亮
+
+复位向量指向卡带 PRG 中映射到 `$C000`/`$E000` 的固定 bank（具体哪个 bank 由 Mapper 决定），
+游戏代码随后按典型顺序执行：
+
+1. `SEI` / `CLD`：关中断、清十进制标志；
+2. 清 2 KB 工作 RAM（约上万周期，常跨越最初几帧）；
+3. 等 PPU 稳定（连续读 `$2002` 或轮询 VBlank 标志）；
+4. 初始化 PPU：`$2000` 控制寄存器、`$2001` 掩码、`$3F00–$3F1F` 调色板；
+5. 初始化 APU：`$4015` 与各通道寄存器；
+6. 清 OAM，通常借 `$4014` DMA；
+7. 打开 NMI（`$2000` bit7 = 1），进入**每帧由 VBlank 驱动的主循环**：NMI 里更新 OAM、滚动与调色板，
+   主循环里跑游戏逻辑并轮询手柄。
+
+所以"可玩"没有某个精确的里程碑事件，它的判据是：
+**CPU 进入了由 VBlank / NMI 驱动的每帧循环，画面与声音开始逐帧更新。**
+模拟器本身不参与这些判断——它只负责把周期数喂够、把 VBlank 与 NMI 按时送达。
+
+### 4.4 时间线
+
+| 时刻 | 机器状态 | 用户看到 / 听到 |
+| --- | --- | --- |
+| `load_rom` 返回 | PC 指向复位向量，0 条指令已执行 | 前端尚未渲染，无画面 |
+| 预跑第 1 帧（约 29,780 周期，上万条指令） | 清 RAM、初始化 PPU/APU、等第一个 VBlank | 通常仍是黑屏或纯色，取决于游戏 |
+| 第 2 帧起 | 游戏进入 NMI 循环，开始绘制标题 / 厂商 logo | 画面开始出现，可能仍无声音 |
+| 数十帧内 | 标题画面 + BGM 就绪，开始轮询手柄 | 可操作（例如按 Start 进游戏） |
+
+不同游戏差异很大：有的一帧内就出画，有的会做几秒自检。宿主侧只需要"跑帧 + 显示 + 喂按键"，
+不需要为启动过程做任何特例处理。
+
+### 4.5 三层各自负责什么
+
+| 环节 | 前端（web） | 绑定（nes-wasm） | 内核（nes-core） |
+| --- | --- | --- | --- |
+| 拿到 ROM 字节 | 读文件 / 下载 URL / 游戏列表 | — | — |
+| 早期校验 | 魔数、体积、Mapper 支持、人类可读报错 | — | — |
+| 解析与装卡带 | — | 转发 `load_rom` | `RomHeader::parse` + `create_mapper` |
+| 复位 | — | 转发 | `Cpu::reset`（取复位向量） |
+| 电池存档 | 从 localStorage 取，交给 `loadRom` | 转发 `set_save_ram` | 写入卡带 SRAM |
+| 节奏 | `FrameClock`（时间戳 → 帧数）、FPS | 转发 | 提供 `frame_rate()` |
+| 画面 | 上传 Canvas / 纹理 | 转发缓冲区指针 | 渲染 + 帧缓冲 |
+| 声音 | AudioWorklet 播放 | 转发 `fill_audio` | 重采样 + 有界队列 |
+| 输入 | 键盘 / 虚拟手柄映射 | 转发 `set_button` | 手柄移位寄存器 |
+| 持久化 | localStorage / IndexedDB | — | 快照字节流 |
+
+---
+
+## 5. 内存与总线
 
 CPU 通过 `Bus` trait 访问系统；`NesBus` 是唯一实现（`crates/nes-core/src/nes.rs`）。
 
@@ -194,7 +296,7 @@ CPU 通过 `Bus` trait 访问系统；`NesBus` 是唯一实现（`crates/nes-cor
 
 ---
 
-## 5. PPU 渲染管线
+## 6. PPU 渲染管线
 
 PPU 负责寄存器语义（`crates/nes-core/src/ppu.rs`）、背景渲染与帧缓冲
 （`ppu/rendering.rs`）、精灵求值与渲染（`ppu/sprite.rs`）。
@@ -233,7 +335,7 @@ PixelFormat::channel_shifts()       // [red, green, blue, alpha] 位偏移 = [16
 
 ---
 
-## 6. APU 与音频链路
+## 7. APU 与音频链路
 
 ```mermaid
 flowchart LR
@@ -270,7 +372,7 @@ flowchart LR
 
 ---
 
-## 7. Mapper 抽象
+## 8. Mapper 抽象
 
 ```mermaid
 classDiagram
@@ -332,7 +434,7 @@ classDiagram
 
 ---
 
-## 8. 存档（Save State）
+## 9. 存档（Save State）
 
 ```mermaid
 flowchart LR
@@ -353,9 +455,9 @@ flowchart LR
 
 ---
 
-## 9. 宿主接入契约
+## 10. 宿主接入契约
 
-### 9.1 最小接入序列
+### 10.1 最小接入序列
 
 ```mermaid
 sequenceDiagram
@@ -381,7 +483,7 @@ sequenceDiagram
     end
 ```
 
-### 9.2 `FrameClock`：宿主无关的节奏组件
+### 10.2 `FrameClock`：宿主无关的节奏组件
 
 它把"宿主的时间戳"翻译成"整帧数量"，取代了每个前端各写一遍的 rAF 累加器逻辑：
 
@@ -402,7 +504,7 @@ stateDiagram-v2
 追帧上限 4 帧、单次时间戳间隔钳制 250 ms、FPS 采样窗口 500 ms。`reset()` 用于
 "暂停 / 复位 / 切前台"——避免把暂停时长当成模拟时间。无平台依赖、不分配内存，`no_std` 可用。
 
-### 9.3 视频与输入契约
+### 10.3 视频与输入契约
 
 - **视频**：`frame_buffer() -> &[u32]`（`0xAARRGGBB`），或 `frame_buffer_ptr()` 做零拷贝；
   尺寸与通道偏移从内核常量取。
@@ -411,11 +513,11 @@ stateDiagram-v2
 - **存档**：`save_state()` / `load_state()`（整机）、`save_ram()` / `load_save_ram()`（电池）。
 - **诊断**：`peek(addr)`、`frame_number()`、`is_frame_ready()`、`mirroring()`、`region()`。
 
-### 9.4 各平台落地建议
+### 10.4 各平台落地建议
 
 | 平台 | 帧回调 | 音频 | 备注 |
 | --- | --- | --- | --- |
-| Web | `requestAnimationFrame` | `AudioWorklet`（回退 `ScriptProcessorNode`） | 已实现，见第 11 节 |
+| Web | `requestAnimationFrame` | `AudioWorklet`（回退 `ScriptProcessorNode`） | 已实现，见第 12 节 |
 | iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` 渲染回调 | 把回调时间戳（秒→毫秒）喂给 `FrameClock` |
 | Android | `Choreographer` | Oboe（低延迟） | 建议模拟器放独立线程，音频回调只做 `fill_audio` |
 | macOS / Windows | `CVDisplayLink` / 定时器 | CoreAudio / WASAPI | 与 iOS/Native 一致：时间戳 + 拉音频 |
@@ -425,7 +527,7 @@ stateDiagram-v2
 
 ---
 
-## 10. WASM 绑定层
+## 11. WASM 绑定层
 
 `crates/nes-wasm/src/lib.rs` 是纯搬运层，类与方法命名尽量与内核一致。
 
@@ -447,7 +549,7 @@ stateDiagram-v2
 
 ---
 
-## 11. Web 前端架构
+## 12. Web 前端架构
 
 ```mermaid
 flowchart TB
@@ -487,7 +589,7 @@ flowchart TB
 
 ---
 
-## 12. 测试策略
+## 13. 测试策略
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
@@ -507,7 +609,7 @@ flowchart TB
 
 ---
 
-## 13. 构建与 CI
+## 14. 构建与 CI
 
 ```mermaid
 flowchart LR
@@ -530,9 +632,9 @@ flowchart LR
 
 ---
 
-## 14. 已知边界与技术方向
+## 15. 已知边界与技术方向
 
-### 14.1 模拟精度
+### 15.1 模拟精度
 
 - **PAL 时序建模**：内核统一按"1 CPU 周期 = 3 PPU dot"，而真机 PAL 的 PPU:CPU 是 3.2:1。
   结果：PAL 的帧率/音频/CPU 周期三者自洽（不会走音），但与真机时序仍有系统性偏差。
@@ -542,16 +644,16 @@ flowchart LR
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝（如 6、8、16、18、
-  30、85、等等）。扩展方式见第 7 节。
+  30、85、等等）。扩展方式见第 8 节。
 
-### 14.2 存档与回放
+### 15.2 存档与回放
 
 - 状态**不含 ROM 摘要**：宿主只能按"ROM 名/URL"识别归属，跨设备同步存档时无法自证匹配。
   建议在状态头加入 ROM 指纹（如 CRC32/SHA-1 前若干字节）与卡带标识。
 - **无 rewind / 回放 API**：确定性已经具备，可以在上层实现环形快照缓冲；
   若要进内核，建议以"压缩增量 + 关键帧"的形式提供。
 
-### 14.3 性能
+### 15.3 性能
 
 - **单线程**：模拟在调用线程上执行；移动端建议放独立线程，音频回调只做 `fill_audio`。
 - **WASM 画面拷贝**：`get_frame_buffer()` 每帧复制约 245 KB 并在 JS 里做一次通道重排。
@@ -560,28 +662,28 @@ flowchart LR
 - **Mapper 动态分发**：每次内存访问都走 `dyn Mapper` 虚调用；如需再提速，可在热路径上
   做特化或内联缓存。
 
-### 14.4 输入与周边
+### 15.4 输入与周边
 
 - 仅实现标准双人手柄（各 8 键）。**未实现**：连发（turbo）、Zapper 光枪、Four Score 四人适配器。
 - 无按键宏/重映射的持久化约定（重映射属于前端职责）。
 
-### 14.5 前端与输出
+### 15.5 前端与输出
 
 - 无 NTSC 滤镜、扫描线、可配置调色板；当前只用固定的 64 色 ARGB 调色板。
 - 无画面录制/截图导出（前端可基于 `frame_buffer()` 自行实现）。
 - 存档槽固定 4 个（前端约定，内核不关心）。
 
-### 14.6 建议的推进顺序
+### 15.6 建议的推进顺序
 
 1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
-4. **原生前端首个落地**（iOS 或 Android，验证第 9 节契约是否真的"平台无关"）。
+4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
 5. **PAL 时序与 A12 精确化**（高风险高收益，需要 PAL 测试语料）。
 
 ---
 
-## 15. 参考
+## 16. 参考
 
 - NESdev Wiki：CPU / PPU / APU 时序与寄存器语义 <https://www.nesdev.org/wiki/>
 - `nestest`：6502 指令集校验日志 <https://www.nesdev.org/wiki/Emulator_tests>
