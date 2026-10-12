@@ -6,6 +6,7 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/PPU_rendering
 
+use crate::prelude::*;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
 use crate::ppu::sprite::{SpriteRenderer, SecondaryOam};
 use crate::ppu::sprite::SpriteEvaluator;

@@ -9,6 +9,13 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// `alloc` is available on every target that ships an allocator, `std` builds
+// included. Depending on it directly is what lets the core also run without
+// the `std` crate.
+extern crate alloc;
+
+use alloc::string::String;
+
 pub mod apu;
 pub mod bus;
 pub mod cpu;
@@ -21,35 +28,69 @@ pub use bus::Bus;
 pub use mapper::Mapper;
 pub use nes::Nes;
 
+/// The allocation-backed items that the `std` prelude normally injects.
+///
+/// Every module does `use crate::prelude::*;` so the same source builds with or
+/// without `std`; under `std` these names resolve to the exact same types.
+pub(crate) mod prelude {
+    pub use alloc::boxed::Box;
+    pub use alloc::string::ToString;
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+}
+
 /// Result type for emulator operations
 pub type Result<T> = core::result::Result<T, NesError>;
 
-/// Error types for the emulator
-#[derive(Debug, Clone, thiserror::Error)]
+/// Error types for the emulator.
+#[derive(Debug, Clone)]
 pub enum NesError {
-    #[error("Invalid ROM format: {0}")]
+    /// The image is not a usable iNES file.
     InvalidRomFormat(String),
-    #[error("Unsupported mapper: {0}")]
+    /// The cartridge uses a mapper the core does not implement yet.
     UnsupportedMapper(u16),
-    #[error("Memory access error at address {0:#04X}")]
+    /// A memory access fell outside anything the machine can answer.
     MemoryAccessError(u16),
-    #[error("IO error: {0}")]
+    /// A host-side I/O operation failed.
     IoError(String),
 }
+
+impl core::fmt::Display for NesError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            NesError::InvalidRomFormat(msg) => write!(f, "Invalid ROM format: {msg}"),
+            NesError::UnsupportedMapper(mapper) => write!(f, "Unsupported mapper: {mapper}"),
+            NesError::MemoryAccessError(addr) => {
+                write!(f, "Memory access error at address {addr:#04X}")
+            }
+            NesError::IoError(msg) => write!(f, "IO error: {msg}"),
+        }
+    }
+}
+
+/// Only implemented with `std`; no_std hosts work off [`Display`](core::fmt::Display).
+#[cfg(feature = "std")]
+impl std::error::Error for NesError {}
 
 /// NES system configuration
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Region/TV system
-    pub region: Region,
-    /// Enable audio
+    /// Force a TV system instead of trusting the cartridge header.
+    ///
+    /// `None` (the default) uses the region advertised by the iNES header.
+    pub region_override: Option<Region>,
+    /// Collect audio samples for the host.
+    ///
+    /// The APU keeps running either way — its frame IRQ and the DMC DMA
+    /// requests change CPU timing — so this only controls whether samples are
+    /// buffered for the host to play.
     pub enable_audio: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            region: Region::Ntsc,
+            region_override: None,
             enable_audio: true,
         }
     }

@@ -6,6 +6,7 @@
 //! software-switchable H/V nametable mirroring.
 //! See https://www.nesdev.org/wiki/MMC3
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// MMC3 mapper (Mapper 4)

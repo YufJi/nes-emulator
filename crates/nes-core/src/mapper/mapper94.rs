@@ -15,6 +15,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_094
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Senjou no Ookami mapper (Mapper 94)

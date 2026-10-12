@@ -17,6 +17,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_180
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Crazy Climber UNROM variant (Mapper 180)

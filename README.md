@@ -13,6 +13,9 @@
 - **Mapper**：33 个编号（NROM、MMC1/2/3/4/5、VRC 系列、Sunsoft、Irem 等）。
 - **扩展音频**：VRC6、MMC5、Sunsoft 5B。
 - **存档**：电池存档（按 ROM 名持久化）与即时存档（整机快照，4 个槽位）。
+- **可移植内核**：`nes-core` 不依赖任何宿主绑定，默认 `std`，也可
+  `--no-default-features` 以 `no_std` 构建；`Config` 可覆盖卡带声明的 TV 制式
+  并关闭音频采集，供原生前端（Windows / macOS / iOS / Android 等）按需裁剪。
 - **前端**：拖拽 / 链接 / 游戏列表三种载入方式、虚拟手柄、整数倍像素缩放、
   AudioWorklet 音频输出、4 槽即时存档；界面基于
   [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件库。

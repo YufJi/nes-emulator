@@ -5,6 +5,7 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/APU_DMC
 
+use crate::prelude::*;
 use crate::apu::AudioChannel;
 
 /// DMC timer period table for NTSC (16 preset values)

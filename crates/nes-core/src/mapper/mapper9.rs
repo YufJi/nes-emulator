@@ -27,6 +27,7 @@
 //!
 //! See https://www.nesdev.org/wiki/MMC2
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// MMC2 mapper (Mapper 9)

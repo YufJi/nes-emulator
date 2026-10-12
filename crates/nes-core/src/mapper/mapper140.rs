@@ -13,6 +13,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_140
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Jaleco JF-11/JF-14 mapper (Mapper 140)

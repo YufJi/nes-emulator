@@ -20,6 +20,7 @@
 //!
 //! See https://www.nesdev.org/wiki/Sunsoft_FME-7
 
+use crate::prelude::*;
 use super::Mapper;
 use crate::apu::sunsoft5b::Sunsoft5bAudio;
 use crate::ppu::rendering::Mirroring;

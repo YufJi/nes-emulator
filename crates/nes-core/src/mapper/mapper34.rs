@@ -11,6 +11,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_034
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// BNROM mapper (Mapper 34)

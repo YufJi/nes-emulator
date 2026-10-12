@@ -9,6 +9,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_038
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// PCI556 mapper (Mapper 38) - Crime Busters

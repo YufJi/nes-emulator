@@ -9,6 +9,7 @@
 //! potentially other features, but the basic banking is identical to UxROM.
 //! See https://www.nesdev.org/wiki/INES_Mapper_071
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Camerica mapper (Mapper 71)

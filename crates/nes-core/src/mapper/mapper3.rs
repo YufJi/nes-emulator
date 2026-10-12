@@ -4,6 +4,7 @@
 //! Fixed PRG-ROM (up to 32 KB), with switchable 8 KB CHR-ROM banks.
 //! See https://www.nesdev.org/wiki/INES_Mapper_003
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// CNROM mapper (Mapper 3)

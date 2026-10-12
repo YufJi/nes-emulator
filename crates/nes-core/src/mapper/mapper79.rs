@@ -18,6 +18,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_079
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// NINA-003 mapper (Mapper 79)

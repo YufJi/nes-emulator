@@ -9,6 +9,7 @@
 //!
 //! See https://www.nesdev.org/wiki/Color_Dreams
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Color Dreams mapper (Mapper 11)

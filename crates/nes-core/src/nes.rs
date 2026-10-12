@@ -5,6 +5,7 @@
 //! per CPU cycle. It is deliberately free of any host bindings so the same core
 //! can back the WASM build, tests, or a native front end.
 
+use crate::prelude::*;
 use crate::apu::Apu;
 use crate::bus::Bus;
 use crate::cpu::Cpu;
@@ -15,7 +16,7 @@ use crate::ppu::rendering::{
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::state::{StateReader, StateWriter};
-use crate::{NesError, Region};
+use crate::{Config, NesError, Region};
 
 /// Button indices used by [`Nes::set_button`].
 pub const BUTTON_A: u8 = 0;
@@ -213,6 +214,10 @@ struct NesBus {
     mirroring: Mirroring,
     /// TV system (NTSC or PAL) from the cartridge header
     region: Region,
+    /// Host-requested TV system, overriding whatever the header claims
+    region_override: Option<Region>,
+    /// Whether the host wants audio samples buffered for playback
+    enable_audio: bool,
     /// Last value driven onto the data bus, returned by unmapped reads
     open_bus: u8,
     /// Whether the cartridge declares battery-backed work RAM
@@ -268,10 +273,21 @@ impl NesBus {
             sprite_evaluator: SpriteEvaluator::new(),
             mirroring: Mirroring::Horizontal,
             region: Region::Ntsc,
+            region_override: None,
+            enable_audio: true,
             open_bus: 0,
             has_battery: false,
             frame_ready: false,
         }
+    }
+
+    /// Apply the host's configuration: TV-system override and audio capture.
+    ///
+    /// These are host settings rather than machine state, so they stay out of
+    /// the save-state encoding and survive a [`NesBus::load_rom`].
+    fn apply_config(&mut self, config: &Config) {
+        self.region_override = config.region_override;
+        self.enable_audio = config.enable_audio;
     }
 
     /// Load a ROM into the system
@@ -305,7 +321,7 @@ impl NesBus {
         // (which reads nametables) and the bus (which mirrors PPUDATA writes).
         self.mirroring = header.mirroring;
         self.bg_renderer.set_mirroring(header.mirroring);
-        self.region = header.region;
+        self.region = self.region_override.unwrap_or(header.region);
         self.has_battery = header.has_battery;
 
         Ok(())
@@ -490,6 +506,12 @@ impl NesBus {
         }
 
         // Resample the CPU-rate mixer output down to the host sample rate.
+        // The APU keeps ticking when audio capture is off because its frame
+        // IRQ and the DMC DMA requests above change CPU timing; only the
+        // samples handed to the host are skipped.
+        if !self.enable_audio {
+            return;
+        }
         self.audio_accumulator += self.audio_sample_rate;
         if self.audio_accumulator >= CPU_CLOCK_RATE {
             self.audio_accumulator -= CPU_CLOCK_RATE;
@@ -722,6 +744,7 @@ impl NesBus {
 pub struct Nes {
     cpu: Cpu,
     bus: NesBus,
+    config: Config,
 }
 
 impl Default for Nes {
@@ -731,12 +754,27 @@ impl Default for Nes {
 }
 
 impl Nes {
-    /// Create a console with no cartridge inserted.
+    /// Create a console with the default [`Config`] and no cartridge.
     pub fn new() -> Self {
+        Self::with_config(Config::default())
+    }
+
+    /// Create a console with an explicit configuration and no cartridge.
+    ///
+    /// The configuration takes effect when a cartridge is loaded: a region
+    /// override replaces the header's TV system, and audio capture can be
+    /// turned off for hosts that do not play sound.
+    pub fn with_config(config: Config) -> Self {
         let mut bus = NesBus::new();
+        bus.apply_config(&config);
         let mut cpu = Cpu::new();
         bus.reset(&mut cpu);
-        Self { cpu, bus }
+        Self { cpu, bus, config }
+    }
+
+    /// The configuration this console was created with.
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// Load an iNES cartridge image and reset the console.
@@ -1036,6 +1074,8 @@ mod tests {
     /// ROM's behaviour so a future CPU/PPU/NMI change cannot silently alter it,
     /// and so the web UI can keep reporting raw button state without any
     /// pulse-while-held workaround.
+    // Reads the ROM off disk, so it needs the `std` feature.
+    #[cfg(feature = "std")]
     #[test]
     fn smb_select_is_sampled_once_per_sixteen_frames() {
         let Ok(rom) = std::fs::read("../../roms/超级玛莉.NES") else {
@@ -1285,6 +1325,46 @@ mod tests {
         rom.extend_from_slice(&prg);
         rom.extend_from_slice(&[0u8; 0x2000]);
         rom
+    }
+
+    #[test]
+    fn test_config_region_override_beats_the_header() {
+        let mut rom = marker_rom(0);
+        rom[9] = 0x01; // header claims PAL (iNES byte 9, bit 0)
+
+        // The default config trusts the cartridge header.
+        let mut trusting = Nes::new();
+        trusting.load_rom(&rom).unwrap();
+        assert_eq!(trusting.region(), Region::Pal);
+
+        // An explicit override wins over what the header claims.
+        let mut forced = Nes::with_config(Config {
+            region_override: Some(Region::Ntsc),
+            ..Config::default()
+        });
+        forced.load_rom(&rom).unwrap();
+        assert_eq!(forced.region(), Region::Ntsc);
+        assert_eq!(forced.config().region_override, Some(Region::Ntsc));
+    }
+
+    #[test]
+    fn test_config_can_disable_audio_capture() {
+        let rom = marker_rom(0);
+
+        let mut loud = Nes::new();
+        loud.load_rom(&rom).unwrap();
+        loud.frame();
+        assert!(!loud.audio_samples().is_empty());
+
+        let mut silent = Nes::with_config(Config {
+            enable_audio: false,
+            ..Config::default()
+        });
+        silent.load_rom(&rom).unwrap();
+        silent.frame();
+        // The console still ran a whole frame; only sample capture is off.
+        assert_eq!(silent.frame_number(), 1);
+        assert!(silent.audio_samples().is_empty());
     }
 
     #[test]

@@ -11,6 +11,8 @@
 //! from, and the [`state_fields`] / [`mapper_state`] macros generate the
 //! field-by-field code for structs and mappers.
 
+use crate::prelude::*;
+
 /// A type that can be written into, and restored from, a save state.
 pub trait StateField {
     /// Append this value to the stream.

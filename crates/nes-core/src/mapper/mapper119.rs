@@ -8,6 +8,7 @@
 //! while CHR A16 directly enables the RAM chip.
 //! See https://www.nesdev.org/wiki/INES_Mapper_119
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Mapper 119 - TQROM (MMC3 variant)

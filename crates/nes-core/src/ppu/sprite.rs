@@ -6,6 +6,7 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/PPU_sprite_evaluation
 
+use crate::prelude::*;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask};
 
 

@@ -6,6 +6,7 @@
 //! nametable attributes, vertical split screen, and scanline-counting IRQ.
 //! See https://www.nesdev.org/wiki/MMC5
 
+use crate::prelude::*;
 use super::Mapper;
 use crate::apu::mmc5::Mmc5Audio;
 

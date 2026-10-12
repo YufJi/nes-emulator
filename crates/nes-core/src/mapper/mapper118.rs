@@ -7,6 +7,7 @@
 //! diagonal mirroring modes that standard MMC3 cannot produce.
 //! See https://www.nesdev.org/wiki/INES_Mapper_118
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// Mapper 118 - TxSROM (MMC3 variant)

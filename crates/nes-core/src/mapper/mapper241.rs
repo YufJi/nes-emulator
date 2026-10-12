@@ -14,6 +14,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_241
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// BxROM variant (Mapper 241)

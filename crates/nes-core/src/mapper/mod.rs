@@ -4,6 +4,7 @@
 //! Different games use different mappers to support larger ROM sizes
 //! and additional hardware features.
 
+use crate::prelude::*;
 use core::fmt::Debug;
 
 /// Mapper trait for NES cartridge mappers

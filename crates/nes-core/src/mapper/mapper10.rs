@@ -22,6 +22,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_010
 
+use crate::prelude::*;
 use super::Mapper;
 use crate::ppu::rendering::Mirroring;
 

@@ -6,6 +6,7 @@
 //! and software-controlled nametable mirroring.
 //! See https://www.nesdev.org/wiki/MMC1
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// MMC1 mapper (Mapper 1)

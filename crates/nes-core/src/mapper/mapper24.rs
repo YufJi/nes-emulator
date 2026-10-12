@@ -25,6 +25,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_024
 
+use crate::prelude::*;
 use super::Mapper;
 use crate::apu::vrc6::Vrc6Audio;
 use crate::ppu::rendering::Mirroring;

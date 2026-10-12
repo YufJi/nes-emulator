@@ -12,6 +12,7 @@
 //!
 //! See https://www.nesdev.org/wiki/AxROM
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// AxROM mapper (Mapper 7)

@@ -5,6 +5,7 @@
 //! Uses CHR-RAM (no CHR-ROM bank switching).
 //! See https://www.nesdev.org/wiki/UxROM
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// UxROM mapper (Mapper 2)

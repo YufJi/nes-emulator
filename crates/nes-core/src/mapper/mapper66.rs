@@ -11,6 +11,7 @@
 //!
 //! See https://www.nesdev.org/wiki/GxROM
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// GxROM mapper (Mapper 66)

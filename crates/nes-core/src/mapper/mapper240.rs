@@ -13,6 +13,7 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_240
 
+use crate::prelude::*;
 use super::Mapper;
 
 /// C&E mapper (Mapper 240)
