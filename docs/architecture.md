@@ -604,8 +604,14 @@ flowchart LR
   自己的模拟线程上（§10.5）；锁只是为了"从别的线程误调"不会变成 UB。
 - **锁的中毒会被恢复**：CPU 遇到未定义 opcode 会 panic 并毒化 `Mutex`，若直接 `unwrap`
   会让一次坏帧永久废掉句柄，因此这里取 `into_inner()` 继续可用（宿主应重新加载卡带）。
-- **panic 不会跨过边界**：UniFFI 会捕获 panic 并以"意外错误"抛回宿主语言，
-  所以损坏的卡带是被上报，而不是让 App 进程 abort。
+- **panic 必须由绑定层兜住，而且不能只靠 UniFFI 的默认行为**：UniFFI 确实会在 FFI 边界捕获
+  panic（不会 UB，消息也保留），但对**不返回 `Result` 的方法**，它生成的 Swift 包装是 `try!`——
+  实测结果是 panic 变成 Swift 致命错误、整个 App 崩溃（退出码 133，而不是抛给调用方）。
+  因此 `nes-uniffi` 自己用 `catch_unwind` 包住所有会执行 CPU 的入口
+  （`load_rom` / `reset` / `frame` / `run_cycles` / `step_instruction`），把它们统一变成
+  Swift 侧的 `throws`，panic 变为可捕获的 `NesError::EmulationPanic { message }`。
+  机器此时停在半条指令上，宿主应重新加载卡带——句柄本身仍然可用（锁中毒会被恢复）。
+  注意这条只在 panic 展开（unwind）时成立：若宿主用 `panic = "abort"` 构建，任何绑定都拦不住。
 
 生成绑定（绑定文件是生成物，不入库）：
 
@@ -716,11 +722,19 @@ flowchart LR
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝（如 6、8、16、18、
   30、85、等等）。扩展方式见第 8 节。
-- **未定义的 opcode 会 panic**：CPU 只实现文档化指令集，遇到未定义 opcode 直接
-  `panic!`（`crates/nes-core/src/cpu/instructions.rs`）。6502 有约 40% 的字节值不是
-  文档化指令，所以**损坏的 ROM 很容易踩到**。把"不知道"升级成显式失败是当前刻意的选择，
-  但宿主必须在 FFI 边界用 `catch_unwind`（或 UniFFI 的 panic 捕获）兜住；如果希望损坏的
-  ROM 还能继续跑，需要决定是把未定义 opcode 当作 NOP（牺牲准确性）还是补齐它们的语义。
+- **未定义的 opcode 会 panic（已定策略：只在绑定边界兜住）**：CPU 只实现文档化指令集，
+  遇到未定义 opcode 直接 `panic!`（`crates/nes-core/src/cpu/instructions.rs`）——
+  把"不知道"升级成显式失败是刻意选择：牺牲健壮性换准确性。6502 有约 40% 的字节值不是
+  文档化指令，所以损坏的 ROM 很容易踩到。当前的处理方式是分层的：
+  - **`nes-uniffi`（iOS / macOS / Android）**：绑定层用 `catch_unwind` 捕获，变成可捕获的
+    `NesError::EmulationPanic`，进程存活、句柄可继续使用（§11.2）。已用真实 Swift 程序验证：
+    同一个 ROM 在修复前是 `try!` 致命错误（退出码 133），修复后是可 `catch` 的错误（退出码 0）。
+  - **`nes-wasm`（Web）**：wasm-bindgen 会把 panic 变成 JS 异常（无 UB），
+    `console_error_panic_hook` 会把消息打到控制台；但该 `Nes` 实例此后不可再用，需要重建。
+    前端目前没有把这条错误接进 UI，属于待办。
+  - **不做的事**：既不把未定义 opcode 当作 NOP，也不补齐它们的语义——那样会分别牺牲准确性
+    或显著增加工作量。行为由 `crates/nes-core/tests/host_contract.rs` 的 characterization 测试
+    与 `nes-uniffi` 的单测双向钉住。
 
 ### 15.2 存档与回放
 

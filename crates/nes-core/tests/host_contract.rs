@@ -34,3 +34,28 @@ fn a_console_really_runs_on_another_thread() {
 
     assert_eq!(frames, 1, "frame() should complete exactly one frame");
 }
+
+/// The CPU refuses to guess at undefined opcodes and panics instead.
+///
+/// That is a deliberate trade — accuracy over silently continuing — and it makes
+/// the binding layer responsible for turning the panic into a catchable error
+/// (`crates/nes-uniffi` does, with `catch_unwind`; see `docs/architecture.md`
+/// §15.1). This test pins the decision: if undocumented opcodes are ever
+/// implemented, it fails and the notes beside it need updating.
+#[test]
+#[should_panic(expected = "Invalid opcode")]
+fn an_undefined_opcode_panics_in_the_core() {
+    let mut rom = vec![0u8; 16 + 16 * 1024];
+    rom[0..4].copy_from_slice(b"NES\x1a");
+    rom[4] = 1; // one PRG bank
+    rom[5] = 0; // CHR-RAM
+    for byte in rom[16..].iter_mut() {
+        *byte = 0x02; // KIL/JAM, an undefined opcode
+    }
+    rom[16 + 0x3FFC] = 0x00;
+    rom[16 + 0x3FFD] = 0x80; // RESET -> $8000
+
+    let mut nes = Nes::new();
+    nes.load_rom(&rom).expect("the header itself is valid");
+    nes.frame();
+}
