@@ -63,6 +63,7 @@ flowchart TB
 | `crates/nes-wasm/` | `wasm-bindgen` 绑定，`src/lib.rs` 为薄封装 | → `nes-core` |
 | `crates/nes-uniffi/` | UniFFI 绑定，供 Swift（iOS/macOS）与 Kotlin（Android）使用 | → `nes-core`、`uniffi` |
 | `web/` | React + Vite 前端：Canvas 渲染、Web Audio、存档持久化、控制器 UI | → `web/src/wasm`（生成物） |
+| `ios/` | 可运行的最小 iOS 应用：Metal 画面、AVAudioEngine 音频、虚拟手柄；Rust 静态库由 `ios/build-core.sh` 产出 | → `crates/nes-uniffi` |
 | `web/src/wasm/`、`crates/nes-wasm/pkg/` | `wasm-pack` 生成物，**不入库**（由 `npm run build:wasm` 重新生成） | — |
 | `docs/` | 本文与界面截图 | — |
 | `roms/` | 本地测试 ROM，**不入库**；缺失时相关测试自动跳过 | — |

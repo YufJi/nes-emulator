@@ -2,3 +2,7 @@ target/
 pkg/
 # UniFFI bindings are generated, not committed.
 crates/nes-uniffi/out/
+ios/Artifacts/
+ios/NesApp/Generated/
+# Xcode drops these into the project directory when it cannot use $HOME.
+ios/com.apple.DeveloperTools/
