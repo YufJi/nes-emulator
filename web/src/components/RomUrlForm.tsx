@@ -1,4 +1,6 @@
 import { useCallback, useState, type FormEvent } from 'react';
+import { Button, Card, Input, Title } from 'animal-island-ui';
+import { DownloadIcon, LinkIcon } from 'naive-icons';
 
 interface RomUrlFormProps {
   busy: boolean;
@@ -27,26 +29,40 @@ export function RomUrlForm({ busy, onLoadUrl }: RomUrlFormProps) {
 
   return (
     <section className="panel">
-      <h2 className="panel__title">从链接加载</h2>
-      <form className="rom-url" onSubmit={submit}>
-        <input
-          type="text"
-          className="rom-url__input"
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-          placeholder="https://…/game.nes"
-          aria-label="ROM 链接"
-          inputMode="url"
-          spellCheck={false}
-          autoComplete="off"
-        />
-        <button type="submit" className="button" disabled={busy || url.trim() === ''}>
-          加载
-        </button>
-      </form>
-      <p className="panel__note">
-        支持 iNES (.nes) 直链；GitHub 的 Raw / 文件页面链接会自动转换为直链，其他站点需允许跨域（CORS）。
-      </p>
+      <Title size="small" color="app-blue">
+        从链接加载
+      </Title>
+      <Card className="card--tight">
+        <form className="rom-url" onSubmit={submit}>
+          <Input
+            className="rom-url__input"
+            size="large"
+            shadow
+            allowClear
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            onClear={() => setUrl('')}
+            placeholder="https://…/game.nes"
+            aria-label="ROM 链接"
+            inputMode="url"
+            spellCheck={false}
+            autoComplete="off"
+            disabled={busy}
+            prefix={<LinkIcon size={18} color="#b09a7e" aria-hidden />}
+          />
+          <Button
+            type="primary"
+            htmlType="submit"
+            icon={<DownloadIcon size={18} color="currentColor" aria-hidden />}
+            disabled={busy || url.trim() === ''}
+          >
+            加载
+          </Button>
+        </form>
+        <p className="panel__note">
+          支持 iNES (.nes) 直链；GitHub 的 Raw / 文件页面链接会自动转换为直链，其他站点需允许跨域（CORS）。
+        </p>
+      </Card>
     </section>
   );
 }

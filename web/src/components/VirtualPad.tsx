@@ -1,4 +1,6 @@
 import type { PointerEvent } from 'react';
+import { Button, Card, Title } from 'animal-island-ui';
+import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon } from 'naive-icons';
 import type { ButtonName } from '../emulator/constants';
 
 interface VirtualPadProps {
@@ -19,37 +21,73 @@ export function VirtualPad({ disabled, onButton }: VirtualPadProps) {
     onLostPointerCapture: () => onButton(button, false),
   });
 
-  const renderButton = (button: ButtonName, label: string, className = '') => (
-    <button
-      type="button"
-      className={`pad__key ${className}`}
-      disabled={disabled}
-      aria-label={button}
-      onContextMenu={(event) => event.preventDefault()}
-      {...hold(button)}
-    >
-      {label}
-    </button>
-  );
-
   return (
-    <div className={`pad${disabled ? ' pad--disabled' : ''}`}>
-      <div className="pad__dpad">
-        {renderButton('UP', '▲', 'pad__key--up')}
-        {renderButton('LEFT', '◀', 'pad__key--left')}
-        {renderButton('RIGHT', '▶', 'pad__key--right')}
-        {renderButton('DOWN', '▼', 'pad__key--down')}
-      </div>
+    <section className="panel">
+      <Title size="small" color="app-orange">
+        虚拟手柄
+      </Title>
+      <Card className="card--tight">
+        <div className={`pad${disabled ? ' pad--disabled' : ''}`}>
+          <div className="pad__dpad">
+            <Button
+              className="pad__key pad__key--up"
+              icon={<ArrowUpIcon size={20} color="currentColor" aria-hidden />}
+              aria-label="上"
+              disabled={disabled}
+              {...hold('UP')}
+            />
+            <Button
+              className="pad__key pad__key--left"
+              icon={<ArrowLeftIcon size={20} color="currentColor" aria-hidden />}
+              aria-label="左"
+              disabled={disabled}
+              {...hold('LEFT')}
+            />
+            <Button
+              className="pad__key pad__key--right"
+              icon={<ArrowRightIcon size={20} color="currentColor" aria-hidden />}
+              aria-label="右"
+              disabled={disabled}
+              {...hold('RIGHT')}
+            />
+            <Button
+              className="pad__key pad__key--down"
+              icon={<ArrowDownIcon size={20} color="currentColor" aria-hidden />}
+              aria-label="下"
+              disabled={disabled}
+              {...hold('DOWN')}
+            />
+          </div>
 
-      <div className="pad__actions">
-        {renderButton('B', 'B')}
-        {renderButton('A', 'A')}
-      </div>
+          <div className="pad__actions">
+            <Button
+              className="pad__key--round"
+              aria-label="B 键"
+              disabled={disabled}
+              {...hold('B')}
+            >
+              B
+            </Button>
+            <Button
+              className="pad__key--round"
+              aria-label="A 键"
+              disabled={disabled}
+              {...hold('A')}
+            >
+              A
+            </Button>
+          </div>
 
-      <div className="pad__system">
-        {renderButton('SELECT', 'SELECT', 'pad__key--wide')}
-        {renderButton('START', 'START', 'pad__key--wide')}
-      </div>
-    </div>
+          <div className="pad__system">
+            <Button block size="small" disabled={disabled} {...hold('SELECT')}>
+              SELECT
+            </Button>
+            <Button block size="small" disabled={disabled} {...hold('START')}>
+              START
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </section>
   );
 }

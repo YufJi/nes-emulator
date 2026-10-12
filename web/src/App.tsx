@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Background, Card, Cursor, Footer, Notification, Title } from 'animal-island-ui';
+import { PlayIcon } from 'naive-icons';
 import { DropOverlay } from './components/DropOverlay';
 import { GameListModal } from './components/GameListModal';
 import { GameScreen } from './components/GameScreen';
@@ -72,11 +74,19 @@ export default function App() {
     [loadUrl],
   );
 
-  // Wiping a save cannot be undone, so make the user confirm first.
-  const handleClearSave = useCallback(() => {
-    if (!window.confirm('清空该卡带的电池存档并重新开始？此操作无法撤销。')) return;
-    clearSave();
-  }, [clearSave]);
+  // Load failures surface as an island notification. Clearing the error once it
+  // is dismissed keeps the same failure reportable a second time.
+  useEffect(() => {
+    if (!error) return;
+    Notification.error({
+      key: 'nes-error',
+      message: '出错了',
+      description: error,
+      position: 'bottomRight',
+      duration: 6,
+      onClose: clearError,
+    });
+  }, [error, clearError]);
 
   // Window-wide drag & drop so a ROM can be dropped anywhere on the page.
   useEffect(() => {
@@ -154,58 +164,67 @@ export default function App() {
   }, []);
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand__mark">NES</span>
-          <div className="brand__text">
-            <h1>NES Emulator</h1>
-            <p>Rust + WebAssembly 内核 · 拖入 ROM 即可开玩</p>
-          </div>
-        </div>
-        <StatusBar state={state} romName={romName} romKey={romKey} fps={fps} busy={busy} />
-      </header>
+    <Cursor>
+      <Background type="sprinkles" className="app-shell">
+        <div className="app">
+          <header className="topbar">
+            <div className="brand">
+              <Card color="app-green" className="brand__badge">
+                <PlayIcon size={22} color="currentColor" aria-hidden />
+              </Card>
+              <div className="brand__text">
+                <h1 className="visually-hidden">NES Emulator</h1>
+                <Title size="small" color="app-teal">
+                  NES Emulator
+                </Title>
+                <p className="brand__sub">Rust + WebAssembly 内核 · 拖入 ROM 即可开玩</p>
+              </div>
+            </div>
+            <StatusBar state={state} romName={romName} romKey={romKey} fps={fps} busy={busy} />
+          </header>
 
-      <main className="layout">
-        <div className="layout__screen">
-          <GameScreen
-            stageRef={stageRef}
-            canvasRef={canvasRef}
-            state={state}
-            romName={romName}
-            romKey={romKey}
-            busy={busy}
-            onPickRom={pickRom}
-          />
-        </div>
+          <main className="layout">
+            <div className="layout__screen">
+              <GameScreen
+                stageRef={stageRef}
+                canvasRef={canvasRef}
+                state={state}
+                romName={romName}
+                busy={busy}
+                onPickRom={pickRom}
+              />
+            </div>
 
-        <aside className="layout__side">
-          <Toolbar
-            state={state}
-            hasRom={hasRom}
-            hasBattery={hasBattery}
-            muted={muted}
-            busy={busy}
-            onPick={pickRom}
-            onOpenGames={openGames}
-            onTogglePause={togglePause}
-            onReset={reset}
-            onClearSave={handleClearSave}
-            onToggleMute={toggleMute}
-            onFullscreen={toggleFullscreen}
-          />
-          <RomUrlForm busy={busy} onLoadUrl={loadUrl} />
-          <SaveStatePanel
-            disabled={!hasRom}
-            slots={saveSlots}
-            onSave={saveSlot}
-            onLoad={loadSlot}
-            onClear={clearSlot}
-          />
-          <VirtualPad disabled={!hasRom} onButton={setButton} />
-          <KeyGuide />
-        </aside>
-      </main>
+            <aside className="layout__side">
+              <Toolbar
+                state={state}
+                hasRom={hasRom}
+                hasBattery={hasBattery}
+                muted={muted}
+                busy={busy}
+                onPick={pickRom}
+                onOpenGames={openGames}
+                onTogglePause={togglePause}
+                onReset={reset}
+                onClearSave={clearSave}
+                onToggleMute={toggleMute}
+                onFullscreen={toggleFullscreen}
+              />
+              <RomUrlForm busy={busy} onLoadUrl={loadUrl} />
+              <SaveStatePanel
+                disabled={!hasRom}
+                slots={saveSlots}
+                onSave={saveSlot}
+                onLoad={loadSlot}
+                onClear={clearSlot}
+              />
+              <VirtualPad disabled={!hasRom} onButton={setButton} />
+              <KeyGuide />
+              <Footer text="NES Emulator · Rust + WebAssembly" />
+            </aside>
+          </main>
+        </div>
+      </Background>
 
       <input
         ref={fileInputRef}
@@ -219,15 +238,6 @@ export default function App() {
         }}
       />
 
-      {error && (
-        <div className="toast toast--error" role="alert">
-          <span>{error}</span>
-          <button type="button" className="toast__close" onClick={clearError} aria-label="关闭">
-            ×
-          </button>
-        </div>
-      )}
-
       {dragging && <DropOverlay />}
 
       {gamesOpen && (
@@ -238,6 +248,6 @@ export default function App() {
           onClose={() => setGamesOpen(false)}
         />
       )}
-    </div>
+    </Cursor>
   );
 }

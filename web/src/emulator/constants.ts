@@ -47,13 +47,12 @@ export const KEY_BINDINGS: Record<string, ButtonName> = {
   ShiftRight: 'SELECT',
 };
 
-/** Rows rendered by the on-screen key legend. */
-export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: string }> = [
-  { action: '方向', keys: '↑ ↓ ← →' },
-  { action: 'A', keys: 'X / K' },
-  { action: 'B', keys: 'Z / J' },
-  { action: 'Start', keys: 'Enter / Space' },
-  { action: 'Select', keys: 'Shift' },
+/** Rows rendered by the on-screen key legend; each entry is one key cap. */
+export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: readonly string[] }> = [
+  { action: 'A', keys: ['X', 'K'] },
+  { action: 'B', keys: ['Z', 'J'] },
+  { action: 'Start', keys: ['Enter', 'Space'] },
+  { action: 'Select', keys: ['Shift'] },
 ];
 
 /** Mappers implemented by `nes-core`; anything else cannot be emulated yet. */

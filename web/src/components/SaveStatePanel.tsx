@@ -1,3 +1,6 @@
+import { Button, Card, Tag, Title } from 'animal-island-ui';
+import { DownloadIcon, SaveIcon, TrashIcon } from 'naive-icons';
+
 interface SaveStatePanelProps {
   /** True when no ROM is loaded, which disables every slot. */
   disabled: boolean;
@@ -16,44 +19,55 @@ interface SaveStatePanelProps {
  */
 export function SaveStatePanel({ disabled, slots, onSave, onLoad, onClear }: SaveStatePanelProps) {
   return (
-    <section className="panel save-state">
-      <h2 className="panel__title">即时存档</h2>
-      <p className="panel__note">保存整个机器状态，可随时读取。</p>
-      <ul className="save-state__list">
-        {slots.map((filled, slot) => (
-          <li key={slot} className="save-state__row">
-            <span className={`save-state__slot${filled ? ' save-state__slot--filled' : ''}`}>
-              槽位 {slot + 1}
-            </span>
-            <div className="save-state__actions">
-              <button
-                type="button"
-                className="button button--small"
-                onClick={() => onSave(slot)}
-                disabled={disabled}
-              >
-                保存
-              </button>
-              <button
-                type="button"
-                className="button button--small"
-                onClick={() => onLoad(slot)}
-                disabled={disabled || !filled}
-              >
-                读取
-              </button>
-              <button
-                type="button"
-                className="button button--small"
-                onClick={() => onClear(slot)}
-                disabled={disabled || !filled}
-              >
-                清除
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+    <section className="panel">
+      <Title size="small" color="app-yellow">
+        即时存档
+      </Title>
+      <Card className="card--tight">
+        <ul className="save-state__list">
+          {slots.map((filled, slot) => (
+            <li key={slot} className="save-state__row">
+              <div className="save-state__info">
+                <span className="save-state__name">槽位 {slot + 1}</span>
+                <Tag
+                  size="small"
+                  color={filled ? 'app-green' : 'default'}
+                  variant={filled ? 'solid' : 'outlined'}
+                >
+                  {filled ? '已保存' : '空'}
+                </Tag>
+              </div>
+
+              <div className="save-state__actions">
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<SaveIcon size={15} color="currentColor" aria-hidden />}
+                  aria-label={`保存到槽位 ${slot + 1}`}
+                  onClick={() => onSave(slot)}
+                  disabled={disabled}
+                />
+                <Button
+                  size="small"
+                  icon={<DownloadIcon size={15} color="currentColor" aria-hidden />}
+                  aria-label={`读取槽位 ${slot + 1}`}
+                  onClick={() => onLoad(slot)}
+                  disabled={disabled || !filled}
+                />
+                <Button
+                  danger
+                  size="small"
+                  icon={<TrashIcon size={15} color="currentColor" aria-hidden />}
+                  aria-label={`清除槽位 ${slot + 1}`}
+                  onClick={() => onClear(slot)}
+                  disabled={disabled || !filled}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+        <p className="panel__note">保存整个机器状态，可随时读取。</p>
+      </Card>
     </section>
   );
 }

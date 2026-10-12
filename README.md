@@ -12,7 +12,8 @@
 - **扩展音频**：VRC6、MMC5、Sunsoft 5B。
 - **存档**：电池存档（按 ROM 名持久化）与即时存档（整机快照，4 个槽位）。
 - **前端**：拖拽 / 链接 / 游戏列表加载（带搜索）、虚拟手柄、整数倍像素缩放、
-  AudioWorklet 音频输出。
+  AudioWorklet 音频输出；界面基于
+  [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件库。
 
 ## 目录结构
 

@@ -1,12 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
-} from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Input, Modal, Pagination, Skeleton, Tag } from 'animal-island-ui';
+import { SearchIcon } from 'naive-icons';
 
 export interface GameEntry {
   name: string;
@@ -23,23 +17,23 @@ interface GameListModalProps {
 }
 
 /**
- * Rows rendered at once. The list holds hundreds of games, and rendering every
- * one of them would make typing in the search box sluggish.
+ * Rows per page. The list holds hundreds of games, so it is paged rather than
+ * rendered in one go — only the current page reaches the DOM.
  */
-const VISIBLE_LIMIT = 200;
+const PAGE_SIZE = 10;
 
 /**
  * Searchable game list, so a game can be picked without knowing its URL.
  *
  * The list is a static asset beside the page (`games.json`, regenerate it with
- * `npm run build:games`), fetched the first time the dialog is opened.
+ * `npm run build:games`), fetched the first time the dialog is opened. Escape,
+ * clicking the mask and the focus trap are the island Modal's own behaviour.
  */
 export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListModalProps) {
   const [games, setGames] = useState<GameEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const searchRef = useRef<HTMLInputElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,127 +56,103 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
     };
   }, []);
 
-  // The search box is the only thing worth typing into, so start there.
-  useEffect(() => {
-    searchRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
-
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return games ?? [];
     return (games ?? []).filter((game) => game.name.toLowerCase().includes(needle));
   }, [games, query]);
 
-  // Clicks on the backdrop close the dialog; clicks inside it must not.
-  const onBackdropDown = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (event.target === event.currentTarget) onClose();
-    },
-    [onClose],
-  );
+  // Narrowing the list can leave the current page past the end, so clamp it.
+  const pageCount = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
+  const current = Math.min(page, pageCount);
+  const visible = results.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
 
-  /**
-   * Keep Tab inside the dialog. The page behind stays mounted (and its keyboard
-   * handler keeps listening), so focus escaping would hand the arrow keys to a
-   * running game while the dialog is still open.
-   */
-  const onDialogKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Tab') return;
-
-    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-      'input:not([disabled]), button:not([disabled]), a[href]',
-    );
-    if (!focusable || focusable.length === 0) return;
-
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    const inside = dialogRef.current?.contains(active) ?? false;
-
-    if (event.shiftKey && (active === first || !inside)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
+  const search = useCallback((value: string) => {
+    setQuery(value);
+    setPage(1);
   }, []);
 
   return (
-    <div className="modal" onMouseDown={onBackdropDown}>
-      <div
-        ref={dialogRef}
-        className="modal__card"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="game-list-title"
-        onKeyDown={onDialogKeyDown}
-      >
-        <header className="modal__head">
-          <h2 className="modal__title" id="game-list-title">
-            游戏列表
-          </h2>
-          <button type="button" className="modal__close" onClick={onClose} aria-label="关闭">
-            ×
-          </button>
-        </header>
+    <Modal
+      open
+      title="游戏列表"
+      width={620}
+      typewriter={false}
+      onClose={onClose}
+      footer={
+        results.length > PAGE_SIZE ? (
+          <Pagination
+            total={results.length}
+            current={current}
+            pageSize={PAGE_SIZE}
+            showTotal
+            onChange={(next) => setPage(next)}
+          />
+        ) : null
+      }
+    >
+      <Input
+        size="large"
+        shadow
+        allowClear
+        value={query}
+        onChange={(event) => search(event.target.value)}
+        onClear={() => search('')}
+        placeholder="搜索游戏名…"
+        aria-label="搜索游戏"
+        spellCheck={false}
+        autoComplete="off"
+        prefix={<SearchIcon size={18} color="#b09a7e" aria-hidden />}
+      />
 
-        <input
-          ref={searchRef}
-          type="search"
-          className="modal__search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索游戏名…"
-          aria-label="搜索游戏"
-          spellCheck={false}
-          autoComplete="off"
-        />
+      {error && <p className="rom-list__empty">{error}</p>}
 
-        <div className="modal__body">
-          {error && <p className="modal__empty">{error}</p>}
-          {!games && !error && <p className="modal__empty">正在载入游戏列表…</p>}
-
-          {games && results.length === 0 && (
-            <p className="modal__empty">没有匹配 “{query.trim()}” 的游戏。</p>
-          )}
-
-          {games && results.length > 0 && (
-            <ul className="modal__list">
-              {results.slice(0, VISIBLE_LIMIT).map((game) => (
-                <li key={game.url}>
-                  <button
-                    type="button"
-                    className="modal__row"
-                    onClick={() => onSelect(game.url)}
-                    disabled={busy}
-                  >
-                    <span className="modal__name">{game.name}</span>
-                    {game.url === currentUrl && <span className="modal__badge">当前</span>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+      {!games && !error && (
+        <div className="rom-list__skeleton">
+          <Skeleton variant="rect" widthValue="100%" heightValue={40} />
+          <Skeleton variant="rect" widthValue="100%" heightValue={40} />
+          <Skeleton variant="rect" widthValue="100%" heightValue={40} />
+          <Skeleton variant="rect" widthValue="100%" heightValue={40} />
         </div>
+      )}
 
-        <p className="modal__foot">
-          {games ? `共 ${games.length} 个游戏` : '游戏列表'}
-          {' · 资料来自 '}
-          <a href="https://github.com/mengfei523060/nesrom" target="_blank" rel="noreferrer">
-            mengfei523060/nesrom
-          </a>
-          {results.length > VISIBLE_LIMIT && ` · 仅显示前 ${VISIBLE_LIMIT} 个匹配结果`}
-        </p>
-      </div>
-    </div>
+      {games && results.length === 0 && (
+        <p className="rom-list__empty">没有匹配 “{query.trim()}” 的游戏。</p>
+      )}
+
+      {visible.length > 0 && (
+        <ul className="rom-list">
+          {visible.map((game) => (
+            <li key={game.url}>
+              <Button
+                type="text"
+                block
+                size="middle"
+                className="rom-list__row"
+                onClick={() => onSelect(game.url)}
+                disabled={busy}
+              >
+                <span className="rom-list__inner">
+                  <span className="ellipsis rom-list__name">{game.name}</span>
+                  {game.url === currentUrl && (
+                    <Tag size="small" color="app-green" variant="solid">
+                      当前
+                    </Tag>
+                  )}
+                </span>
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <p className="rom-list__foot">
+        {games ? `共 ${games.length} 个游戏` : '游戏列表'}
+        {' · 资料来自 '}
+        <a href="https://github.com/mengfei523060/nesrom" target="_blank" rel="noreferrer">
+          mengfei523060/nesrom
+        </a>
+      </p>
+    </Modal>
   );
 }

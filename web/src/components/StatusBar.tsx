@@ -1,3 +1,5 @@
+import { Tag, Tooltip } from 'animal-island-ui';
+import { FileIcon } from 'naive-icons';
 import type { EmulatorState } from '../emulator/NesEmulator';
 
 interface StatusBarProps {
@@ -9,22 +11,42 @@ interface StatusBarProps {
   busy: boolean;
 }
 
-const STATE_LABEL: Record<EmulatorState, string> = {
-  idle: '待机',
-  running: '运行中',
-  paused: '已暂停',
+/** Island palette per emulator state, so colour says the same thing as the label. */
+const STATE_TAG: Record<
+  EmulatorState,
+  { label: string; color: 'default' | 'app-green' | 'app-yellow' }
+> = {
+  idle: { label: '待机', color: 'default' },
+  running: { label: '运行中', color: 'app-green' },
+  paused: { label: '已暂停', color: 'app-yellow' },
 };
 
 export function StatusBar({ state, romName, romKey, fps, busy }: StatusBarProps) {
+  const current = STATE_TAG[state];
+
   return (
     <div className="status">
-      <span className={`status__pill status__pill--${busy ? 'busy' : state}`}>
-        {busy ? '加载中' : STATE_LABEL[state]}
-      </span>
-      <span className="status__rom" title={romKey ?? undefined}>
-        {romName ?? '未加载 ROM'}
-      </span>
-      <span className="status__fps">{state === 'running' ? `${fps} FPS` : '—'}</span>
+      <Tag
+        color={busy ? 'app-orange' : current.color}
+        variant={busy || state === 'idle' ? 'soft' : 'solid'}
+      >
+        {busy ? '加载中' : current.label}
+      </Tag>
+
+      {/* Tag swallows unknown props, so the Tooltip's hover handlers go on a
+          plain wrapper element instead. */}
+      <Tooltip title={romKey ?? '还没有选择卡带'}>
+        <span className="status__rom">
+          <Tag className="status__rom-tag" color="brown" variant="soft" size="small">
+            <FileIcon size={13} color="currentColor" aria-hidden />
+            <span className="ellipsis">{romName ?? '未加载 ROM'}</span>
+          </Tag>
+        </span>
+      </Tooltip>
+
+      <Tag size="small" color={state === 'running' ? 'app-blue' : 'default'} variant="soft">
+        {state === 'running' ? `${fps} FPS` : '—'}
+      </Tag>
     </div>
   );
 }

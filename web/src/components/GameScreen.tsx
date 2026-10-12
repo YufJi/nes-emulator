@@ -1,4 +1,6 @@
 import type { RefObject } from 'react';
+import { Button, Card, Tag, Title } from 'animal-island-ui';
+import { FolderIcon } from 'naive-icons';
 import { NES_HEIGHT, NES_WIDTH } from '../emulator/constants';
 import { useIntegerScale } from '../hooks/useIntegerScale';
 import type { EmulatorState } from '../emulator/NesEmulator';
@@ -8,8 +10,6 @@ interface GameScreenProps {
   canvasRef: RefObject<HTMLCanvasElement>;
   state: EmulatorState;
   romName: string | null;
-  /** File name or URL the cartridge was loaded from, shown on hover. */
-  romKey: string | null;
   busy: boolean;
   onPickRom: () => void;
 }
@@ -19,7 +19,6 @@ export function GameScreen({
   canvasRef,
   state,
   romName,
-  romKey,
   busy,
   onPickRom,
 }: GameScreenProps) {
@@ -37,27 +36,40 @@ export function GameScreen({
 
       {state === 'idle' && (
         <div className="stage__overlay">
-          <p className="stage__headline">把 .nes 文件拖到这里</p>
-          <p className="stage__hint">
-            {busy ? '正在加载 WASM 内核…' : '或者选择本地文件 / 填入链接 / 打开游戏列表'}
-          </p>
-          <button type="button" className="button button--primary" onClick={onPickRom} disabled={busy}>
-            选择 ROM 文件
-          </button>
+          <Card type="dashed" className="stage__card">
+            <Title size="middle" color="app-blue">
+              把 .nes 文件拖到这里
+            </Title>
+            <p className="stage__hint">
+              {busy ? '正在加载 WASM 内核…' : '或者选择本地文件 / 填入链接 / 打开游戏列表'}
+            </p>
+            <Button
+              type="primary"
+              icon={<FolderIcon size={18} color="currentColor" aria-hidden />}
+              onClick={onPickRom}
+              loading={busy}
+            >
+              选择 ROM 文件
+            </Button>
+          </Card>
         </div>
       )}
 
       {state === 'paused' && (
-        <div className="stage__overlay stage__overlay--translucent">
-          <p className="stage__headline">已暂停</p>
-          <p className="stage__hint">按 P 或点击继续按钮恢复游戏</p>
+        <div className="stage__overlay stage__overlay--soft">
+          <Card color="app-yellow" className="stage__card">
+            <Title size="small" color="app-orange">
+              已暂停
+            </Title>
+            <p className="stage__hint">按 P 或点击继续按钮恢复游戏</p>
+          </Card>
         </div>
       )}
 
       {romName && state !== 'idle' && (
-        <div className="stage__label" title={romKey ?? romName}>
-          {romName}
-        </div>
+        <Tag className="stage__label" color="brown" variant="solid">
+          <span className="ellipsis">{romName}</span>
+        </Tag>
       )}
     </section>
   );

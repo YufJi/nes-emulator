@@ -23,6 +23,19 @@ npm run build:wasm  # 用 wasm-pack 重新生成 src/wasm/ 下的内核绑定
 `src/wasm/` 由 `npm run build:wasm` 生成，未纳入版本控制。
 首次执行该命令时 `wasm-pack` 会下载 `wasm-bindgen` 等工具，需要联网。
 
+## 界面
+
+界面由 [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件搭
+建，样式表在 `src/main.tsx` 里统一引入一次（`import 'animal-island-ui/style'`）。
+`src/styles.css` 只负责本项目自己的布局：它不覆盖库组件的颜色、圆角与阴影，而是读取库
+在 `:root` 上声明的 `--animal-*` token，让自定义部分与组件保持同一套色板。
+
+- 组件：`Card` / `Title` / `Button` / `Input` / `Switch` / `Tag` / `Modal` / `Pagination` /
+  `Skeleton` / `Collapse` / `Divider` / `Tooltip` / `Notification` / `Background` /
+  `Cursor` / `Footer`。
+- 图标一律取自 `naive-icons`（库的运行时依赖），不使用 emoji 或自制 SVG。
+- 加载失败提示走 `Notification` 命令式接口，「清空存档」的二次确认走 `Modal`。
+
 ## 目录结构
 
 ```
@@ -62,8 +75,8 @@ scripts/
 `public/games.json` 是形如 `[{ "name": "90坦克", "url": "https://raw.githubusercontent.com/…" }]`
 的静态文件，默认收录 [mengfei523060/nesrom](https://github.com/mengfei523060/nesrom)
 中的 932 个 ROM（只存名字与直链，**不含 ROM 数据**，仓库里的 ROM 一律不入版本控制）。
-弹窗首次打开时才请求该文件，因此不会增加首屏体积；列表按名称排序并一次最多渲染
-200 行，超出的部分靠搜索缩小范围。
+弹窗首次打开时才请求该文件，因此不会增加首屏体积；列表按名称排序，每页渲染 10 行，
+页脚用分页器翻页。
 
 换一个仓库或更新列表：
 
