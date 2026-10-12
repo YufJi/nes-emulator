@@ -1,13 +1,14 @@
 import type { RefObject } from 'react';
 import { Button, Card, Tag, Title } from 'animal-island-ui';
 import { FolderIcon } from 'naive-icons';
-import { NES_HEIGHT, NES_WIDTH } from '../emulator/constants';
 import { useIntegerScale } from '../hooks/useIntegerScale';
 import type { EmulatorState } from '../emulator/NesEmulator';
 
 interface GameScreenProps {
   stageRef: RefObject<HTMLDivElement>;
   canvasRef: RefObject<HTMLCanvasElement>;
+  /** Native frame size from the core; null until WASM has loaded. */
+  screen: { width: number; height: number } | null;
   state: EmulatorState;
   romName: string | null;
   busy: boolean;
@@ -17,20 +18,19 @@ interface GameScreenProps {
 export function GameScreen({
   stageRef,
   canvasRef,
+  screen,
   state,
   romName,
   busy,
   onPickRom,
 }: GameScreenProps) {
-  useIntegerScale(stageRef, canvasRef);
+  useIntegerScale(stageRef, canvasRef, screen?.width ?? null, screen?.height ?? null);
 
   return (
     <section className="stage" ref={stageRef}>
       <canvas
         ref={canvasRef}
         className="stage__canvas"
-        width={NES_WIDTH}
-        height={NES_HEIGHT}
         aria-label="NES 画面"
       />
 

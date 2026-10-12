@@ -25,8 +25,9 @@ pub mod ppu;
 pub mod state;
 
 pub use bus::Bus;
-pub use mapper::Mapper;
+pub use mapper::{supported_mappers, Mapper};
 pub use nes::Nes;
+pub use ppu::rendering::{PixelFormat, HEIGHT, PIXEL_FORMAT, WIDTH};
 
 /// The allocation-backed items that the `std` prelude normally injects.
 ///

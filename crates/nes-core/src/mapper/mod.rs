@@ -117,6 +117,17 @@ impl crate::state::StateField for Option<Box<dyn Mapper>> {
 }
 
 /// Mapper factory - creates appropriate mapper based on mapper number
+/// Every mapper number [`create_mapper`] can build, in ascending order.
+///
+/// Hosts use this to reject a cartridge before loading it, rather than
+/// discovering [`crate::NesError::UnsupportedMapper`] afterwards.
+pub fn supported_mappers() -> &'static [u16] {
+    &[
+        0, 1, 2, 3, 4, 5, 7, 9, 10, 11, 21, 22, 23, 24, 25, 26, 32, 33, 34, 38, 48, 65, 66, 69,
+        71, 79, 94, 118, 119, 140, 180, 240, 241,
+    ]
+}
+
 pub fn create_mapper(
     mapper_number: u16,
     prg_rom: Vec<u8>,
@@ -188,3 +199,38 @@ pub mod mapper71;
 pub mod mapper79;
 pub mod mapper9;
 pub mod mapper94;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_supported_mappers_matches_create_mapper() {
+        let mappers = supported_mappers();
+
+        // Sorted and duplicate-free, so hosts can diff or search the list.
+        assert!(
+            mappers.windows(2).all(|pair| pair[0] < pair[1]),
+            "mapper list must be ascending: {mappers:?}"
+        );
+
+        // Every advertised number must really build; otherwise the list lies
+        // to hosts that gate loading on it.
+        for &number in mappers {
+            let built = create_mapper(number, vec![0u8; 0x40000], vec![0u8; 0x40000]);
+            assert!(
+                built.is_ok(),
+                "supported_mappers() lists {number} but create_mapper rejected it"
+            );
+        }
+
+        // A number the list does not advertise must be refused.
+        let unlisted = (0..=241u16)
+            .find(|number| !mappers.contains(number))
+            .expect("0..=241 has a gap");
+        assert!(matches!(
+            create_mapper(unlisted, vec![0u8; 0x40000], vec![0u8; 0x40000]),
+            Err(crate::NesError::UnsupportedMapper(number)) if number == unlisted
+        ));
+    }
+}

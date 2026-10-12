@@ -226,6 +226,45 @@ impl BgRenderState {
     }
 }
 
+/// Width of the rendered frame in pixels.
+pub const WIDTH: usize = 256;
+
+/// Height of the rendered frame in pixels.
+pub const HEIGHT: usize = 240;
+
+/// Layout of the 32-bit pixels the PPU writes into a [`FrameBuffer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// One `u32` per pixel in `0xAARRGGBB` order, alpha in the high byte.
+    Argb8888,
+}
+
+/// Pixel layout of [`FrameBuffer::pixels`].
+pub const PIXEL_FORMAT: PixelFormat = PixelFormat::Argb8888;
+
+impl PixelFormat {
+    /// Stable identifier for host bindings and diagnostics, e.g. `"argb8888"`.
+    pub fn id(self) -> &'static str {
+        match self {
+            PixelFormat::Argb8888 => "argb8888",
+        }
+    }
+
+    /// Size of one pixel in bytes.
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            PixelFormat::Argb8888 => 4,
+        }
+    }
+
+    /// Bit position of each channel inside one pixel, as `[red, green, blue, alpha]`.
+    pub fn channel_shifts(self) -> [u32; 4] {
+        match self {
+            PixelFormat::Argb8888 => [16, 8, 0, 24],
+        }
+    }
+}
+
 /// Frame buffer for PPU output
 ///
 /// Stores the rendered frame as a Vec<u32> in ARGB format.
@@ -252,9 +291,9 @@ impl FrameBuffer {
     /// Create a new frame buffer with the NES resolution (256x240)
     pub fn new() -> Self {
         Self {
-            pixels: vec![0; 256 * 240],
-            width: 256,
-            height: 240,
+            pixels: vec![0; WIDTH * HEIGHT],
+            width: WIDTH,
+            height: HEIGHT,
         }
     }
 
@@ -470,7 +509,7 @@ impl BackgroundRenderer {
             state: BgRenderState::new(),
             frame_buffer: FrameBuffer::new(),
             mirroring: Mirroring::Horizontal,
-            bg_pixels: vec![0; 256 * 240],
+            bg_pixels: vec![0; WIDTH * HEIGHT],
             sprite_renderer: SpriteRenderer::new(),
             secondary_oam: SecondaryOam::new(),
         }

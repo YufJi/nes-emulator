@@ -17,6 +17,7 @@ const ROM_ACCEPT = '.nes,.fds,.unf,.unif,application/octet-stream';
 export default function App() {
   const {
     canvasRef,
+    screen,
     state,
     romName,
     romKey,
@@ -188,6 +189,7 @@ export default function App() {
               <GameScreen
                 stageRef={stageRef}
                 canvasRef={canvasRef}
+                screen={screen}
                 state={state}
                 romName={romName}
                 busy={busy}

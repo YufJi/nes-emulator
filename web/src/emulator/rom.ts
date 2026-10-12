@@ -1,4 +1,4 @@
-import { SUPPORTED_MAPPERS } from './constants';
+import { coreInfo } from './core';
 
 const NES_MAGIC = [0x4e, 0x45, 0x53, 0x1a] as const;
 const INES_MIN_HEADER_SIZE = 16;
@@ -198,6 +198,9 @@ function describeFetchFailure(cause: unknown): string {
 /**
  * Validate the iNES header up front so the user gets a readable message
  * instead of a WASM panic or a silently blank screen.
+ *
+ * The supported-mapper list comes from the core, so the WASM module must be
+ * initialized before this runs (see `initWasm`).
  */
 export function validateRom(data: Uint8Array, name = 'ROM'): void {
   if (data.length < INES_MIN_HEADER_SIZE) {
@@ -217,9 +220,11 @@ export function validateRom(data: Uint8Array, name = 'ROM'): void {
   }
 
   const mapper = readMapperNumber(data);
-  if (!SUPPORTED_MAPPERS.includes(mapper)) {
+  // The core owns the mapper list; asking it keeps host and core in step.
+  const supported = coreInfo().supportedMappers;
+  if (!supported.includes(mapper)) {
     throw new RomError(
-      `“${name}” 使用了 Mapper ${mapper}，当前内核尚未实现该 Mapper（已支持 ${SUPPORTED_MAPPERS.join(', ')}）。`,
+      `“${name}” 使用了 Mapper ${mapper}，当前内核尚未实现该 Mapper（已支持 ${supported.join(', ')}）。`,
     );
   }
 }

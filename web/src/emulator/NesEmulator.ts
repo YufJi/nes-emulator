@@ -1,4 +1,4 @@
-import init, {
+import {
   get_button_a,
   get_button_b,
   get_button_down,
@@ -10,13 +10,8 @@ import init, {
   Nes,
 } from '../wasm/nes_wasm.js';
 import { AudioOutput } from './AudioOutput';
-import {
-  BUTTON_NAMES,
-  FRAME_DURATION_MS,
-  NES_HEIGHT,
-  NES_WIDTH,
-  type ButtonName,
-} from './constants';
+import { BUTTON_NAMES, FRAME_DURATION_MS, type ButtonName } from './constants';
+import { coreInfo, initWasm } from './core';
 
 export type EmulatorState = 'idle' | 'running' | 'paused';
 
@@ -38,14 +33,6 @@ export interface NesEmulatorOptions {
   onFpsChange?: (fps: number) => void;
   /** Called whenever the cartridge's battery RAM changes. */
   onSaveRamChange?: (data: Uint8Array) => void;
-}
-
-let wasmInit: Promise<unknown> | null = null;
-
-/** Instantiate the WASM module once, no matter how many callers ask for it. */
-export function initWasm(): Promise<unknown> {
-  wasmInit ??= init();
-  return wasmInit;
 }
 
 /** Button indices, read from the WASM module so both sides cannot drift apart. */
@@ -74,6 +61,8 @@ export class NesEmulator {
   private readonly imageData: ImageData;
   private readonly audio = new AudioOutput();
   private readonly options: NesEmulatorOptions;
+  private readonly width: number;
+  private readonly height: number;
 
   private nes: Nes | null = null;
   private buttons: Record<ButtonName, number> | null = null;
@@ -99,12 +88,16 @@ export class NesEmulator {
     }
     this.context = context;
 
-    // Render at the console's native resolution and let CSS scale the element
-    // up with integer factors — cheaper and crisper than scaling in JS.
-    canvas.width = NES_WIDTH;
-    canvas.height = NES_HEIGHT;
+    // Render at the console's native resolution — taken from the core so the
+    // host never repeats it — and let CSS scale the element up with integer
+    // factors, cheaper and crisper than scaling in JS.
+    const { width, height } = coreInfo();
+    this.width = width;
+    this.height = height;
+    canvas.width = width;
+    canvas.height = height;
     context.imageSmoothingEnabled = false;
-    this.imageData = context.createImageData(NES_WIDTH, NES_HEIGHT);
+    this.imageData = context.createImageData(width, height);
   }
 
   get state(): EmulatorState {
@@ -346,20 +339,21 @@ export class NesEmulator {
     this.nes?.set_button(1, index, pressed);
   }
 
-  /** Blit the 32-bit ARGB frame buffer into the canvas. */
+  /** Blit the core's frame buffer into the canvas, honouring its pixel layout. */
   private render(): void {
     if (!this.nes) return;
 
+    const [redShift, greenShift, blueShift, alphaShift] = coreInfo().pixelShifts;
     const pixels = this.nes.get_frame_buffer();
     const target = this.imageData.data;
-    const count = Math.min(pixels.length, NES_WIDTH * NES_HEIGHT);
+    const count = Math.min(pixels.length, this.width * this.height);
 
     for (let i = 0, j = 0; i < count; i += 1, j += 4) {
       const pixel = pixels[i];
-      target[j] = (pixel >>> 16) & 0xff;
-      target[j + 1] = (pixel >>> 8) & 0xff;
-      target[j + 2] = pixel & 0xff;
-      target[j + 3] = 0xff;
+      target[j] = (pixel >>> redShift) & 0xff;
+      target[j + 1] = (pixel >>> greenShift) & 0xff;
+      target[j + 2] = (pixel >>> blueShift) & 0xff;
+      target[j + 3] = (pixel >>> alphaShift) & 0xff;
     }
 
     this.context.putImageData(this.imageData, 0, 0);

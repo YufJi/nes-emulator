@@ -16,6 +16,8 @@
 - **可移植内核**：`nes-core` 不依赖任何宿主绑定，默认 `std`，也可
   `--no-default-features` 以 `no_std` 构建；`Config` 可覆盖卡带声明的 TV 制式
   并关闭音频采集，供原生前端（Windows / macOS / iOS / Android 等）按需裁剪。
+  画面尺寸、像素格式与支持的 Mapper 列表由内核导出（`WIDTH` / `HEIGHT` /
+  `PIXEL_FORMAT` / `supported_mappers()`），宿主不再重复这些常量。
 - **前端**：拖拽 / 链接 / 游戏列表三种载入方式、虚拟手柄、整数倍像素缩放、
   AudioWorklet 音频输出、4 槽即时存档；界面基于
   [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件库。

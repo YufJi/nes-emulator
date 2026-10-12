@@ -7,7 +7,8 @@ import {
   type RefObject,
 } from 'react';
 import { KEY_BINDINGS, type ButtonName } from '../emulator/constants';
-import { NesEmulator, initWasm, type EmulatorState } from '../emulator/NesEmulator';
+import { initWasm, readCoreInfo } from '../emulator/core';
+import { NesEmulator, type EmulatorState } from '../emulator/NesEmulator';
 import { fetchRomFromUrl, fileRomSource, readRomFile, type RomSource } from '../emulator/rom';
 import { clearSaveRam, readSaveRam, writeSaveRam } from '../emulator/saveRam';
 import {
@@ -20,6 +21,8 @@ import {
 
 export interface UseNesEmulatorResult {
   canvasRef: RefObject<HTMLCanvasElement>;
+  /** Native frame size reported by the core, once WASM has loaded. */
+  screen: { width: number; height: number } | null;
   state: EmulatorState;
   /** Name of the loaded cartridge, for display. */
   romName: string | null;
@@ -65,6 +68,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
   const [muted, setMuted] = useState(false);
   const [busy, setBusy] = useState(true);
   const [hasBattery, setHasBattery] = useState(false);
+  const [screen, setScreen] = useState<{ width: number; height: number } | null>(null);
   const [saveSlots, setSaveSlots] = useState<boolean[]>(() =>
     Array(SAVE_STATE_SLOTS).fill(false),
   );
@@ -76,20 +80,26 @@ export function useNesEmulator(): UseNesEmulatorResult {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const emulator = new NesEmulator(canvas, {
-      onStateChange: setState,
-      onFpsChange: setFps,
-      onSaveRamChange: (data) => {
-        const key = romKeyRef.current;
-        if (key) writeSaveRam(key, data);
-      },
-    });
-    emulatorRef.current = emulator;
-
     let cancelled = false;
+    let emulator: NesEmulator | null = null;
+
     initWasm()
       .then(() => {
-        if (!cancelled) setBusy(false);
+        if (cancelled) return;
+        // The core publishes the frame size, so the emulator cannot be built
+        // until the module is instantiated.
+        const { width, height } = readCoreInfo();
+        setScreen({ width, height });
+        emulator = new NesEmulator(canvas, {
+          onStateChange: setState,
+          onFpsChange: setFps,
+          onSaveRamChange: (data) => {
+            const key = romKeyRef.current;
+            if (key) writeSaveRam(key, data);
+          },
+        });
+        emulatorRef.current = emulator;
+        setBusy(false);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
@@ -99,7 +109,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
 
     return () => {
       cancelled = true;
-      emulator.dispose();
+      emulator?.dispose();
       emulatorRef.current = null;
     };
   }, []);
@@ -166,6 +176,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
       setBusy(true);
       setError(null);
       try {
+        // Loading a ROM validates its mapper against the core's list, so make
+        // sure the module is up and its contract cached before reading.
+        await initWasm();
+        readCoreInfo();
         const { source, data } = await read();
         const emulator = emulatorRef.current;
         if (!emulator) return;
@@ -281,6 +295,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
   return useMemo(
     () => ({
       canvasRef,
+      screen,
       state,
       romName,
       romKey,
@@ -313,6 +328,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
       busy,
       hasBattery,
       saveSlots,
+      screen,
       loadFile,
       loadUrl,
       reset,

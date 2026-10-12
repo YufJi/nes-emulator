@@ -194,10 +194,9 @@ dd {
   user-select: none;
 }
 
+/* The frame size comes from the core; the emulator sets the canvas box. */
 .stage__canvas {
   display: block;
-  width: 256px;
-  height: 240px;
   background: #000;
   image-rendering: pixelated;
 }

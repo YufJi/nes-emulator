@@ -8,6 +8,7 @@ use nes_core::nes::{
     Nes as CoreNes, BUTTON_A, BUTTON_B, BUTTON_DOWN, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT,
     BUTTON_START, BUTTON_UP,
 };
+use nes_core::{supported_mappers, HEIGHT, PIXEL_FORMAT, WIDTH};
 use wasm_bindgen::prelude::*;
 
 /// WASM-exposed NES emulator.
@@ -205,4 +206,34 @@ pub fn get_button_left() -> u8 {
 #[wasm_bindgen]
 pub fn get_button_right() -> u8 {
     BUTTON_RIGHT
+}
+
+/// Width of the frame buffer in pixels.
+#[wasm_bindgen]
+pub fn get_frame_width() -> usize {
+    WIDTH
+}
+
+/// Height of the frame buffer in pixels.
+#[wasm_bindgen]
+pub fn get_frame_height() -> usize {
+    HEIGHT
+}
+
+/// Layout of the pixels returned by `Nes.get_frame_buffer`, e.g. `"argb8888"`.
+#[wasm_bindgen]
+pub fn get_pixel_format() -> String {
+    PIXEL_FORMAT.id().to_string()
+}
+
+/// Bit position of each channel inside a pixel, as `[red, green, blue, alpha]`.
+#[wasm_bindgen]
+pub fn get_pixel_shifts() -> Vec<u32> {
+    PIXEL_FORMAT.channel_shifts().to_vec()
+}
+
+/// Mapper numbers the core can emulate, ascending.
+#[wasm_bindgen]
+pub fn get_supported_mappers() -> Vec<u16> {
+    supported_mappers().to_vec()
 }

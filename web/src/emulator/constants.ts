@@ -1,7 +1,3 @@
-/** Native NES output resolution. */
-export const NES_WIDTH = 256;
-export const NES_HEIGHT = 240;
-
 /**
  * NTSC frame rate. The NES renders 262 scanlines of 341 PPU cycles each, which
  * works out to 60.0988 frames per second — not the 60 Hz of a typical display.
@@ -54,9 +50,4 @@ export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: readonly string[] 
   { action: 'B', keys: ['K', 'O'] },
   { action: 'Start', keys: ['Enter', 'Space'] },
   { action: 'Select', keys: ['Shift'] },
-];
-
-/** Mappers implemented by `nes-core`; anything else cannot be emulated yet. */
-export const SUPPORTED_MAPPERS: readonly number[] = [
-  0, 1, 2, 3, 4, 5, 7, 9, 11, 34, 38, 66, 71, 79, 94, 118, 119, 140, 180, 240, 241,
 ];
