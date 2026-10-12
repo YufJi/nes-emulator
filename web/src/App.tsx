@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { DropOverlay } from './components/DropOverlay';
 import { GameScreen } from './components/GameScreen';
 import { KeyGuide } from './components/KeyGuide';
+import { RomUrlForm } from './components/RomUrlForm';
 import { SaveStatePanel } from './components/SaveStatePanel';
 import { StatusBar } from './components/StatusBar';
 import { Toolbar } from './components/Toolbar';
@@ -15,6 +16,7 @@ export default function App() {
     canvasRef,
     state,
     romName,
+    romKey,
     error,
     fps,
     muted,
@@ -22,6 +24,7 @@ export default function App() {
     hasBattery,
     saveSlots,
     loadFile,
+    loadUrl,
     reset,
     clearSave,
     saveSlot,
@@ -145,7 +148,7 @@ export default function App() {
             <p>Rust + WebAssembly 内核 · 拖入 ROM 即可开玩</p>
           </div>
         </div>
-        <StatusBar state={state} romName={romName} fps={fps} busy={busy} />
+        <StatusBar state={state} romName={romName} romKey={romKey} fps={fps} busy={busy} />
       </header>
 
       <main className="layout">
@@ -155,6 +158,7 @@ export default function App() {
             canvasRef={canvasRef}
             state={state}
             romName={romName}
+            romKey={romKey}
             busy={busy}
             onPickRom={pickRom}
           />
@@ -174,6 +178,7 @@ export default function App() {
             onToggleMute={toggleMute}
             onFullscreen={toggleFullscreen}
           />
+          <RomUrlForm busy={busy} onLoadUrl={loadUrl} />
           <SaveStatePanel
             disabled={!hasRom}
             slots={saveSlots}

@@ -1,7 +1,7 @@
 # NES Emulator Web
 
 React + Vite 前端，驱动 `crates/nes-wasm` 编译出的 Rust/WASM NES 内核。
-把 `.nes` 文件拖到页面任意位置即可开始游戏。
+把 `.nes` 文件拖到页面任意位置、或在侧栏填入 ROM 链接即可开始游戏。
 
 ## 环境要求
 
@@ -29,17 +29,28 @@ src/
   emulator/
     NesEmulator.ts   # 帧时钟、画面渲染、输入与音频的总调度
     AudioOutput.ts   # AudioWorklet（回退 ScriptProcessorNode）音频输出
-    rom.ts           # ROM 文件校验（iNES 文件头、Mapper 支持情况）
+    rom.ts           # ROM 校验与链接下载（iNES 文件头、Mapper 支持情况）
     constants.ts     # 分辨率、帧率、按键映射等常量
   hooks/
     useNesEmulator.ts  # 把模拟器接到 React 状态上
     useIntegerScale.ts # 画布整数倍缩放
-  components/          # 画面、工具栏、虚拟手柄、键位表、拖拽覆盖层
+  components/          # 画面、工具栏、链接输入、虚拟手柄、键位表、拖拽覆盖层
 public/
   nes-audio-processor.js  # 运行在音频线程上的 AudioWorklet
 scripts/
   build-wasm.mjs      # wasm-pack 构建 + 生成物拷贝
 ```
+
+## 载入 ROM
+
+- **本地文件**：拖到页面任意位置，或用工具栏的「选择 ROM」。
+- **链接**：在侧栏「从链接加载」中粘贴 ROM 直链后回车（省略 `http(s)://` 时按
+  `https` 处理）。下载的镜像会经过与本地文件完全相同的 iNES / Mapper 校验。
+  GitHub 的 `blob`（文件页面）与 `raw` 链接会自动改写为 `raw.githubusercontent.com`
+  的直链——`github.com/…/raw/…` 的 302 跳转不带 `Access-Control-Allow-Origin`，
+  浏览器会直接丢弃该响应。其他站点的链接需要服务器允许跨域（CORS）。
+- **存档归属**：电池存档与即时存档按「来源」区分，本地文件用文件名、链接用规范化
+  后的 URL，因此同一份 ROM 的本地副本与链接副本互不覆盖。
 
 ## 操作方式
 
@@ -76,8 +87,8 @@ scripts/
   只改 CSS 尺寸，配合 `image-rendering: pixelated` 得到锐利像素。
 - **音频**：内核每个模拟帧产出一批交错立体声样本，交给 AudioWorklet 队列按声卡节奏
   播放；不支持 AudioWorklet 的浏览器自动回退到 `ScriptProcessorNode`。
-- **ROM 校验**：读取文件前先检查 iNES 文件头与 Mapper 是否已被内核实现，给出可读的
-  错误提示；加载失败时保留当前正在运行的游戏。
+- **ROM 校验**：无论是本地文件还是链接下载，交给内核前都先检查 iNES 文件头与 Mapper
+  是否已被内核实现，给出可读的错误提示；加载失败时保留当前正在运行的游戏。
 - **电池存档**：带电池的卡带其存档按 ROM 文件名写入 `localStorage`，再次拖入同一
   ROM 时自动恢复；工具栏的「清空存档」在二次确认后删除该存档并重置卡带，方便重开。
 - **即时存档**：`save_state` / `load_state` 把 CPU、PPU、APU、总线以及卡带的可变状态

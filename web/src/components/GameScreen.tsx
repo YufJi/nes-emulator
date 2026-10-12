@@ -8,6 +8,8 @@ interface GameScreenProps {
   canvasRef: RefObject<HTMLCanvasElement>;
   state: EmulatorState;
   romName: string | null;
+  /** File name or URL the cartridge was loaded from, shown on hover. */
+  romKey: string | null;
   busy: boolean;
   onPickRom: () => void;
 }
@@ -17,6 +19,7 @@ export function GameScreen({
   canvasRef,
   state,
   romName,
+  romKey,
   busy,
   onPickRom,
 }: GameScreenProps) {
@@ -36,7 +39,7 @@ export function GameScreen({
         <div className="stage__overlay">
           <p className="stage__headline">把 .nes 文件拖到这里</p>
           <p className="stage__hint">
-            {busy ? '正在加载 WASM 内核…' : '或者点击下面的按钮选择 ROM'}
+            {busy ? '正在加载 WASM 内核…' : '或者选择本地文件 / 在侧栏填入 ROM 链接'}
           </p>
           <button type="button" className="button button--primary" onClick={onPickRom} disabled={busy}>
             选择 ROM 文件
@@ -52,7 +55,7 @@ export function GameScreen({
       )}
 
       {romName && state !== 'idle' && (
-        <div className="stage__label" title={romName}>
+        <div className="stage__label" title={romKey ?? romName}>
           {romName}
         </div>
       )}

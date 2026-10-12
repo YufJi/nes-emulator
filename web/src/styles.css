@@ -322,6 +322,32 @@ p {
   color: var(--muted);
 }
 
+.rom-url {
+  display: flex;
+  gap: 8px;
+}
+
+.rom-url__input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-deep);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.rom-url__input::placeholder {
+  color: #6b7a99;
+}
+
+.rom-url__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .save-state__list {
   list-style: none;
   margin: 10px 0 0;
