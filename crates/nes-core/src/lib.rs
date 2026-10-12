@@ -1,4 +1,4 @@
-//! JSNES Core - NES emulator library
+//! NES Emulator Core - a portable NES emulation library
 //!
 //! This crate provides the core emulation components:
 //! - CPU: 6502 processor emulation
@@ -21,12 +21,12 @@ pub use bus::Bus;
 pub use mapper::Mapper;
 pub use nes::Nes;
 
-/// Result type for JSNES operations
-pub type Result<T> = core::result::Result<T, JsnesError>;
+/// Result type for emulator operations
+pub type Result<T> = core::result::Result<T, NesError>;
 
-/// Error types for JSNES
+/// Error types for the emulator
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum JsnesError {
+pub enum NesError {
     #[error("Invalid ROM format: {0}")]
     InvalidRomFormat(String),
     #[error("Unsupported mapper: {0}")]

@@ -8,7 +8,7 @@
 
 use nes_core::cpu::Cpu;
 use nes_core::mapper::create_mapper;
-use nes_core::{Bus, JsnesError, Mapper};
+use nes_core::{Bus, Mapper, NesError};
 
 /// Error code descriptions from nestest.txt, keyed by [byte, code].
 /// Byte 0x02 errors (official opcodes):
@@ -599,16 +599,16 @@ struct RomHeader {
 }
 
 impl RomHeader {
-    fn parse(data: &[u8]) -> Result<(Self, usize), JsnesError> {
+    fn parse(data: &[u8]) -> Result<(Self, usize), NesError> {
         if data.len() < 16 {
-            return Err(JsnesError::InvalidRomFormat(
+            return Err(NesError::InvalidRomFormat(
                 "ROM too small for header".to_string(),
             ));
         }
 
         // Check iNES magic number
         if &data[0..4] != b"NES\x1a" {
-            return Err(JsnesError::InvalidRomFormat(
+            return Err(NesError::InvalidRomFormat(
                 "Invalid iNES magic number".to_string(),
             ));
         }
@@ -713,8 +713,8 @@ impl Bus for TestBus {
 }
 
 /// Load a ROM file from the given path
-fn load_rom(path: &str) -> Result<(RomHeader, Vec<u8>, Vec<u8>), JsnesError> {
-    let data = std::fs::read(path).map_err(|e| JsnesError::IoError(e.to_string()))?;
+fn load_rom(path: &str) -> Result<(RomHeader, Vec<u8>, Vec<u8>), NesError> {
+    let data = std::fs::read(path).map_err(|e| NesError::IoError(e.to_string()))?;
 
     let (header, data_offset) = RomHeader::parse(&data)?;
 
@@ -722,7 +722,7 @@ fn load_rom(path: &str) -> Result<(RomHeader, Vec<u8>, Vec<u8>), JsnesError> {
     let prg_start = data_offset;
     let prg_end = prg_start + header.prg_rom_size;
     if data.len() < prg_end {
-        return Err(JsnesError::InvalidRomFormat(
+        return Err(NesError::InvalidRomFormat(
             "ROM too small for PRG-ROM".to_string(),
         ));
     }
@@ -762,7 +762,7 @@ fn describe_error(byte: &str, code: u8, error_table: &[(u8, &str)]) -> String {
 ///   mem[0x02] = page 1 result (official opcodes)
 ///   mem[0x03] = page 2 result (unofficial opcodes)
 /// A value of 0x00 means all tests in that page passed.
-fn run_nestest(rom_path: &str) -> Result<NestestResults, JsnesError> {
+fn run_nestest(rom_path: &str) -> Result<NestestResults, NesError> {
     // Load the ROM
     let (header, prg_rom, chr_rom) = load_rom(rom_path)?;
 

@@ -15,7 +15,7 @@ use crate::ppu::rendering::{
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::state::{StateReader, StateWriter};
-use crate::{JsnesError, Region};
+use crate::{NesError, Region};
 
 /// Button indices used by [`Nes::set_button`].
 pub const BUTTON_A: u8 = 0;
@@ -114,16 +114,16 @@ struct RomHeader {
 }
 
 impl RomHeader {
-    fn parse(data: &[u8]) -> core::result::Result<(Self, usize), JsnesError> {
+    fn parse(data: &[u8]) -> core::result::Result<(Self, usize), NesError> {
         if data.len() < 16 {
-            return Err(JsnesError::InvalidRomFormat(
+            return Err(NesError::InvalidRomFormat(
                 "ROM too small for header".to_string(),
             ));
         }
 
         // Check iNES magic number
         if &data[0..4] != b"NES\x1a" {
-            return Err(JsnesError::InvalidRomFormat(
+            return Err(NesError::InvalidRomFormat(
                 "Invalid iNES magic number".to_string(),
             ));
         }
@@ -275,14 +275,14 @@ impl NesBus {
     }
 
     /// Load a ROM into the system
-    fn load_rom(&mut self, data: &[u8]) -> core::result::Result<(), JsnesError> {
+    fn load_rom(&mut self, data: &[u8]) -> core::result::Result<(), NesError> {
         let (header, data_offset) = RomHeader::parse(data)?;
 
         // Extract PRG-ROM
         let prg_start = data_offset;
         let prg_end = prg_start + header.prg_rom_size;
         if data.len() < prg_end {
-            return Err(JsnesError::InvalidRomFormat(
+            return Err(NesError::InvalidRomFormat(
                 "ROM too small for PRG-ROM".to_string(),
             ));
         }

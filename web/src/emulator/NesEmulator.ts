@@ -7,7 +7,7 @@ import init, {
   get_button_select,
   get_button_start,
   get_button_up,
-  JsNes,
+  Nes,
 } from '../wasm/nes_wasm.js';
 import { AudioOutput } from './AudioOutput';
 import {
@@ -75,7 +75,7 @@ export class NesEmulator {
   private readonly audio = new AudioOutput();
   private readonly options: NesEmulatorOptions;
 
-  private nes: JsNes | null = null;
+  private nes: Nes | null = null;
   private buttons: Record<ButtonName, number> | null = null;
 
   private rafId: number | null = null;
@@ -122,7 +122,7 @@ export class NesEmulator {
 
     // Build the new instance before touching the old one so a failed load
     // leaves the currently running game untouched.
-    const next = new JsNes();
+    const next = new Nes();
     try {
       next.load_rom(data);
     } catch (error) {

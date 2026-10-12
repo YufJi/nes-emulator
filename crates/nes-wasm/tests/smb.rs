@@ -4,7 +4,7 @@
 //! rendering, mirroring, palette mirroring and the controller) by booting a
 //! real game and checking that it reaches the title screen and reacts to input.
 
-use nes_wasm::JsNes;
+use nes_wasm::Nes;
 
 const ROM_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roms/超级玛莉.NES");
 
@@ -12,14 +12,14 @@ const START: u8 = 3;
 const A: u8 = 0;
 const RIGHT: u8 = 7;
 
-fn load_smb() -> Option<JsNes> {
+fn load_smb() -> Option<Nes> {
     let data = std::fs::read(ROM_PATH).ok()?;
-    let mut nes = JsNes::new();
+    let mut nes = Nes::new();
     nes.load_rom(&data).expect("SMB ROM should load");
     Some(nes)
 }
 
-fn frame_stats(nes: &JsNes) -> (usize, usize) {
+fn frame_stats(nes: &Nes) -> (usize, usize) {
     let fb = nes.get_frame_buffer();
     let distinct = fb.iter().collect::<std::collections::HashSet<_>>().len();
     let non_backdrop = fb.iter().filter(|p| **p != fb[0]).count();

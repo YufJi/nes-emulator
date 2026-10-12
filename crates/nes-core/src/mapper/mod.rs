@@ -155,7 +155,7 @@ pub fn create_mapper(
         180 => Ok(Box::new(mapper180::Mapper180::new(prg_rom, chr_rom))),
         240 => Ok(Box::new(mapper240::Mapper240::new(prg_rom, chr_rom))),
         241 => Ok(Box::new(mapper241::Mapper241::new(prg_rom, chr_rom))),
-        _ => Err(crate::JsnesError::UnsupportedMapper(mapper_number)),
+        _ => Err(crate::NesError::UnsupportedMapper(mapper_number)),
     }
 }
 

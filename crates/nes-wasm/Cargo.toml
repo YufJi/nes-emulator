@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "WASM bindings for JSNES"
+description = "WASM bindings for the NES Emulator core"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

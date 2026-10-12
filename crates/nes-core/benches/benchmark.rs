@@ -1,4 +1,4 @@
-//! Performance Benchmarks for JSNES Core
+//! Performance Benchmarks for NES Emulator Core
 //!
 //! This benchmark suite measures the performance of the NES emulator
 //! and calculates FPS (frames per second) metrics.

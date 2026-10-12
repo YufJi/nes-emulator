@@ -169,7 +169,7 @@ pub struct Ppu {
     /// the CPU writing nametables through $2006/$2007 (which mutates `v`)
     /// cannot disturb an in-progress frame. It is reloaded from `t` on the
     /// pre-render scanline and advanced once per visible scanline, mirroring
-    /// the cntV/cntH/cntVT counters used by the reference jsnes implementation.
+    /// the cntV/cntH/cntVT counters used by the reference implementation.
     pub render_v: u16,
 
     // Rendering state

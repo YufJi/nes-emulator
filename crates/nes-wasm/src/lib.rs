@@ -5,32 +5,32 @@
 //! tests.
 
 use nes_core::nes::{
-    Nes, BUTTON_A, BUTTON_B, BUTTON_DOWN, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT, BUTTON_START,
-    BUTTON_UP,
+    Nes as CoreNes, BUTTON_A, BUTTON_B, BUTTON_DOWN, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT,
+    BUTTON_START, BUTTON_UP,
 };
 use wasm_bindgen::prelude::*;
 
 /// WASM-exposed NES emulator.
 #[wasm_bindgen]
-pub struct JsNes {
-    nes: Nes,
+pub struct Nes {
+    nes: CoreNes,
 }
 
-impl Default for JsNes {
+impl Default for Nes {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[wasm_bindgen]
-impl JsNes {
+impl Nes {
     /// Create a new NES emulator instance.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         #[cfg(feature = "console_error_panic_hook")]
         console_error_panic_hook::set_once();
 
-        Self { nes: Nes::new() }
+        Self { nes: CoreNes::new() }
     }
 
     /// Load a ROM from byte data.
