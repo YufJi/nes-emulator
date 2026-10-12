@@ -113,9 +113,9 @@ GITHUB_TOKEN=… npm run build:games       # 提高 GitHub API 额度（未认�
 
 | 动作 | 按键 |
 | --- | --- |
-| 方向 | `↑` `↓` `←` `→` |
-| A | `X` / `K` |
-| B | `Z` / `J` |
+| 方向 | `W` `A` `S` `D` |
+| A | `J` / `K` |
+| B | `I` / `O` |
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
 | 暂停 / 继续 | `P` |

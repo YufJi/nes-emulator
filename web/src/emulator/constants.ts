@@ -33,14 +33,14 @@ export const BUTTON_NAMES: readonly ButtonName[] = [
 
 /** Keyboard `event.code` to controller button mapping. */
 export const KEY_BINDINGS: Record<string, ButtonName> = {
-  ArrowUp: 'UP',
-  ArrowDown: 'DOWN',
-  ArrowLeft: 'LEFT',
-  ArrowRight: 'RIGHT',
-  KeyX: 'A',
+  KeyW: 'UP',
+  KeyS: 'DOWN',
+  KeyA: 'LEFT',
+  KeyD: 'RIGHT',
+  KeyJ: 'A',
   KeyK: 'A',
-  KeyZ: 'B',
-  KeyJ: 'B',
+  KeyI: 'B',
+  KeyO: 'B',
   Enter: 'START',
   Space: 'START',
   ShiftLeft: 'SELECT',
@@ -49,8 +49,9 @@ export const KEY_BINDINGS: Record<string, ButtonName> = {
 
 /** Rows rendered by the on-screen key legend; each entry is one key cap. */
 export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: readonly string[] }> = [
-  { action: 'A', keys: ['X', 'K'] },
-  { action: 'B', keys: ['Z', 'J'] },
+  { action: '方向', keys: ['W', 'A', 'S', 'D'] },
+  { action: 'A', keys: ['J', 'K'] },
+  { action: 'B', keys: ['I', 'O'] },
   { action: 'Start', keys: ['Enter', 'Space'] },
   { action: 'Select', keys: ['Shift'] },
 ];

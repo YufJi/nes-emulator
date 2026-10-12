@@ -1,14 +1,5 @@
 import { Card, Collapse, Divider, Tag, Title } from 'animal-island-ui';
-import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon } from 'naive-icons';
 import { KEY_GUIDE } from '../emulator/constants';
-
-/** Arrow caps are drawn with icons: the style guide bans glyph icons. */
-const DIRECTIONS = [
-  { Icon: ArrowUpIcon, label: '上' },
-  { Icon: ArrowDownIcon, label: '下' },
-  { Icon: ArrowLeftIcon, label: '左' },
-  { Icon: ArrowRightIcon, label: '右' },
-];
 
 export function KeyGuide() {
   return (
@@ -18,18 +9,6 @@ export function KeyGuide() {
       </Title>
       <Card className="card--tight">
         <dl className="keyguide">
-          <div className="keyguide__row">
-            <dt>方向</dt>
-            <dd className="keyguide__keys">
-              {DIRECTIONS.map(({ Icon, label }) => (
-                <Tag key={label} size="small" variant="outlined" color="default">
-                  <Icon size={13} color="currentColor" aria-hidden />
-                  <span className="visually-hidden">{label}</span>
-                </Tag>
-              ))}
-            </dd>
-          </div>
-
           {KEY_GUIDE.map(({ action, keys }) => (
             <div className="keyguide__row" key={action}>
               <dt>{action}</dt>
@@ -46,7 +25,7 @@ export function KeyGuide() {
 
         <Divider type="squiggle" />
 
-        <p className="panel__note">P 键暂停 / 继续，方向键不会滚动页面。</p>
+        <p className="panel__note">P 键暂停 / 继续；方向键不再绑定，移动请用 WASD。</p>
 
         <Collapse
           question="Select 为什么要按好几次？"
