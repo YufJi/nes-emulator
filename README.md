@@ -49,6 +49,28 @@ npm run dev          # 开发服务器 http://localhost:5173
 npm run build        # 类型检查 + 生产构建
 ```
 
+## 部署（GitHub Pages）
+
+推送到 `main` 会触发 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml)：
+先在 runner 上编译 WASM 内核（`web/src/wasm/` 未入库，必须重新生成），再构建前端，
+最后通过 Pages 的 Actions 流程发布。
+
+首次使用需要手动开启一次：仓库 **Settings → Pages → Source** 选择 **GitHub Actions**。
+工作流不会替你开启——GITHUB_TOKEN 没有仓库管理权限。开启后站点地址是
+`https://<owner>.github.io/<repo>/`。
+
+Vite 的 `base` 由工作流按仓库名推导（普通仓库 `/<repo>/`，`<owner>.github.io`
+这类用户站点 `/`），所以本地 `npm run build` 仍按站点根目录构建。要在本地复现
+子路径构建（排查部署问题时很有用）：
+
+```bash
+cd web
+PAGES_BASE=/<repo>/ npm run build:pages   # 产物在 web/dist
+```
+
+部署后的站点从 `raw.githubusercontent.com` 拉取游戏列表里的 ROM（对方允许跨域），
+因此只能联网使用；断网环境请改用本地文件或自建 ROM 直链。
+
 ## 操作方式
 
 | 动作 | 按键 |

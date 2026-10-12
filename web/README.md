@@ -14,6 +14,7 @@ React + Vite 前端，驱动 `crates/nes-wasm` 编译出的 Rust/WASM NES 内核
 npm install         # 安装依赖
 npm run dev         # 开发服务器 http://localhost:5173
 npm run build       # 类型检查 + 生产构建到 dist/
+npm run build:pages # 子路径构建（GitHub Pages），base 取自 PAGES_BASE，默认 /
 npm run preview     # 本地预览生产构建
 npm run typecheck   # 仅类型检查
 npm run build:games # 重新生成 public/games.json（游戏列表）
@@ -22,6 +23,11 @@ npm run build:wasm  # 用 wasm-pack 重新生成 src/wasm/ 下的内核绑定
 
 `src/wasm/` 由 `npm run build:wasm` 生成，未纳入版本控制。
 首次执行该命令时 `wasm-pack` 会下载 `wasm-bindgen` 等工具，需要联网。
+
+部署到 GitHub Pages 由根目录的 `.github/workflows/deploy-pages.yml` 负责：它会重新
+生成 `src/wasm/`、用 `npm run build:pages` 按 `<repo>` 子路径构建并发布 `dist/`。
+`games.json` 与 AudioWorklet 都通过 `import.meta.env.BASE_URL` 取路径，所以子路径
+部署无需改代码。详见根 [`README.md`](../README.md) 的「部署（GitHub Pages）」。
 
 ## 界面
 

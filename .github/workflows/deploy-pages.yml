@@ -1,0 +1,84 @@
+name: Deploy to GitHub Pages
+
+# `web/src/wasm` is generated, so the site has to be rebuilt here rather than
+# taken from the repository. Publishing happens on every push to `main`; the
+# manual trigger is there for redeploying a tag or re-running a bad build.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege: read the checkout, publish a Pages artifact, and let
+# deploy-pages mint the OIDC token it uses to reach the Pages API.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. Queued runs are deliberately not cancelled so a
+# publish that is already in flight always finishes.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # A project site is served from `/<repo>/` while a user site
+      # (`<user>.github.io`) is served from the root, so the Vite base path
+      # follows the repository name. (`actions/configure-pages` would report the
+      # same thing, but it fails outright until Pages has been enabled once.)
+      - name: Resolve the base path
+        run: |
+          case '${{ github.event.repository.name }}' in
+            *.github.io) base='' ;;
+            *) base="/${{ github.event.repository.name }}" ;;
+          esac
+          echo "PAGES_BASE=${base}/" >> "$GITHUB_ENV"
+          echo "Building for ${base}/"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/nes-wasm
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Build the WASM core
+        working-directory: web
+        run: npm run build:wasm
+
+      # Type-checks first, then builds with the resolved base path.
+      - name: Build the site
+        working-directory: web
+        run: npm run build:pages
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:pages": "tsc --noEmit && vite build --base \"${PAGES_BASE:-/}\"",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "build:games": "node scripts/build-game-list.mjs",
