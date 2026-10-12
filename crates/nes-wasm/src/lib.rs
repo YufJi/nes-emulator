@@ -9,12 +9,74 @@ use nes_core::nes::{
     BUTTON_START, BUTTON_UP,
 };
 use nes_core::{supported_mappers, HEIGHT, PIXEL_FORMAT, WIDTH};
+use nes_core::{FrameClock as CoreFrameClock, Region};
 use wasm_bindgen::prelude::*;
 
 /// WASM-exposed NES emulator.
 #[wasm_bindgen]
 pub struct Nes {
     nes: CoreNes,
+}
+
+/// Host-agnostic fixed-timestep pacer, shared by every front end.
+///
+/// Feed it the same monotonic timestamps your display link or timer provides
+/// (milliseconds) and it reports how many frames to emulate, absorbing
+/// catch-up bursts and measuring the achieved frame rate. Build it with
+/// `Nes.get_frame_rate()` so PAL cartridges run at their own speed.
+#[wasm_bindgen]
+pub struct FrameClock {
+    clock: CoreFrameClock,
+}
+
+impl Default for FrameClock {
+    fn default() -> Self {
+        Self::new(Region::Ntsc.fps())
+    }
+}
+
+#[wasm_bindgen]
+impl FrameClock {
+    /// Create a clock pacing at `frame_rate` Hz.
+    #[wasm_bindgen(constructor)]
+    pub fn new(frame_rate: f64) -> Self {
+        Self {
+            clock: CoreFrameClock::new(frame_rate),
+        }
+    }
+
+    /// Frames due now, given a monotonic timestamp in milliseconds.
+    ///
+    /// Zero means nothing is due yet. The first call only seeds the clock.
+    #[wasm_bindgen]
+    pub fn frames_due(&mut self, now_ms: f64) -> u32 {
+        self.clock.frames_due(now_ms)
+    }
+
+    /// Frame rate measured over the last sample window, in Hz (0 until measured).
+    #[wasm_bindgen]
+    pub fn fps(&self) -> f64 {
+        self.clock.fps()
+    }
+
+    /// The rate this clock paces at, in Hz.
+    #[wasm_bindgen]
+    pub fn frame_rate(&self) -> f64 {
+        self.clock.frame_rate()
+    }
+
+    /// Retarget the clock, e.g. after loading a PAL cartridge.
+    #[wasm_bindgen]
+    pub fn set_frame_rate(&mut self, frame_rate: f64) {
+        self.clock.set_frame_rate(frame_rate);
+    }
+
+    /// Re-seed the clock after loading a ROM, resuming, or returning to the
+    /// foreground, so the elapsed pause is not emulated.
+    #[wasm_bindgen]
+    pub fn reset(&mut self) {
+        self.clock.reset();
+    }
 }
 
 impl Default for Nes {
@@ -46,6 +108,33 @@ impl Nes {
     #[wasm_bindgen]
     pub fn frame(&mut self) {
         self.nes.frame();
+    }
+
+    /// Run at most `cycles` CPU cycles, stopping early at a frame boundary.
+    ///
+    /// Returns the cycles actually run; check `is_frame_ready` afterwards.
+    /// Unlike `frame`, audio samples accumulate until `clear_audio_samples`.
+    #[wasm_bindgen]
+    pub fn run_cycles(&mut self, cycles: u32) -> u32 {
+        self.nes.run_cycles(cycles)
+    }
+
+    /// Execute a single CPU instruction, returning the cycles it consumed.
+    #[wasm_bindgen]
+    pub fn step_instruction(&mut self) -> u8 {
+        self.nes.step_instruction()
+    }
+
+    /// Drop the buffered audio samples.
+    #[wasm_bindgen]
+    pub fn clear_audio_samples(&mut self) {
+        self.nes.clear_audio_samples();
+    }
+
+    /// Frame rate of the loaded cartridge in Hz (NTSC ~60.0985, PAL ~50.0067).
+    #[wasm_bindgen]
+    pub fn get_frame_rate(&self) -> f64 {
+        self.nes.frame_rate()
     }
 
     /// Current frame as ARGB pixels.

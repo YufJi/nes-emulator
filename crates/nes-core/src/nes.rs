@@ -5,7 +5,6 @@
 //! per CPU cycle. It is deliberately free of any host bindings so the same core
 //! can back the WASM build, tests, or a native front end.
 
-use crate::prelude::*;
 use crate::apu::Apu;
 use crate::bus::Bus;
 use crate::cpu::Cpu;
@@ -15,6 +14,7 @@ use crate::ppu::rendering::{
 };
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
+use crate::prelude::*;
 use crate::state::{StateReader, StateWriter};
 use crate::{Config, NesError, Region};
 
@@ -369,28 +369,60 @@ impl NesBus {
         let start_cycles = cpu.cycles();
 
         while cpu.cycles() - start_cycles < target_cpu_cycles && !self.frame_ready {
-            // Fetch and execute one instruction
-            let opcode = self.read(cpu.pc());
-            let cycles = cpu.execute_instruction(self, opcode);
-
-            // Mappers whose IRQ counter runs at the CPU clock rate.
-            if let Some(ref mut mapper) = self.mapper {
-                mapper.on_cpu_cycles(cycles);
-            }
-
-            // Update PPU and APU based on cycles consumed
-            self.on_cpu_cycle(cycles);
-
-            // The CPU is halted while OAM or DMC DMA runs; the rest of the
-            // machine keeps ticking.
-            if self.dma_stall_cycles > 0 {
-                let stall = self.dma_stall_cycles;
-                self.dma_stall_cycles = 0;
-                self.advance_cycles(stall);
-            }
+            self.step_instruction(cpu);
         }
 
         self.frame_ready
+    }
+
+    /// Run at most `cycles` CPU cycles, stopping early when a frame ends.
+    ///
+    /// The `frame_ready` flag is cleared up front, exactly as
+    /// [`NesBus::run_frame`] does, so a caller can tell whether a frame boundary
+    /// fell inside this slice. Unlike `run_frame` the audio buffer is *not*
+    /// cleared: sub-frame callers accumulate samples and drain them explicitly.
+    ///
+    /// Returns the number of CPU cycles actually run, which is less than the
+    /// requested amount when a frame ended first.
+    fn run_cycles(&mut self, cpu: &mut Cpu, cycles: u32) -> u32 {
+        self.frame_ready = false;
+
+        let start_cycles = cpu.cycles();
+        let target_cpu_cycles = cycles as u64;
+        while cpu.cycles() - start_cycles < target_cpu_cycles && !self.frame_ready {
+            self.step_instruction(cpu);
+        }
+
+        (cpu.cycles() - start_cycles) as u32
+    }
+
+    /// Execute a single CPU instruction and advance the rest of the machine by
+    /// the cycles it consumed.
+    ///
+    /// This is the smallest unit of emulation; `frame_ready` is left alone so a
+    /// debugger can single-step across a frame boundary and still see it.
+    fn step_instruction(&mut self, cpu: &mut Cpu) -> u8 {
+        // Fetch and execute one instruction
+        let opcode = self.read(cpu.pc());
+        let cycles = cpu.execute_instruction(self, opcode);
+
+        // Mappers whose IRQ counter runs at the CPU clock rate.
+        if let Some(ref mut mapper) = self.mapper {
+            mapper.on_cpu_cycles(cycles);
+        }
+
+        // Update PPU and APU based on cycles consumed
+        self.on_cpu_cycle(cycles);
+
+        // The CPU is halted while OAM or DMC DMA runs; the rest of the
+        // machine keeps ticking.
+        if self.dma_stall_cycles > 0 {
+            let stall = self.dma_stall_cycles;
+            self.dma_stall_cycles = 0;
+            self.advance_cycles(stall);
+        }
+
+        cycles
     }
 
     /// Get the current frame buffer
@@ -401,6 +433,11 @@ impl NesBus {
     /// Get the audio samples
     fn audio_samples(&self) -> &[f32] {
         &self.audio_buffer
+    }
+
+    /// Drop every buffered audio sample.
+    fn clear_audio_samples(&mut self) {
+        self.audio_buffer.clear();
     }
 
     /// Set a button state for a player
@@ -794,6 +831,26 @@ impl Nes {
         self.bus.run_frame(&mut self.cpu);
     }
 
+    /// Run at most `cycles` CPU cycles, stopping early at a frame boundary.
+    ///
+    /// Returns the cycles actually run. For hosts that pace the console in
+    /// sub-frame slices — a cycle-driven audio clock, or a debugger — rather
+    /// than a frame at a time. Check [`Nes::is_frame_ready`] afterwards, and
+    /// note that, unlike [`Nes::frame`], audio samples accumulate across calls
+    /// until [`Nes::clear_audio_samples`] drains them.
+    pub fn run_cycles(&mut self, cycles: u32) -> u32 {
+        self.bus.run_cycles(&mut self.cpu, cycles)
+    }
+
+    /// Execute a single CPU instruction and return the cycles it consumed.
+    ///
+    /// The finest-grained entry point, meant for stepping through code one
+    /// instruction at a time. Like [`Nes::run_cycles`] it leaves the audio
+    /// buffer untouched.
+    pub fn step_instruction(&mut self) -> u8 {
+        self.bus.step_instruction(&mut self.cpu)
+    }
+
     /// ARGB frame buffer (256x240).
     pub fn frame_buffer(&self) -> &[u32] {
         &self.bus.frame_buffer().pixels
@@ -812,6 +869,15 @@ impl Nes {
     /// Audio samples produced by the last frame, interleaved left/right.
     pub fn audio_samples(&self) -> &[f32] {
         self.bus.audio_samples()
+    }
+
+    /// Drop every buffered audio sample.
+    ///
+    /// [`Nes::frame`] clears the buffer at the start of every frame, so hosts
+    /// that run frame by frame never need this; sub-frame hosts do, once they
+    /// have consumed the samples reported by [`Nes::audio_samples`].
+    pub fn clear_audio_samples(&mut self) {
+        self.bus.clear_audio_samples();
     }
 
     /// Pointer to the audio sample buffer.
@@ -864,6 +930,15 @@ impl Nes {
     /// TV system of the loaded cartridge.
     pub fn region(&self) -> Region {
         self.bus.region
+    }
+
+    /// Frame rate of the loaded cartridge in Hz.
+    ///
+    /// Cartridges are NTSC or PAL and the two run at different speeds, so a
+    /// host that paces the console should read this after loading a ROM rather
+    /// than assuming 60 Hz. Pair it with [`crate::FrameClock`].
+    pub fn frame_rate(&self) -> f64 {
+        self.bus.region.fps()
     }
 
     /// Serialize the whole machine (CPU + system) into a save state.
@@ -1365,6 +1440,48 @@ mod tests {
         // The console still ran a whole frame; only sample capture is off.
         assert_eq!(silent.frame_number(), 1);
         assert!(silent.audio_samples().is_empty());
+    }
+
+    /// Running a frame in sub-frame slices must land on exactly the state a
+    /// whole-frame run reaches; otherwise a paced host would desync from a
+    /// frame-at-a-time one.
+    #[test]
+    fn test_cycle_slices_reach_the_same_state_as_a_whole_frame() {
+        let rom = marker_rom(0);
+
+        let mut whole = Nes::new();
+        whole.load_rom(&rom).unwrap();
+        whole.frame();
+
+        let mut sliced = Nes::new();
+        sliced.load_rom(&rom).unwrap();
+        // Odd-sized slices so instructions straddle the boundaries.
+        while !sliced.is_frame_ready() {
+            sliced.run_cycles(97);
+        }
+
+        assert_eq!(sliced.save_state(), whole.save_state());
+    }
+
+    #[test]
+    fn test_single_stepping_reaches_the_same_state_as_a_whole_frame() {
+        let rom = marker_rom(0);
+
+        let mut whole = Nes::new();
+        whole.load_rom(&rom).unwrap();
+        whole.frame();
+
+        let mut stepped = Nes::new();
+        stepped.load_rom(&rom).unwrap();
+        for _ in 0..50_000 {
+            if stepped.is_frame_ready() {
+                break;
+            }
+            assert!(stepped.step_instruction() > 0, "an instruction must cost cycles");
+        }
+        assert!(stepped.is_frame_ready(), "stepping never reached a frame boundary");
+
+        assert_eq!(stepped.save_state(), whole.save_state());
     }
 
     #[test]

@@ -18,6 +18,10 @@
   并关闭音频采集，供原生前端（Windows / macOS / iOS / Android 等）按需裁剪。
   画面尺寸、像素格式与支持的 Mapper 列表由内核导出（`WIDTH` / `HEIGHT` /
   `PIXEL_FORMAT` / `supported_mappers()`），宿主不再重复这些常量。
+- **统一节奏**：`FrameClock` 把宿主的时间戳换算成整帧，追帧上限、卡顿后丢弃积压与
+  FPS 统计都在内核里；帧率按卡带制式精确推导（NTSC 60.0985 Hz、PAL 50.0067 Hz），
+  而非约定俗成的 60/50。子帧接口 `run_cycles` / `step_instruction` 供更细粒度的
+  驱动与调试使用，前端不必再各自实现定时器与追帧逻辑。
 - **前端**：拖拽 / 链接 / 游戏列表三种载入方式、虚拟手柄、整数倍像素缩放、
   AudioWorklet 音频输出、4 槽即时存档；界面基于
   [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件库。

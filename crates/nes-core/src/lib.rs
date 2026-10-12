@@ -18,6 +18,7 @@ use alloc::string::String;
 
 pub mod apu;
 pub mod bus;
+pub mod clock;
 pub mod cpu;
 pub mod mapper;
 pub mod nes;
@@ -25,6 +26,7 @@ pub mod ppu;
 pub mod state;
 
 pub use bus::Bus;
+pub use clock::FrameClock;
 pub use mapper::{supported_mappers, Mapper};
 pub use nes::Nes;
 pub use ppu::rendering::{PixelFormat, HEIGHT, PIXEL_FORMAT, WIDTH};
@@ -97,6 +99,9 @@ impl Default for Config {
     }
 }
 
+/// PPU dots per scanline. Each CPU cycle covers three of them.
+pub const PPU_CYCLES_PER_SCANLINE: u32 = 341;
+
 /// NES TV system regions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Region {
@@ -138,12 +143,18 @@ impl Region {
         }
     }
 
-    /// Get the frame rate
+    /// Scanlines in one frame, i.e. the index of the last one plus one.
+    pub fn scanlines(&self) -> u16 {
+        self.last_scanline() + 1
+    }
+
+    /// Exact frame rate in Hz, derived from the PPU clock and the frame
+    /// geometry rather than rounded to a nominal 60/50.
+    ///
+    /// NTSC works out to ~60.0985 Hz and PAL to ~50.0067 Hz; a front end that
+    /// paces against a rounded 60 would drift away from the emulated console.
     pub fn fps(&self) -> f64 {
-        match self {
-            Region::Ntsc => 60.0,
-            Region::Pal => 50.0,
-        }
+        self.ppu_clock_rate() as f64 / (PPU_CYCLES_PER_SCANLINE as f64 * self.scanlines() as f64)
     }
 
     /// Scanline number of the pre-render line, i.e. the last scanline of a
@@ -158,8 +169,7 @@ impl Region {
     /// CPU cycles in one frame (341 PPU dots per scanline, 3 dots per CPU
     /// cycle).
     pub fn cpu_cycles_per_frame(&self) -> u32 {
-        let scanlines = self.last_scanline() as u32 + 1;
-        scanlines * 341 / 3
+        self.scanlines() as u32 * PPU_CYCLES_PER_SCANLINE / 3
     }
 }
 
@@ -177,6 +187,15 @@ mod tests {
         assert_eq!(Region::Pal.cpu_cycles_per_frame(), 35464);
 
         assert!(Region::Ntsc.cpu_cycles_per_frame() < Region::Pal.cpu_cycles_per_frame());
-        assert_eq!(Region::Pal.fps(), 50.0);
+
+        // The frame rate comes from the PPU clock, so it is not exactly 60/50.
+        assert_eq!(Region::Ntsc.scanlines(), 262);
+        assert_eq!(Region::Pal.scanlines(), 312);
+        assert!((Region::Ntsc.fps() - 60.098).abs() < 1e-3, "{}", Region::Ntsc.fps());
+        assert!((Region::Pal.fps() - 50.007).abs() < 1e-3, "{}", Region::Pal.fps());
+
+        // Front-end pacing must not assume a nominal 60 Hz.
+        assert!(Region::Ntsc.fps() > 60.0);
+        assert!(Region::Pal.fps() > 50.0);
     }
 }

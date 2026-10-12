@@ -7,26 +7,14 @@ import {
   get_button_select,
   get_button_start,
   get_button_up,
+  FrameClock,
   Nes,
 } from '../wasm/nes_wasm.js';
 import { AudioOutput } from './AudioOutput';
-import { BUTTON_NAMES, FRAME_DURATION_MS, type ButtonName } from './constants';
+import { BUTTON_NAMES, type ButtonName } from './constants';
 import { coreInfo, initWasm } from './core';
 
 export type EmulatorState = 'idle' | 'running' | 'paused';
-
-/** Emulated frames to catch up on in a single animation frame before giving up. */
-const MAX_CATCH_UP_FRAMES = 4;
-
-/**
- * Largest rAF gap we will simulate. When a tab is backgrounded the browser
- * stops calling `requestAnimationFrame`, so the next delta can be seconds long;
- * clamping it avoids a lengthy fast-forward burst on return.
- */
-const MAX_FRAME_DELTA_MS = 250;
-
-/** How often the measured frame rate is reported back to the UI. */
-const FPS_SAMPLE_MS = 500;
 
 export interface NesEmulatorOptions {
   onStateChange?: (state: EmulatorState) => void;
@@ -66,12 +54,11 @@ export class NesEmulator {
 
   private nes: Nes | null = null;
   private buttons: Record<ButtonName, number> | null = null;
+  /** Core-owned pacer: catch-up budget, backpressure and FPS all live in Rust. */
+  private clock: FrameClock | null = null;
 
   private rafId: number | null = null;
-  private lastTimestamp = 0;
-  private frameAccumulator = 0;
-  private framesSinceSample = 0;
-  private lastFpsSample = 0;
+  private lastReportedFps = 0;
   private framesSinceSaveCheck = 0;
   private lastSaveRam: Uint8Array | null = null;
 
@@ -127,9 +114,13 @@ export class NesEmulator {
     this.nes = next;
     this.buttons = readButtonIndices();
 
+    // Pace at the cartridge's own rate — PAL runs at ~50.007 Hz — and start
+    // from a clean clock so the load itself is not emulated.
+    this.clock?.free();
+    this.clock = new FrameClock(next.get_frame_rate());
+    this.lastReportedFps = 0;
+
     this.audio.flush();
-    this.lastTimestamp = 0;
-    this.frameAccumulator = 0;
 
     // Emulate one frame up front so the first paint is not a blank screen.
     this.stepFrames(1);
@@ -147,8 +138,7 @@ export class NesEmulator {
     if (!this.nes) return;
     this.nes.reset();
     this.audio.flush();
-    this.lastTimestamp = 0;
-    this.frameAccumulator = 0;
+    this.clock?.reset();
     this.stepFrames(1);
     this.render();
   }
@@ -162,8 +152,8 @@ export class NesEmulator {
 
   resume(): void {
     if (this.currentState !== 'paused') return;
-    this.lastTimestamp = 0;
-    this.frameAccumulator = 0;
+    // The pause was not emulation time, so restart the pacing from here.
+    this.clock?.reset();
     this.setState('running');
     this.startLoop();
     void this.audio.ensureStarted().catch(() => undefined);
@@ -203,6 +193,8 @@ export class NesEmulator {
     this.nes?.free();
     this.nes = null;
     this.buttons = null;
+    this.clock?.free();
+    this.clock = null;
     this.audio.dispose();
   }
 
@@ -218,46 +210,23 @@ export class NesEmulator {
   }
 
   /**
-   * Emulation clock. Frames are released on a fixed 60.0988 Hz schedule rather
-   * than once per animation frame, so the game speed follows the console rather
-   * than the display's refresh rate.
+   * Emulation clock. The core's `FrameClock` turns the animation-frame
+   * timestamp into a whole number of frames — absorbing catch-up bursts and
+   * dropping what it cannot repay — so the game follows the console's own rate
+   * rather than the display's refresh rate.
    */
   private readonly tick = (timestamp: number): void => {
     this.rafId = requestAnimationFrame(this.tick);
 
-    if (this.currentState !== 'running' || !this.nes) {
-      this.lastTimestamp = timestamp;
-      return;
-    }
-    if (this.lastTimestamp === 0) {
-      this.lastTimestamp = timestamp;
-      return;
-    }
+    if (this.currentState !== 'running' || !this.nes) return;
 
-    let delta = timestamp - this.lastTimestamp;
-    this.lastTimestamp = timestamp;
-    if (delta > MAX_FRAME_DELTA_MS) delta = MAX_FRAME_DELTA_MS;
-
-    this.frameAccumulator += delta;
-
-    let frames = 0;
-    while (this.frameAccumulator >= FRAME_DURATION_MS && frames < MAX_CATCH_UP_FRAMES) {
-      this.frameAccumulator -= FRAME_DURATION_MS;
-      frames += 1;
-    }
-
+    const frames = this.clock?.frames_due(timestamp) ?? 0;
     if (frames === 0) return;
-
-    // If we are still behind after the catch-up budget, drop the backlog
-    // instead of accumulating latency that can never be repaid.
-    if (this.frameAccumulator > FRAME_DURATION_MS * MAX_CATCH_UP_FRAMES) {
-      this.frameAccumulator = 0;
-    }
 
     this.stepFrames(frames);
     this.render();
     this.pumpAudio();
-    this.reportFps(timestamp, frames);
+    this.reportFps();
   };
 
   private stepFrames(count: number): void {
@@ -364,20 +333,12 @@ export class NesEmulator {
     this.audio.enqueue(this.nes.get_audio_samples());
   }
 
-  private reportFps(timestamp: number, frames: number): void {
-    this.framesSinceSample += frames;
+  /** Hand the core's measured frame rate to the UI whenever it changes. */
+  private reportFps(): void {
+    const fps = Math.round(this.clock?.fps() ?? 0);
+    if (fps <= 0 || fps === this.lastReportedFps) return;
 
-    if (this.lastFpsSample === 0) {
-      this.lastFpsSample = timestamp;
-      return;
-    }
-
-    const elapsed = timestamp - this.lastFpsSample;
-    if (elapsed < FPS_SAMPLE_MS) return;
-
-    const fps = Math.round((this.framesSinceSample * 1000) / elapsed);
-    this.framesSinceSample = 0;
-    this.lastFpsSample = timestamp;
+    this.lastReportedFps = fps;
     this.options.onFpsChange?.(fps);
   }
 

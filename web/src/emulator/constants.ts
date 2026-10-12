@@ -1,10 +1,3 @@
-/**
- * NTSC frame rate. The NES renders 262 scanlines of 341 PPU cycles each, which
- * works out to 60.0988 frames per second — not the 60 Hz of a typical display.
- */
-export const FRAME_RATE = 60.0988;
-export const FRAME_DURATION_MS = 1000 / FRAME_RATE;
-
 /** Logical buttons of the standard controller. */
 export type ButtonName =
   | 'A'
