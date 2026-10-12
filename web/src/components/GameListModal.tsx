@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Input, Modal, Pagination, Skeleton, Tag } from 'animal-island-ui';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Input, Modal, Skeleton, Tag } from 'animal-island-ui';
 import { SearchIcon } from 'naive-icons';
 
 export interface GameEntry {
@@ -17,23 +17,45 @@ interface GameListModalProps {
 }
 
 /**
- * Rows per page. The list holds hundreds of games, so it is paged rather than
- * rendered in one go — only the current page reaches the DOM.
+ * Rows added each time the end of the list scrolls into view. The list holds
+ * hundreds of games, so it grows a slice at a time rather than rendering in one
+ * go — only the rows reached so far are in the DOM.
  */
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 20;
+
+/**
+ * How far below the list the next slice starts rendering. Rendering rows is
+ * cheap (the data is already in memory), so they are usually in place before
+ * they are scrolled into sight.
+ */
+const LOAD_MARGIN = '200px 0px';
+
+/**
+ * The Modal body is the scroller and cannot be reached through a ref, so the
+ * sentinel looks for its own scrolling ancestor.
+ */
+function scrollParent(node: HTMLElement): HTMLElement | null {
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    const { overflowY } = window.getComputedStyle(parent);
+    if (overflowY === 'auto' || overflowY === 'scroll') return parent;
+  }
+  return null;
+}
 
 /**
  * Searchable game list, so a game can be picked without knowing its URL.
  *
  * The list is a static asset beside the page (`games.json`, regenerate it with
- * `npm run build:games`), fetched the first time the dialog is opened. Escape,
+ * `npm run build:games`), fetched the first time the dialog is opened. It loads
+ * further slices as it is scrolled — there is no pager to click. Escape,
  * clicking the mask and the focus trap are the island Modal's own behaviour.
  */
 export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListModalProps) {
   const [games, setGames] = useState<GameEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [page, setPage] = useState(1);
+  const [count, setCount] = useState(PAGE_SIZE);
+  const sentinel = useRef<HTMLLIElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,14 +84,32 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
     return (games ?? []).filter((game) => game.name.toLowerCase().includes(needle));
   }, [games, query]);
 
-  // Narrowing the list can leave the current page past the end, so clamp it.
-  const pageCount = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
-  const current = Math.min(page, pageCount);
-  const visible = results.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const visible = results.slice(0, count);
+  const hasMore = visible.length < results.length;
+
+  // Re-observing after every slice re-runs the callback immediately, so a slice
+  // too short to push the sentinel out of sight keeps the list filling instead
+  // of stalling with room left in the scroller.
+  useEffect(() => {
+    const node = sentinel.current;
+    if (!hasMore || !node) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setCount((loaded) => loaded + PAGE_SIZE);
+        }
+      },
+      { root: scrollParent(node), rootMargin: LOAD_MARGIN },
+    );
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [hasMore, count, results]);
 
   const search = useCallback((value: string) => {
     setQuery(value);
-    setPage(1);
+    setCount(PAGE_SIZE);
   }, []);
 
   return (
@@ -79,31 +119,24 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
       width={620}
       typewriter={false}
       onClose={onClose}
-      footer={
-        results.length > PAGE_SIZE ? (
-          <Pagination
-            total={results.length}
-            current={current}
-            pageSize={PAGE_SIZE}
-            showTotal
-            onChange={(next) => setPage(next)}
-          />
-        ) : null
-      }
+      footer={null}
     >
-      <Input
-        size="large"
-        shadow
-        allowClear
-        value={query}
-        onChange={(event) => search(event.target.value)}
-        onClear={() => search('')}
-        placeholder="搜索游戏名…"
-        aria-label="搜索游戏"
-        spellCheck={false}
-        autoComplete="off"
-        prefix={<SearchIcon size={18} color="#b09a7e" aria-hidden />}
-      />
+      {/* Sticky, so the box stays reachable however far the list is scrolled. */}
+      <div className="rom-list__search">
+        <Input
+          size="large"
+          shadow
+          allowClear
+          value={query}
+          onChange={(event) => search(event.target.value)}
+          onClear={() => search('')}
+          placeholder="搜索游戏名…"
+          aria-label="搜索游戏"
+          spellCheck={false}
+          autoComplete="off"
+          prefix={<SearchIcon size={18} color="#b09a7e" aria-hidden />}
+        />
+      </div>
 
       {error && <p className="rom-list__empty">{error}</p>}
 
@@ -143,6 +176,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
               </Button>
             </li>
           ))}
+          {hasMore && <li ref={sentinel} className="rom-list__more" aria-hidden />}
         </ul>
       )}
 

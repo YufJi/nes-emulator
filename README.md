@@ -43,7 +43,7 @@ React + Vite + TypeScript；Rust 内核经 `wasm-bindgen` 编译成 WASM，在�
   的直链——`github.com/…/raw/…` 的 302 跳转不带 `Access-Control-Allow-Origin`，
   浏览器会直接丢弃响应；其他站点需要服务器允许跨域（CORS）。
 - **游戏列表**：内置 [mengfei523060/nesrom](https://github.com/mengfei523060/nesrom)
-  的 932 个 ROM 目录（只有名称与直链，不含 ROM 数据），可按名称搜索、分页翻看，
+  的 932 个 ROM 目录（只有名称与直链，不含 ROM 数据），可按名称搜索、滚动翻看，
   正在运行的卡带标有「当前」。列表是静态的 `public/games.json`，弹窗第一次打开时
   才请求，可用 `cd web && npm run build:games` 重新生成。
 - 三种来源走同一套校验（iNES 文件头 + Mapper 支持检查）；加载失败会保留当前正在

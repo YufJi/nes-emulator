@@ -10,6 +10,9 @@
 :root {
   /* A warm CRT bezel: the letterbox around the NES picture, not UI chrome. */
   --bezel: #3d3428;
+  /* The island Modal's own surface colour: our sticky search box has to cover
+     the rows scrolling underneath it with the same shade. */
+  --modal-surface: #f7f3df;
 }
 
 * {
@@ -405,6 +408,17 @@ dd {
 
 /* ---------- game list ---------- */
 
+/* Pinned to the top of the Modal body's scroller, with enough padding below to
+   keep the rows from touching the box as they slide under it. */
+.rom-list__search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  padding-bottom: 10px;
+  background: var(--modal-surface);
+}
+
 .rom-list {
   list-style: none;
   margin: 0;
@@ -438,6 +452,12 @@ dd {
 .rom-list__name {
   font-weight: 600;
   text-align: left;
+}
+
+/* Sentinel for the scroll-loaded list: it carries no content, it just has to be
+   tall enough to intersect while the next slice renders. */
+.rom-list__more {
+  height: 24px;
 }
 
 .rom-list__empty {
