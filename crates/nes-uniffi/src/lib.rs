@@ -112,6 +112,13 @@ pub enum NesError {
     MemoryAccessError { address: u16 },
     /// A host-side I/O operation failed.
     IoError { message: String },
+    /// The emulated CPU panicked mid-instruction.
+    ///
+    /// The core deliberately panics on an undefined opcode instead of quietly
+    /// treating it as a no-op, so a corrupt cartridge fails loudly. The binding
+    /// catches that panic and hands it back as this error; the machine is left
+    /// mid-instruction, so reload the cartridge before running another frame.
+    EmulationPanic { message: String },
 }
 
 impl std::fmt::Display for NesError {
@@ -123,6 +130,7 @@ impl std::fmt::Display for NesError {
                 write!(f, "memory access error at {address:#06X}")
             }
             NesError::IoError { message } => write!(f, "host I/O error: {message}"),
+            NesError::EmulationPanic { message } => write!(f, "emulation panic: {message}"),
         }
     }
 }
@@ -139,6 +147,37 @@ impl From<nes_core::NesError> for NesError {
             }
             nes_core::NesError::IoError(message) => NesError::IoError { message },
         }
+    }
+}
+
+/// Run `body`, turning a Rust panic into a catchable error.
+///
+/// The CPU deliberately panics on an undefined opcode (see [`NesError::EmulationPanic`]).
+/// Left alone that panic unwinds into UniFFI's generated wrapper, which reports
+/// it as `UniffiInternalError.rustPanic` — and for a method whose Rust signature
+/// returns no `Result`, the generated Swift wrapper calls `try!` on that, which
+/// traps and takes the whole app down. Catching here keeps the failure catchable
+/// and typed, at the price of leaving the machine mid-instruction: the host is
+/// told to reload the cartridge.
+///
+/// This only works while panics unwind; building with `panic = "abort"` turns
+/// them into an immediate process abort that no binding can intercept.
+fn guard<T>(body: impl FnOnce() -> T) -> Result<T, NesError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|payload| {
+        NesError::EmulationPanic {
+            message: panic_message(payload),
+        }
+    })
+}
+
+/// The message out of a panic payload, if it carried one.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "panic without a message".to_string()
     }
 }
 
@@ -183,31 +222,34 @@ impl Nes {
     /// Restore the cartridge's battery RAM with [`Nes::load_save_ram`] before
     /// running the first frame: boot code can read its save that early.
     pub fn load_rom(&self, data: Vec<u8>) -> Result<(), NesError> {
-        self.machine().load_rom(&data).map_err(NesError::from)
+        guard(|| self.machine().load_rom(&data).map_err(NesError::from))?
     }
 
     /// Reset the console, as if the reset button was pressed.
-    pub fn reset(&self) {
-        self.machine().reset();
+    pub fn reset(&self) -> Result<(), NesError> {
+        guard(|| self.machine().reset())
     }
 
     /// Run one frame of emulation.
     ///
     /// Audio produced along the way stays queued for [`Nes::fill_audio`].
-    pub fn frame(&self) {
-        self.machine().frame();
+    ///
+    /// Fails with [`NesError::EmulationPanic`] if the cartridge sent the CPU
+    /// into an undefined opcode; reload it before the next frame.
+    pub fn frame(&self) -> Result<(), NesError> {
+        guard(|| self.machine().frame())
     }
 
     /// Run at most `cycles` CPU cycles, stopping early at a frame boundary.
     ///
     /// Returns the cycles actually run; check [`Nes::is_frame_ready`] afterwards.
-    pub fn run_cycles(&self, cycles: u32) -> u32 {
-        self.machine().run_cycles(cycles)
+    pub fn run_cycles(&self, cycles: u32) -> Result<u32, NesError> {
+        guard(|| self.machine().run_cycles(cycles))
     }
 
     /// Execute a single CPU instruction, returning the cycles it consumed.
-    pub fn step_instruction(&self) -> u8 {
-        self.machine().step_instruction()
+    pub fn step_instruction(&self) -> Result<u8, NesError> {
+        guard(|| self.machine().step_instruction())
     }
 
     /// The last completed frame, as `0xAARRGGBB` pixels, row-major.
@@ -496,20 +538,36 @@ pub fn button_right() -> u8 {
 mod tests {
     use super::*;
 
-    /// A minimal cartridge: one PRG bank whose reset code spins at `$8000`.
-    fn tiny_rom() -> Vec<u8> {
-        let mut rom = vec![0u8; 16 + 16 * 1024];
+    /// A minimal cartridge: one PRG bank, CHR-RAM, reset code at `$8000`.
+    ///
+    /// `body` fills PRG; the reset vector is patched in afterwards so the CPU
+    /// always starts at `$8000`.
+    fn tiny_rom_with(body: u8) -> Vec<u8> {
+        // The header stays zeroed; only the PRG body is filled with `body`.
+        let mut rom = vec![0u8; 16];
         rom[0..4].copy_from_slice(b"NES\x1a");
         rom[4] = 1; // one 16 KB PRG bank
         rom[5] = 0; // no CHR-ROM: the mapper backs it with CHR-RAM
-        let prg = 16;
-        rom[prg] = 0x4C; // JMP $8000
-        rom[prg + 1] = 0x00;
-        rom[prg + 2] = 0x80;
+        rom.resize(16 + 16 * 1024, body);
         // The reset vector lives in the last six bytes of PRG-ROM.
-        rom[prg + 0x3FFC] = 0x00;
-        rom[prg + 0x3FFD] = 0x80;
+        rom[16 + 0x3FFC] = 0x00;
+        rom[16 + 0x3FFD] = 0x80;
         rom
+    }
+
+    /// A cartridge whose reset code spins in a tight `JMP $8000` loop.
+    fn tiny_rom() -> Vec<u8> {
+        let mut rom = tiny_rom_with(0xEA); // NOP padding
+        rom[16] = 0x4C;
+        rom[17] = 0x00;
+        rom[18] = 0x80;
+        rom
+    }
+
+    /// A structurally valid cartridge whose PRG is nothing but `0x02`, an
+    /// undefined 6502 opcode the core refuses to guess at.
+    fn undefined_opcode_rom() -> Vec<u8> {
+        tiny_rom_with(0x02)
     }
 
     #[test]
@@ -519,7 +577,7 @@ mod tests {
             .expect("the tiny cartridge should load");
 
         assert_eq!(nes.frame_number(), 0);
-        nes.frame();
+        nes.frame().expect("frame should run");
         assert_eq!(nes.frame_number(), 1);
         assert!(nes.is_frame_ready());
         assert_eq!(nes.frame_buffer().len(), 256 * 240);
@@ -534,7 +592,7 @@ mod tests {
         let nes = Nes::new();
         nes.load_rom(tiny_rom()).unwrap();
         nes.set_sample_rate(44_100);
-        nes.frame();
+        nes.frame().expect("frame should run");
 
         assert_eq!(nes.fill_audio(100).len(), 100, "a short request is filled");
         assert!(nes.fill_audio(4096).len() > 100);
@@ -550,6 +608,38 @@ mod tests {
             nes.load_rom(rom),
             Err(NesError::InvalidRomFormat { .. })
         ));
+    }
+
+    #[test]
+    fn an_undefined_opcode_is_an_error_not_a_crash() {
+        // This is the case that would otherwise unwind into UniFFI's `try!`
+        // wrapper and take the host process down.
+        let nes = Nes::new();
+        nes.load_rom(undefined_opcode_rom())
+            .expect("the header itself is valid");
+
+        match nes.frame() {
+            Err(NesError::EmulationPanic { message }) => {
+                assert!(
+                    message.contains("Invalid opcode"),
+                    "the panic message should survive, got {message:?}"
+                );
+            }
+            other => panic!("expected an emulation panic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_console_survives_an_emulation_panic() {
+        let nes = Nes::new();
+        nes.load_rom(undefined_opcode_rom()).unwrap();
+        assert!(nes.frame().is_err());
+
+        // The panic poisons the mutex; the wrapper recovers, so the host can
+        // simply reload the cartridge and carry on instead of rebuilding.
+        nes.load_rom(tiny_rom()).expect("reloading should work");
+        nes.frame().expect("the fresh cartridge should run");
+        assert_eq!(nes.frame_number(), 1);
     }
 
     #[test]
