@@ -21,6 +21,8 @@
 - `cd web && npm install` — install front-end deps (Node 18+).
 - `npm run dev` — dev server; `npm run build` — typecheck + production build.
 - `npm run typecheck` — TypeScript only.
+- `npm run build:games` — regenerate `web/public/games.json` (the game list shown by
+  the "游戏列表" dialog) from a GitHub repository; needs network, no ROM data is stored.
 - `npm run build:wasm` — regenerate `web/src/wasm` from `nes-wasm` (needs network
   and `wasm-pack`).
 

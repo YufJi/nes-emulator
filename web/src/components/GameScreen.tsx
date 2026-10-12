@@ -39,7 +39,7 @@ export function GameScreen({
         <div className="stage__overlay">
           <p className="stage__headline">把 .nes 文件拖到这里</p>
           <p className="stage__hint">
-            {busy ? '正在加载 WASM 内核…' : '或者选择本地文件 / 在侧栏填入 ROM 链接'}
+            {busy ? '正在加载 WASM 内核…' : '或者选择本地文件 / 填入链接 / 打开游戏列表'}
           </p>
           <button type="button" className="button button--primary" onClick={onPickRom} disabled={busy}>
             选择 ROM 文件

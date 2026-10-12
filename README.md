@@ -11,7 +11,8 @@
 - **Mapper**：33 个编号（NROM、MMC1/2/3/4/5、VRC 系列、Sunsoft、Irem 等）。
 - **扩展音频**：VRC6、MMC5、Sunsoft 5B。
 - **存档**：电池存档（按 ROM 名持久化）与即时存档（整机快照，4 个槽位）。
-- **前端**：拖拽 / 链接加载、虚拟手柄、整数倍像素缩放、AudioWorklet 音频输出。
+- **前端**：拖拽 / 链接 / 游戏列表加载（带搜索）、虚拟手柄、整数倍像素缩放、
+  AudioWorklet 音频输出。
 
 ## 目录结构
 
@@ -72,6 +73,9 @@ npm run build        # 类型检查 + 生产构建
 - 仅支持 iNES 格式；模拟器本身不附带游戏，请自备 ROM。
 - 除拖入本地文件外，也可以在侧栏粘贴 ROM 直链：GitHub 的 Raw / 文件页面链接会
   自动转换为直链，其他站点需要服务器允许跨域（CORS）。
+- 工具栏的「游戏列表」内置 [mengfei523060/nesrom](https://github.com/mengfei523060/nesrom)
+  的 ROM 目录（名称 + 直链，不含 ROM 数据），可用 `cd web && npm run build:games`
+  重新生成。
 - 即时存档必须载入到同一张卡带（PRG-ROM 不写入存档），槽位按 ROM 名区分。
 
 ## 许可

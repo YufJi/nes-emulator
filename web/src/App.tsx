@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { DropOverlay } from './components/DropOverlay';
+import { GameListModal } from './components/GameListModal';
 import { GameScreen } from './components/GameScreen';
 import { KeyGuide } from './components/KeyGuide';
 import { RomUrlForm } from './components/RomUrlForm';
@@ -41,6 +42,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
+  const [gamesOpen, setGamesOpen] = useState(false);
 
   const hasRom = state !== 'idle';
 
@@ -56,6 +58,19 @@ export default function App() {
     wakeAudio();
     fileInputRef.current?.click();
   }, [wakeAudio]);
+
+  const openGames = useCallback(() => {
+    wakeAudio();
+    setGamesOpen(true);
+  }, [wakeAudio]);
+
+  const playFromList = useCallback(
+    (url: string) => {
+      setGamesOpen(false);
+      void loadUrl(url);
+    },
+    [loadUrl],
+  );
 
   // Wiping a save cannot be undone, so make the user confirm first.
   const handleClearSave = useCallback(() => {
@@ -172,6 +187,7 @@ export default function App() {
             muted={muted}
             busy={busy}
             onPick={pickRom}
+            onOpenGames={openGames}
             onTogglePause={togglePause}
             onReset={reset}
             onClearSave={handleClearSave}
@@ -213,6 +229,15 @@ export default function App() {
       )}
 
       {dragging && <DropOverlay />}
+
+      {gamesOpen && (
+        <GameListModal
+          busy={busy}
+          currentUrl={romKey}
+          onSelect={playFromList}
+          onClose={() => setGamesOpen(false)}
+        />
+      )}
     </div>
   );
 }

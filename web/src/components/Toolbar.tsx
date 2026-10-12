@@ -5,6 +5,7 @@ interface ToolbarProps {
   muted: boolean;
   busy: boolean;
   onPick: () => void;
+  onOpenGames: () => void;
   onTogglePause: () => void;
   onReset: () => void;
   onClearSave: () => void;
@@ -19,6 +20,7 @@ export function Toolbar({
   muted,
   busy,
   onPick,
+  onOpenGames,
   onTogglePause,
   onReset,
   onClearSave,
@@ -29,6 +31,10 @@ export function Toolbar({
     <div className="toolbar">
       <button type="button" className="button button--primary" onClick={onPick} disabled={busy}>
         {hasRom ? '换一个 ROM' : '选择 ROM'}
+      </button>
+
+      <button type="button" className="button" onClick={onOpenGames}>
+        游戏列表
       </button>
 
       <button type="button" className="button" onClick={onTogglePause} disabled={!hasRom}>

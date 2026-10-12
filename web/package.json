@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "build:games": "node scripts/build-game-list.mjs",
     "build:wasm": "node scripts/build-wasm.mjs"
   },
   "dependencies": {
