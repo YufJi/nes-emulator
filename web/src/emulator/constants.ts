@@ -38,8 +38,8 @@ export const KEY_BINDINGS: Record<string, ButtonName> = {
   KeyA: 'LEFT',
   KeyD: 'RIGHT',
   KeyJ: 'A',
-  KeyK: 'A',
-  KeyI: 'B',
+  KeyI: 'A',
+  KeyK: 'B',
   KeyO: 'B',
   Enter: 'START',
   Space: 'START',
@@ -50,8 +50,8 @@ export const KEY_BINDINGS: Record<string, ButtonName> = {
 /** Rows rendered by the on-screen key legend; each entry is one key cap. */
 export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: readonly string[] }> = [
   { action: '方向', keys: ['W', 'A', 'S', 'D'] },
-  { action: 'A', keys: ['J', 'K'] },
-  { action: 'B', keys: ['I', 'O'] },
+  { action: 'A', keys: ['J', 'I'] },
+  { action: 'B', keys: ['K', 'O'] },
   { action: 'Start', keys: ['Enter', 'Space'] },
   { action: 'Select', keys: ['Shift'] },
 ];

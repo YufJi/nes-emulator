@@ -129,8 +129,8 @@ PAGES_BASE=/<repo>/ npm run build:pages   # 产物在 web/dist
 | 动作 | 按键 |
 | --- | --- |
 | 方向 | `W` `A` `S` `D` |
-| A | `J` / `K` |
-| B | `I` / `O` |
+| A | `J` / `I` |
+| B | `K` / `O` |
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
 | 暂停 / 继续 | `P` |
