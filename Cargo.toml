@@ -12,7 +12,6 @@ authors = ["NES Emulator Team"]
 license = "MIT"
 
 [workspace.dependencies]
-serde = { version = "1.0", features = ["derive"] }
 bitflags = "2.4"
 wasm-bindgen = "0.2"
 nes-core = { path = "crates/nes-core" }

@@ -59,7 +59,7 @@ flowchart TB
 
 | 路径 | 职责 | 依赖方向 |
 | --- | --- | --- |
-| `crates/nes-core/` | 模拟器内核：CPU / PPU / APU / 总线 / Mapper / 存档编码 / 节奏组件 | 实际只依赖 `bitflags`（`serde` 是未使用的历史声明，见 §14.6） |
+| `crates/nes-core/` | 模拟器内核：CPU / PPU / APU / 总线 / Mapper / 存档编码 / 节奏组件 | 运行时只依赖 `bitflags` |
 | `crates/nes-wasm/` | `wasm-bindgen` 绑定，`src/lib.rs` 为薄封装 | → `nes-core` |
 | `web/` | React + Vite 前端：Canvas 渲染、Web Audio、存档持久化、控制器 UI | → `web/src/wasm`（生成物） |
 | `web/src/wasm/`、`crates/nes-wasm/pkg/` | `wasm-pack` 生成物，**不入库**（由 `npm run build:wasm` 重新生成） | — |
@@ -573,12 +573,11 @@ flowchart LR
 
 ### 14.6 建议的推进顺序
 
-1. **清理未使用的声明依赖**：`nes-core` 的 `serde` 已无引用，可移除（零风险）。
-2. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
-3. **重采样质量**（改动局限在音频链路，收益直观）。
-4. **WASM 画面零拷贝**（前端性能，收益可测）。
-5. **原生前端首个落地**（iOS 或 Android，验证第 9 节契约是否真的"平台无关"）。
-6. **PAL 时序与 A12 精确化**（高风险高收益，需要 PAL 测试语料）。
+1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
+2. **重采样质量**（改动局限在音频链路，收益直观）。
+3. **WASM 画面零拷贝**（前端性能，收益可测）。
+4. **原生前端首个落地**（iOS 或 Android，验证第 9 节契约是否真的"平台无关"）。
+5. **PAL 时序与 A12 精确化**（高风险高收益，需要 PAL 测试语料）。
 
 ---
 

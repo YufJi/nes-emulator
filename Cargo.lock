@@ -285,7 +285,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "criterion",
- "serde",
 ]
 
 [[package]]
@@ -294,7 +293,6 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "nes-core",
- "serde",
  "wasm-bindgen",
 ]
 
