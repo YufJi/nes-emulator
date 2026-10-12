@@ -584,6 +584,8 @@ flowchart LR
 - 绑定是**生成物**，修改必须落在 Rust 侧，然后 `cd web && npm run build:wasm`。
 - 方法一律使用 `snake_case`（与 wasm-bindgen 惯例一致），TS 侧按需包装。
 - `frame()` 与 `run_cycles()` 的 `frame_ready` 语义与内核一致，不做额外解释。
+- **panic 在这里无法被 Rust 捕获**（`wasm32-unknown-unknown` panic 即 abort）：未定义 opcode
+  会让 `frame()` 抛出 JS 异常并使实例报废，宿主必须丢弃重建——详见 §15.1。
 
 ### 11.2 `nes-uniffi`（iOS / macOS / Android）
 
@@ -729,9 +731,14 @@ flowchart LR
   - **`nes-uniffi`（iOS / macOS / Android）**：绑定层用 `catch_unwind` 捕获，变成可捕获的
     `NesError::EmulationPanic`，进程存活、句柄可继续使用（§11.2）。已用真实 Swift 程序验证：
     同一个 ROM 在修复前是 `try!` 致命错误（退出码 133），修复后是可 `catch` 的错误（退出码 0）。
-  - **`nes-wasm`（Web）**：wasm-bindgen 会把 panic 变成 JS 异常（无 UB），
-    `console_error_panic_hook` 会把消息打到控制台；但该 `Nes` 实例此后不可再用，需要重建。
-    前端目前没有把这条错误接进 UI，属于待办。
+  - **`nes-wasm`（Web）**：这条路**无法在 Rust 侧捕获**——`wasm32-unknown-unknown` 在 panic 时
+    直接 abort，`catch_unwind` 永远不会返回（实测：在绑定层加了 `catch_unwind` 之后，
+    拿到的仍然是 `RuntimeError: unreachable`，而且实例被永久借用、连 `free()` 都会抛
+    "attempted to take ownership of Rust value while it was borrowed"）。只能由 **JS 侧**兜：
+    `frame()` 抛出的是可捕获的异常，页面存活，`console_error_panic_hook` 把 panic 消息
+    打到控制台；但该实例已报废，必须丢弃重建（实测新建实例一切正常）。
+    前端 `NesEmulator.handleCorePanic` 因此会停掉循环、`freeQuietly` 丢弃实例、
+    并用既有通知条提示用户换一个 ROM。
   - **不做的事**：既不把未定义 opcode 当作 NOP，也不补齐它们的语义——那样会分别牺牲准确性
     或显著增加工作量。行为由 `crates/nes-core/tests/host_contract.rs` 的 characterization 测试
     与 `nes-uniffi` 的单测双向钉住。

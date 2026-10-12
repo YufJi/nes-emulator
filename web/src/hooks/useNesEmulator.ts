@@ -93,6 +93,14 @@ export function useNesEmulator(): UseNesEmulatorResult {
         emulator = new NesEmulator(canvas, {
           onStateChange: setState,
           onFpsChange: setFps,
+          // The console has been thrown away, so the only way forward is to
+          // load another ROM — which builds a fresh one.
+          onFatalError: (message) => {
+            console.error('NES 内核异常：', message);
+            setError(
+              '模拟器内核异常，游戏已停止（ROM 可能已损坏）。换一个 ROM 即可继续；详情见浏览器控制台。',
+            );
+          },
           onSaveRamChange: (data) => {
             const key = romKeyRef.current;
             if (key) writeSaveRam(key, data);

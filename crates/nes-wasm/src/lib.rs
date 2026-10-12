@@ -105,6 +105,10 @@ impl Nes {
     }
 
     /// Execute one frame of emulation.
+    ///
+    /// A cartridge that sends the CPU into an undefined opcode makes the core
+    /// panic, and `wasm32-unknown-unknown` aborts on panic: this traps, and the
+    /// JS side has to throw the instance away (see `docs/architecture.md` §15.1).
     #[wasm_bindgen]
     pub fn frame(&mut self) {
         self.nes.frame();

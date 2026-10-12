@@ -19,6 +19,15 @@ export type EmulatorState = 'idle' | 'running' | 'paused';
 export interface NesEmulatorOptions {
   onStateChange?: (state: EmulatorState) => void;
   onFpsChange?: (fps: number) => void;
+  /**
+   * Called when the core traps mid-instruction and the console has been thrown
+   * away.
+   *
+   * A panic in the WASM core aborts the module, so that instance can never be
+   * used again — the host should say so and let the user load again, which
+   * builds a fresh console.
+   */
+  onFatalError?: (message: string) => void;
   /** Called whenever the cartridge's battery RAM changes. */
   onSaveRamChange?: (data: Uint8Array) => void;
 }
@@ -103,6 +112,9 @@ export class NesEmulator {
    * `saveRam` is the cartridge's stored battery RAM, written back before the
    * first frame: boot code may read its save as early as that, and a frame
    * emulated against blank SRAM would look like "no save" to the game.
+   *
+   * Throws when the cartridge is rejected, including when its very first frame
+   * makes the core panic.
    */
   async loadRom(data: Uint8Array, saveRam: Uint8Array | null = null): Promise<void> {
     await initWasm();
@@ -114,7 +126,7 @@ export class NesEmulator {
     try {
       next.load_rom(data);
     } catch (error) {
-      next.free();
+      freeQuietly(next);
       throw new Error(`模拟器内核拒绝了该 ROM：${describe(error)}`);
     }
 
@@ -136,8 +148,13 @@ export class NesEmulator {
 
     this.audio.flush();
 
-    // Emulate one frame up front so the first paint is not a blank screen.
-    this.stepFrames(1);
+    // Emulate one frame up front so the first paint is not a blank screen. A
+    // cartridge that panics on that frame is reported as a failed load.
+    try {
+      this.stepFrames(1);
+    } catch (error) {
+      throw new Error(`模拟器内核拒绝了该 ROM：${describe(error)}`);
+    }
     this.render();
 
     this.setState('running');
@@ -153,11 +170,15 @@ export class NesEmulator {
   /** Warp back to the cartridge's reset vector. */
   reset(): void {
     if (!this.nes) return;
-    this.nes.reset();
-    this.audio.flush();
-    this.clock?.reset();
-    this.stepFrames(1);
-    this.render();
+    try {
+      this.nes.reset();
+      this.audio.flush();
+      this.clock?.reset();
+      this.stepFrames(1);
+      this.render();
+    } catch (error) {
+      this.handleCorePanic(error);
+    }
   }
 
   pause(): void {
@@ -228,11 +249,7 @@ export class NesEmulator {
   dispose(): void {
     this.disposed = true;
     this.stopLoop();
-    this.nes?.free();
-    this.nes = null;
-    this.buttons = null;
-    this.clock?.free();
-    this.clock = null;
+    this.discardConsole();
     this.audio.dispose();
   }
 
@@ -261,12 +278,24 @@ export class NesEmulator {
     const frames = this.clock?.frames_due(timestamp) ?? 0;
     if (frames === 0) return;
 
-    this.stepFrames(frames);
+    try {
+      this.stepFrames(frames);
+    } catch (error) {
+      this.handleCorePanic(error);
+      return;
+    }
+
     this.render();
     this.pumpAudio();
     this.reportFps();
   };
 
+  /**
+   * Emulate `count` frames from the current clock tick.
+   *
+   * Throws if the core reports a panic; the callers decide what that means —
+   * a failed load, or the running loop shutting down.
+   */
   private stepFrames(count: number): void {
     for (let i = 0; i < count; i += 1) {
       this.nes?.frame();
@@ -381,6 +410,35 @@ export class NesEmulator {
     this.options.onFpsChange?.(fps);
   }
 
+  /**
+   * The core panicked mid-instruction: an undefined opcode in a corrupt
+   * cartridge, which the core refuses to guess at.
+   *
+   * `wasm32-unknown-unknown` aborts on panic, so Rust cannot catch this — a
+   * `catch_unwind` there never runs, the trap surfaces as a JS exception and the
+   * instance is left borrowed. The page survives, but the console is spent:
+   * throw it away, stop the loop and let the host tell the user. The next
+   * `loadRom` builds a fresh one.
+   */
+  private handleCorePanic(error: unknown): void {
+    this.stopLoop();
+    this.audio.flush();
+    this.discardConsole();
+    // Nothing can advance the machine any more, so show it as stopped.
+    this.setState('paused');
+    this.options.onFatalError?.(describe(error));
+  }
+
+  /** Drop the console and everything tied to it. */
+  private discardConsole(): void {
+    freeQuietly(this.nes);
+    this.nes = null;
+    this.buttons = null;
+    this.clock?.free();
+    this.clock = null;
+    this.lastSaveRam = null;
+  }
+
   private setState(state: EmulatorState): void {
     if (this.currentState === state) return;
     this.currentState = state;
@@ -400,6 +458,21 @@ export class NesEmulator {
 function describe(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+/**
+ * Free a WASM handle, tolerating failure.
+ *
+ * A console the core has trapped in is still borrowed, and wasm-bindgen throws
+ * when asked to take ownership of a borrowed object. Its memory goes back with
+ * the module, so the only thing left to do is move on.
+ */
+function freeQuietly(nes: Nes | null): void {
+  try {
+    nes?.free();
+  } catch {
+    // See above: a trapped instance cannot be freed.
+  }
 }
 
 /** Poll battery RAM roughly twice a second. */
