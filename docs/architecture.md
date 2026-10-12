@@ -1,0 +1,590 @@
+# NES 模拟器技术架构说明
+
+本文说明本仓库的技术架构、核心运行时模型、宿主接入契约，以及后续演进方向。
+目标是让新同学能在一小时内建立整体心智模型，也能让准备接入新平台（iOS / Android /
+macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
+
+- 适用版本：`main`（截至 2026-10-12）
+- 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
+- 测试规模：735 个测试（732 通过 / 3 忽略），含 5 个真实 ROM 冒烟测试
+
+---
+
+## 1. 设计目标与原则
+
+整个工程围绕一条主线：**把"NES 到底是什么"和"如何呈现给用户"彻底分开**。
+
+| 原则 | 落地方式 |
+| --- | --- |
+| 内核零宿主依赖 | `nes-core` 不引用任何平台 API、不引用 `wasm-bindgen`；可在 `no_std` 下编译 |
+| 绑定层只做搬运 | `nes-wasm` 的每个方法都是对内核的 1:1 转发，不含业务逻辑 |
+| 宿主契约由内核发布 | 分辨率、像素格式、Mapper 列表、帧率、音频采样率都由内核导出，宿主不复制常量 |
+| 行为确定性 | 任何驱动粒度（整帧 / 分片 / 单指令）到达同一帧边界后的机器状态逐字节一致 |
+| 时间与设备交给宿主 | 内核不含定时器与线程；节奏由 `FrameClock` 统一换算，音频按设备速率拉取 |
+| 可移植到任意前端 | 宿主只需实现"喂时间戳 + 拉音频 + 画像素 + 送按键"四件事 |
+
+---
+
+## 2. 分层与仓库结构
+
+```mermaid
+flowchart TB
+    subgraph Host["宿主层（每个平台一份，很薄）"]
+        direction LR
+        Web["web/<br/>React + Vite + TypeScript"]
+        Native["原生前端<br/>iOS / Android / macOS / Windows"]
+    end
+
+    subgraph Bindings["绑定层（把内核翻译成宿主语言）"]
+        Wasm["nes-wasm<br/>wasm-bindgen · 类 Nes / FrameClock"]
+        Future["（新增平台）nes-ffi / nes-uniffi<br/>同一套方法语义"]
+    end
+
+    subgraph Core["内核层 crates/nes-core（无宿主依赖 · 可 no_std）"]
+        direction TB
+        Api["NES 公开 API<br/>Nes · Config · Region · FrameClock"]
+        System["系统装配<br/>nes.rs：NesBus + 执行循环 + 帧/音频/存档"]
+        Units["CPU · PPU · APU · Mapper"]
+    end
+
+    Web --> Wasm
+    Native --> Future
+    Wasm --> Api
+    Future --> Api
+    Api --> System
+    System --> Units
+```
+
+### 目录职责
+
+| 路径 | 职责 | 依赖方向 |
+| --- | --- | --- |
+| `crates/nes-core/` | 模拟器内核：CPU / PPU / APU / 总线 / Mapper / 存档编码 / 节奏组件 | 实际只依赖 `bitflags`（`serde` 是未使用的历史声明，见 §14.6） |
+| `crates/nes-wasm/` | `wasm-bindgen` 绑定，`src/lib.rs` 为薄封装 | → `nes-core` |
+| `web/` | React + Vite 前端：Canvas 渲染、Web Audio、存档持久化、控制器 UI | → `web/src/wasm`（生成物） |
+| `web/src/wasm/`、`crates/nes-wasm/pkg/` | `wasm-pack` 生成物，**不入库**（由 `npm run build:wasm` 重新生成） | — |
+| `docs/` | 本文与界面截图 | — |
+| `roms/` | 本地测试 ROM，**不入库**；缺失时相关测试自动跳过 | — |
+
+### 内核模块地图
+
+```mermaid
+flowchart LR
+    Lib["lib.rs<br/>Region · Config · NesError · 常量"]
+    Nes["nes.rs<br/>Nes · NesBus · 执行循环 · ROM 头解析"]
+    Clock["clock.rs<br/>FrameClock"]
+    Bus["bus.rs<br/>Bus trait（CPU ↔ 系统）"]
+    Cpu["cpu/<br/>指令 · 寻址"]
+    Ppu["ppu.rs<br/>寄存器 · VRAM · OAM · 调色板"]
+    Rend["ppu/rendering.rs<br/>背景渲染 · 帧缓冲 · 镜像"]
+    Spr["ppu/sprite.rs<br/>精灵求值 · 渲染"]
+    Apu["apu/<br/>五通道 · 帧序列器 · 扩展音频"]
+    Mapper["mapper/<br/>Mapper trait + 33 个实现"]
+    State["state.rs<br/>StateField · 编解码宏"]
+
+    Nes --> Cpu
+    Nes --> Ppu
+    Nes --> Apu
+    Nes --> Mapper
+    Nes --> State
+    Ppu --> Rend
+    Ppu --> Spr
+    Cpu --> Bus
+```
+
+---
+
+## 3. 核心运行时模型
+
+### 3.1 时钟与制式
+
+内核以 **CPU 周期**为最小时间单位，硬性假设 **1 CPU 周期 = 3 个 PPU dot**
+（`PPU_DOTS_PER_CPU_CYCLE`，见 `crates/nes-core/src/nes.rs`）。一帧的时长由扫描线数决定，
+而不是写死 60 Hz：
+
+| 指标 | NTSC | PAL |
+| --- | --- | --- |
+| 扫描线 / 帧 | 262 | 312 |
+| PPU dot / 扫描线 | 341 | 341 |
+| PPU 时钟 | 5,369,318 Hz | 5,320,313 Hz |
+| CPU 周期 / 帧 | 29,780 | 35,464 |
+| **帧率（内核发布）** | **60.0985 Hz** | **50.0067 Hz** |
+
+帧率由 `Region::fps() = ppu_clock_rate / (341 × 扫描线数)` 推导，宿主通过
+`Nes::frame_rate()` 获取，**不要假设 60 Hz**——PAL 卡带是 50.0067 Hz，且 PAL 帧更长。
+
+> **实现细节**：APU 的采样时钟同样取 `ppu_clock_rate / 3`（即机器真正推进 CPU 的速率），
+> 而不是卡带标称的 CPU 时钟。PAL 板子的 PPU:CPU 真机比例是 3.2:1，内核按 3:1 建模，
+> 因此标称 CPU 时钟与实现不一致；音频若沿用 NTSC 常量会走音约 7.6%。
+
+### 3.2 一帧的执行流程
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Host as 宿主
+    participant Nes as Nes
+    participant Bus as NesBus
+    participant CPU as Cpu
+    participant PPU as PPU 与渲染器
+    participant APU as Apu
+    participant Map as Mapper
+
+    Host->>Nes: frame()
+    Nes->>Bus: run_frame(cpu)
+    Bus->>Bus: frame_ready = false
+    loop 直到凑满一帧 CPU 周期 或 frame_ready
+        Bus->>CPU: execute_instruction(opcode)
+        CPU-->>Bus: 消耗周期数
+        Bus->>Map: on_cpu_cycles(cycles)
+        Bus->>Bus: advance_cycles(cycles)
+        Note over Bus,PPU: 每个 CPU 周期推进 3 个 PPU dot
+        Bus->>PPU: ppu_step()（可见行渲染 / VBlank / 预渲染行）
+        Bus->>Map: on_scanline()（扫描线边界，同步镜像）
+        Bus->>APU: tick_apu_cycle()（每 CPU 周期一次）
+        Bus->>APU: 混音 → 重采样 → 音频队列
+    end
+    Note over Bus,PPU: 扫描线回卷时 frame += 1<br/>并把已渲染画面快照进帧缓冲
+    Bus-->>Host: （frame_ready = true）
+    Host->>Nes: frame_buffer() / fill_audio() / set_button()
+```
+
+要点：
+
+- **渲染是"边跑边画"的**：背景渲染器持续写入自己的工作缓冲，只有在帧边界才
+  `copy_from_slice` 进对外暴露的 `FrameBuffer`。因此帧中途读到的永远是**上一个完整帧**，
+  不会撕裂。
+- **PPU 写入与渲染解耦**：渲染使用独立的 `ppu.render_v` 滚动计数器，CPU 通过
+  `$2006/$2007` 改 `v` 不会破坏正在渲染的帧。
+- **DMA 会让 CPU 停顿**：OAM DMA（`$4014`）停 513/514 周期，DMC 取字节停 4 周期；
+  停顿期间 PPU/APU 继续推进。
+
+### 3.3 三种驱动粒度
+
+| API | 语义 | 用途 |
+| --- | --- | --- |
+| `Nes::frame()` | 跑满一帧（或提前到帧边界） | 常规前端，配合 `FrameClock` |
+| `Nes::run_cycles(n)` | 跑至多 n 个 CPU 周期，遇到帧边界提前停；返回实际周期数 | 亚帧调度、音频驱动、精确追帧 |
+| `Nes::step_instruction()` | 执行一条指令，返回其周期数 | 调试器、单步回归 |
+
+三者共享同一份单步实现（`NesBus::step_instruction`），因此**分片执行与整帧执行的结果完全一致**
+——回归测试会逐字节比对 `save_state()`。`frame_ready` 标志在三者中的语义统一：
+`frame()` / `run_cycles()` 进入时清零，执行中置位；`step_instruction()` 不动它，
+便于单步跨越帧边界后仍能观察到标志。
+
+---
+
+## 4. 内存与总线
+
+CPU 通过 `Bus` trait 访问系统；`NesBus` 是唯一实现（`crates/nes-core/src/nes.rs`）。
+
+| 地址范围 | 目标 | 备注 |
+| --- | --- | --- |
+| `$0000–$1FFF` | CPU 内部 RAM | 2 KB，每 `$0800` 镜像 |
+| `$2000–$3FFF` | PPU 寄存器 | `$2000–$2007`，每 8 字节镜像 |
+| `$4000–$401F` | APU / I/O | `$4014` OAM DMA、`$4016/$4017` 手柄、APU 通道寄存器 |
+| `$4020–$FFFF` | 卡带空间 | 交给 `Mapper`（含 PRG-RAM / 扩展音频 / 寄存器） |
+
+两类工程细节：
+
+- **Open bus**：每次读都会把数据总线锁存到 `open_bus`，非映射地址返回上次的值，
+  未插卡带时由它兜底。
+- **CHR 读取走卡带**：图案表通过 `Mapper` 读取（`MapperChr`），所以中途换 CHR bank
+  立即生效；CHR-RAM 卡带的写入也由 Mapper 承接。
+
+---
+
+## 5. PPU 渲染管线
+
+PPU 负责寄存器语义（`crates/nes-core/src/ppu.rs`）、背景渲染与帧缓冲
+（`ppu/rendering.rs`）、精灵求值与渲染（`ppu/sprite.rs`）。
+
+```mermaid
+flowchart LR
+    Dot["PPU dot 时钟<br/>每 CPU 周期 3 个"] --> Step["ppu_step()<br/>按扫描线/周期分派"]
+    Step --> Visible["可见行 0-239"]
+    Step --> Vblank["VBlank 241<br/>置状态位 + 可选 NMI"]
+    Step --> Pre["预渲染行<br/>重载滚动/清标志"]
+
+    Visible --> BG["BackgroundRenderer<br/>移位寄存器拼像素"]
+    Visible --> Sprites["SpriteEvaluator + SpriteRenderer<br/>每行最多 8 个精灵"]
+    BG --> Hit["sprite 0 命中检测"]
+    Sprites --> Hit
+    BG --> Buf["bg_pixels 工作缓冲"]
+    Sprites --> Buf
+    Buf -->|帧边界 copy_from_slice| Fb["FrameBuffer.pixels<br/>256×240 · 0xAARRGGBB"]
+```
+
+| 组件 | 关键结构 | 说明 |
+| --- | --- | --- |
+| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` / `render_v` | 寄存器与内部锁存器 |
+| `BackgroundRenderer` | `BgRenderState` | 逐 dot 推进的移位寄存器渲染；镜像模式可运行时切换 |
+| `SpriteEvaluator` | `SecondaryOam` | 逐行求值（含 8 精灵溢出 bug 行为） |
+| `FrameBuffer` | `pixels: Vec<u32>`、`width`、`height` | 对外暴露的画面，尺寸由 `WIDTH`/`HEIGHT` 常量派生 |
+
+**对外画面契约**（宿主不得自行假设）：
+
+```rust
+nes_core::WIDTH                     // 256
+nes_core::HEIGHT                    // 240
+nes_core::PIXEL_FORMAT              // PixelFormat::Argb8888 → "argb8888"
+PixelFormat::channel_shifts()       // [red, green, blue, alpha] 位偏移 = [16, 8, 0, 24]
+```
+
+---
+
+## 6. APU 与音频链路
+
+```mermaid
+flowchart LR
+    subgraph Channels["2A03 通道"]
+        P1["脉冲 1"] --- P2["脉冲 2"]
+        Tri["三角"] --- Noise["噪声"]
+        Dmc["DMC<br/>+ DMA 取字节"]
+    end
+    subgraph Expansion["卡带扩展音频"]
+        VRC6["VRC6"] --- MMC5["MMC5"]
+        S5B["Sunsoft 5B"]
+    end
+    FC["FrameCounter<br/>帧序列器 IRQ"] -.-> Channels
+
+    Channels --> Mix["混音 apu.output()"]
+    Expansion -->|"mapper.audio_output()"| Mix
+    Mix --> Resample["重采样<br/>累加器：ppu_clock/3 → audio_sample_rate"]
+    Resample --> Queue["VecDeque 队列<br/>上限 500 ms，超限丢最旧"]
+    Queue --> Fill["Nes::fill_audio(out)"]
+    Fill --> Device["宿主音频设备<br/>Oboe / CoreAudio / Web Audio"]
+```
+
+设计要点：
+
+- **采样率由宿主决定**：`Config::sample_rate`（默认 48 kHz）；设备速率变化时用
+  `Nes::set_sample_rate()` 重定向。重采样在内核完成，宿主不做任何重采样。
+- **拉取式接口**：`fill_audio(out) -> usize` 返回写入的 float 数（总是偶数，即整帧立体声）。
+  `0` 表示暂时无数据，小于 `out.len()` 表示只填了一部分——正是设备回调需要的行为。
+- **有界队列**：约 0.5 秒容量，超过即丢弃最旧样本（`pop_front`，O(1)）。宿主卡顿时
+  丢掉的是陈旧音频，而不是无限积压内存。
+- **音频捕获可关闭**：`Config::enable_audio = false` 时 APU 仍按 CPU 时序运行
+  （帧 IRQ 与 DMC DMA 会影响 CPU 时序），只是不产出样本。
+- 输出为**交错立体声**，左/右相同（2A03 本身是单声道）。
+
+---
+
+## 7. Mapper 抽象
+
+```mermaid
+classDiagram
+    class Mapper {
+        <<trait>>
+        +read(addr) u8
+        +write(addr, value)
+        +irq_pending() bool
+        +clear_irq()
+        +on_scanline(scanline, rendering)
+        +on_cpu_cycles(cycles)
+        +mirroring()
+        +audio_output() f32
+        +save_ram()
+        +load_save_ram(data)
+        +save_state(w)
+        +load_state(r)
+    }
+    note for Mapper "全部方法都有默认实现"
+```
+
+`Mapper: Send + Sync + Debug`，由 `create_mapper(number, prg, chr) -> Box<dyn Mapper>` 工厂创建；
+`supported_mappers()` 返回内核实际支持的编号，宿主用它提前拒绝不支持的卡带。
+
+| 编号 | 实现 | 名称 |
+| --- | --- | --- |
+| 0 | `mapper0` | NROM |
+| 1 | `mapper1` | MMC1 (SxROM) |
+| 2 | `mapper2` | UxROM (UNROM/UOROM) |
+| 3 | `mapper3` | CNROM |
+| 4 | `mapper4` | MMC3 (TxROM) |
+| 5 | `mapper5` | MMC5 (ExROM) |
+| 7 | `mapper7` | AxROM |
+| 9 / 10 | `mapper9` / `mapper10` | MMC2 / MMC4 |
+| 11 | `mapper11` | Color Dreams |
+| 21 / 22 / 23 / 25 | `mapper21` | VRC4a / VRC2a / VRC4f / VRC4b |
+| 24 / 26 | `mapper24` | VRC6a / VRC6b |
+| 32 | `mapper32` | Irem G-101 |
+| 33 / 48 | `mapper33` | Taito TC0190（48 带 IRQ） |
+| 34 | `mapper34` | BNROM / NINA-001 |
+| 38 | `mapper38` | PCI556 |
+| 65 | `mapper65` | Irem H3001 |
+| 66 | `mapper66` | GxROM |
+| 69 | `mapper69` | Sunsoft FME-7 (5B) |
+| 71 | `mapper71` | Camerica |
+| 79 | `mapper79` | NINA-003 |
+| 94 | `mapper94` | Senjou no Ookami（UNROM 变体） |
+| 118 / 119 | `mapper118` / `mapper119` | TxSROM / TQROM（MMC3 变体） |
+| 140 | `mapper140` | Jaleco JF-11/14 |
+| 180 | `mapper180` | UNROM（Crazy Climber 变体） |
+| 240 / 241 | `mapper240` / `mapper241` | 国产 PCB / BxROM 变体 |
+
+**新增一个 Mapper 的步骤**（当前约定）：
+
+1. 新建 `crates/nes-core/src/mapper/mapperN.rs`，实现 `Mapper`，用 `mapper_state!` 声明可变状态。
+2. 在 `mapper/mod.rs` 注册模块、加入 `create_mapper` 的 match、并把编号加入 `supported_mappers()`。
+3. 在 `crates/nes-core/tests/mappers.rs` 增加行为测试；
+   `test_supported_mappers_matches_create_mapper` 会自动校验"名单与实际能力"一致。
+
+---
+
+## 8. 存档（Save State）
+
+```mermaid
+flowchart LR
+    subgraph Blob["save_state() 字节流"]
+        direction LR
+        M["'NESST'<br/>magic 5B"] --> V["version 1B"] --> C["CPU 状态"] --> B["总线/PPU/APU/卡带状态"]
+    end
+```
+
+- **不含 PRG-ROM**：卡带 ROM 是不可变的大块数据，不重复存储；因此状态**只能恢复到同一卡带**。
+- **编码方式**：`StateField` trait + 生成器宏（`state_field_scalar!` / `state_field_vec!` /
+  `state_fields!` / `mapper_state!`），小端、无第三方依赖、无 `serde` 参与。
+- **防御式读取**：`load_state` 先校验 magic 与版本；非法/异版本数据被忽略，机器保持原状
+  （不会 panic、不会半途污染）。读取越界返回 0 而不是 panic。
+- **确定性**：分片执行与整帧执行到达同一帧边界时状态逐字节一致，这是存档/回放正确性的前提。
+- **电池存档**与即时存档是两条独立链路：`save_ram()` / `load_save_ram()` 只处理卡带上的
+  电池 RAM（`.sav` 语义），与整机快照无关。
+
+---
+
+## 9. 宿主接入契约
+
+### 9.1 最小接入序列
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Host as 宿主
+    participant Nes as Nes
+    participant Clock as FrameClock
+
+    Host->>Nes: with_config(Config{ region_override, enable_audio, sample_rate })
+    Host->>Nes: load_rom(bytes)
+    Host->>Nes: frame_rate()
+    Host->>Clock: new(frame_rate)
+    Host->>Nes: audio_sample_rate() → set_sample_rate(设备速率)
+    loop 每个显示帧回调（时间戳 now）
+        Host->>Clock: frames_due(now)
+        Clock-->>Host: 应模拟的帧数
+        loop n 次
+            Host->>Nes: frame()
+        end
+        Host->>Nes: frame_buffer() → 上传纹理
+        Host->>Nes: fill_audio(设备缓冲)
+        Clock-->>Host: fps()（每 500 ms 刷新）
+    end
+```
+
+### 9.2 `FrameClock`：宿主无关的节奏组件
+
+它把"宿主的时间戳"翻译成"整帧数量"，取代了每个前端各写一遍的 rAF 累加器逻辑：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Seeded: 第一次 frames_due 只记录起点
+    Seeded --> Accumulating: 后续时间戳累加 delta
+    Accumulating --> Accumulating: delta 超过 250 ms 先钳制
+    Accumulating --> Releasing: 累加量 ≥ 帧时长 → 释放帧
+    Releasing --> Accumulating: 剩余时间留下
+    Releasing --> Dropped: 超出 4 帧预算 → 丢弃积压
+    Dropped --> Accumulating
+    Accumulating --> Measuring: 每 500 ms 统计一次 fps()
+    Measuring --> Accumulating
+```
+
+内置策略（追帧上限可用 `set_max_catch_up_frames()` 调整，其余为当前默认值）：
+追帧上限 4 帧、单次时间戳间隔钳制 250 ms、FPS 采样窗口 500 ms。`reset()` 用于
+"暂停 / 复位 / 切前台"——避免把暂停时长当成模拟时间。无平台依赖、不分配内存，`no_std` 可用。
+
+### 9.3 视频与输入契约
+
+- **视频**：`frame_buffer() -> &[u32]`（`0xAARRGGBB`），或 `frame_buffer_ptr()` 做零拷贝；
+  尺寸与通道偏移从内核常量取。
+- **输入**：`set_button(player, BUTTON_*, pressed)`，`player` 为 1/2；按键索引以 `BUTTON_*` 常量
+  为准，绑定层也导出同名常量，避免两侧漂移。
+- **存档**：`save_state()` / `load_state()`（整机）、`save_ram()` / `load_save_ram()`（电池）。
+- **诊断**：`peek(addr)`、`frame_number()`、`is_frame_ready()`、`mirroring()`、`region()`。
+
+### 9.4 各平台落地建议
+
+| 平台 | 帧回调 | 音频 | 备注 |
+| --- | --- | --- | --- |
+| Web | `requestAnimationFrame` | `AudioWorklet`（回退 `ScriptProcessorNode`） | 已实现，见第 11 节 |
+| iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` 渲染回调 | 把回调时间戳（秒→毫秒）喂给 `FrameClock` |
+| Android | `Choreographer` | Oboe（低延迟） | 建议模拟器放独立线程，音频回调只做 `fill_audio` |
+| macOS / Windows | `CVDisplayLink` / 定时器 | CoreAudio / WASAPI | 与 iOS/Native 一致：时间戳 + 拉音频 |
+
+三者共同点：**内核不主动回调宿主，宿主主动喂时间戳并拉数据**。因此新增平台不需要改内核，
+只需实现这四条通道（时间、画面、声音、按键）。
+
+---
+
+## 10. WASM 绑定层
+
+`crates/nes-wasm/src/lib.rs` 是纯搬运层，类与方法命名尽量与内核一致。
+
+| 类别 | 导出 |
+| --- | --- |
+| 机器 | `new`、`load_rom`、`reset`、`frame`、`run_cycles`、`step_instruction` |
+| 视频 | `get_frame_buffer`、`get_frame_buffer_ptr`、`get_frame_buffer_len` |
+| 音频 | `fill_audio`、`get_audio_sample_rate`、`set_audio_sample_rate`、`get_buffered_audio_frames`、`clear_audio_samples` |
+| 输入 | `set_button`、`button_down`、`button_up`、`get_button_*` |
+| 存档 | `save_state`、`load_state`、`get_save_ram`、`set_save_ram`、`has_battery` |
+| 契约 | `get_frame_width`、`get_frame_height`、`get_pixel_format`、`get_pixel_shifts`、`get_supported_mappers` |
+| 节奏 | `FrameClock` 类：`frames_due`、`fps`、`frame_rate`、`set_frame_rate`、`reset` |
+
+约束：
+
+- 绑定是**生成物**，修改必须落在 Rust 侧，然后 `cd web && npm run build:wasm`。
+- 方法一律使用 `snake_case`（与 wasm-bindgen 惯例一致），TS 侧按需包装。
+- `frame()` 与 `run_cycles()` 的 `frame_ready` 语义与内核一致，不做额外解释。
+
+---
+
+## 11. Web 前端架构
+
+```mermaid
+flowchart TB
+    App["App.tsx<br/>布局 · 拖拽 · 全屏"]
+    Hook["hooks/useNesEmulator.ts<br/>把命令式模拟器桥接成 React 状态"]
+    Core["emulator/core.ts<br/>initWasm · 缓存内核契约"]
+    Emu["emulator/NesEmulator.ts<br/>画布 · FrameClock 驱动 · 输入转发"]
+    Audio["emulator/AudioOutput.ts<br/>Web Audio + AudioWorklet"]
+    Rom["emulator/rom.ts<br/>iNES 头校验 · URL/文件读取"]
+    SaveRam["emulator/saveRam.ts<br/>localStorage 电池存档"]
+    SaveState["emulator/saveState.ts<br/>IndexedDB 四槽即时存档"]
+    Wasm["wasm/nes_wasm.js（生成）"]
+    UI["components/*<br/>Toolbar / VirtualPad / SaveStatePanel / GameListModal …"]
+
+    App --> Hook
+    Hook --> Emu
+    Hook --> Rom
+    Hook --> SaveRam
+    Hook --> SaveState
+    Emu --> Core
+    Emu --> Audio
+    Core --> Wasm
+    App --> UI
+    UI --> Hook
+```
+
+要点：
+
+- **模拟器实例不进 React 状态**：`NesEmulator` 存在 `useRef` 中，避免重渲染打断游戏循环；
+  React 只持有少量 UI 状态（运行态、FPS、卡带名、存档槽）。
+- **内核契约在 `core.ts` 缓存一次**：分辨率、像素通道偏移、Mapper 列表都来自 WASM，
+  TS 侧不再复制常量。
+- **音频按设备速率取数**：`AudioContext` 就绪后把 `sampleRate` 交给内核，
+  之后 `fill_audio` 拉到的数据可直接交给 worklet 播放。
+- **校验前置**：`rom.ts` 在交给 WASM 之前校验 iNES 魔数、体积、Mapper 支持情况，
+  给出人类可读的错误，而不是让 WASM panic 或黑屏。
+
+---
+
+## 12. 测试策略
+
+| 套件 | 数量 | 覆盖内容 |
+| --- | --- | --- |
+| `crates/nes-core` 单元测试 | 529 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
+| `tests/ppu.rs` | 85（3 忽略） | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI |
+| `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
+| `tests/mappers.rs` | 48 | 银行切换、IRQ、镜像、电池 RAM |
+| `nes-wasm/tests/smb.rs` | 5 | 真实 ROM 冒烟：启动到标题画面、响应 Start、渲染 1-1、产出音频、存档回滚 |
+| 文档测试 | 1 | `FrameClock` 用法示例 |
+
+约定：
+
+- 依赖 ROM 的测试在 `roms/` 缺失时**跳过而非失败**（CI 无 ROM 也能全绿）。
+- **每个修复都要带回归测试**；涉及执行路径的改动要验证"分片/单步 == 整帧"的确定性。
+- 新增 Mapper 时用 `test_supported_mappers_matches_create_mapper` 保证名单不漂移。
+
+---
+
+## 13. 构建与 CI
+
+```mermaid
+flowchart LR
+    A["cargo test --workspace"] --> B["cargo build -p nes-core --no-default-features<br/>（no_std 校验）"]
+    B --> C["npm run build:wasm<br/>wasm-pack → web/src/wasm"]
+    C --> D["npm run build<br/>tsc --noEmit + vite build"]
+    D --> E["GitHub Pages 部署<br/>.github/workflows/deploy-pages.yml"]
+```
+
+| 命令 | 用途 |
+| --- | --- |
+| `cargo test --workspace` | 全量测试（提交前必跑） |
+| `cargo build -p nes-core --no-default-features` | 校验 `no_std` 路径 |
+| `cargo clippy -p nes-core --all-targets` | 静态检查 |
+| `cd web && npm run build` | 类型检查 + 生产构建 |
+| `cd web && npm run build:wasm` | 重新生成 WASM 绑定（需要 `wasm-pack`） |
+| `cd web && npm run build:games` | 重新生成游戏列表 JSON（需要网络） |
+
+`web/src/wasm/` 与 `crates/nes-wasm/pkg/` 是生成物且不入库，克隆后需先跑 `npm run build:wasm`。
+
+---
+
+## 14. 已知边界与技术方向
+
+### 14.1 模拟精度
+
+- **PAL 时序建模**：内核统一按"1 CPU 周期 = 3 PPU dot"，而真机 PAL 的 PPU:CPU 是 3.2:1。
+  结果：PAL 的帧率/音频/CPU 周期三者自洽（不会走音），但与真机时序仍有系统性偏差。
+  彻底解决需要引入分数 dot 累加器，会影响扫描线时序与 Mapper IRQ，属高风险改动。
+- **扫描线级 IRQ 近似**：MMC3/MMC5 等用 `on_scanline()` 近似 A12 边沿，非逐 dot 精确。
+  这是主流取舍，但对少数依赖精确 A12 计时的游戏会有差异。
+- **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
+  会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
+- **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝（如 6、8、16、18、
+  30、85、等等）。扩展方式见第 7 节。
+
+### 14.2 存档与回放
+
+- 状态**不含 ROM 摘要**：宿主只能按"ROM 名/URL"识别归属，跨设备同步存档时无法自证匹配。
+  建议在状态头加入 ROM 指纹（如 CRC32/SHA-1 前若干字节）与卡带标识。
+- **无 rewind / 回放 API**：确定性已经具备，可以在上层实现环形快照缓冲；
+  若要进内核，建议以"压缩增量 + 关键帧"的形式提供。
+
+### 14.3 性能
+
+- **单线程**：模拟在调用线程上执行；移动端建议放独立线程，音频回调只做 `fill_audio`。
+- **WASM 画面拷贝**：`get_frame_buffer()` 每帧复制约 245 KB 并在 JS 里做一次通道重排。
+  优化方向：用 `get_frame_buffer_ptr()` + `ImageData`/BGRA 直接构造，或让内核直接输出
+  `0xRRGGBBAA`/BGRA 变体。
+- **Mapper 动态分发**：每次内存访问都走 `dyn Mapper` 虚调用；如需再提速，可在热路径上
+  做特化或内联缓存。
+
+### 14.4 输入与周边
+
+- 仅实现标准双人手柄（各 8 键）。**未实现**：连发（turbo）、Zapper 光枪、Four Score 四人适配器。
+- 无按键宏/重映射的持久化约定（重映射属于前端职责）。
+
+### 14.5 前端与输出
+
+- 无 NTSC 滤镜、扫描线、可配置调色板；当前只用固定的 64 色 ARGB 调色板。
+- 无画面录制/截图导出（前端可基于 `frame_buffer()` 自行实现）。
+- 存档槽固定 4 个（前端约定，内核不关心）。
+
+### 14.6 建议的推进顺序
+
+1. **清理未使用的声明依赖**：`nes-core` 的 `serde` 已无引用，可移除（零风险）。
+2. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
+3. **重采样质量**（改动局限在音频链路，收益直观）。
+4. **WASM 画面零拷贝**（前端性能，收益可测）。
+5. **原生前端首个落地**（iOS 或 Android，验证第 9 节契约是否真的"平台无关"）。
+6. **PAL 时序与 A12 精确化**（高风险高收益，需要 PAL 测试语料）。
+
+---
+
+## 15. 参考
+
+- NESdev Wiki：CPU / PPU / APU 时序与寄存器语义 <https://www.nesdev.org/wiki/>
+- `nestest`：6502 指令集校验日志 <https://www.nesdev.org/wiki/Emulator_tests>
+- iNES 文件头格式：<https://www.nesdev.org/wiki/INES>
+- 本仓库 `README.md`：构建、运行与前端使用说明

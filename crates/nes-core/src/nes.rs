@@ -466,8 +466,11 @@ impl NesBus {
     /// Copy as much buffered audio as fits into `out`, interleaved left/right,
     /// and return how many floats were written (always a whole number of frames).
     fn fill_audio(&mut self, out: &mut [f32]) -> usize {
+        // Never split a stereo frame, so a caller with an odd-sized buffer still
+        // gets whole frames back.
+        let limit = out.len() & !1;
         let mut written = 0;
-        while written < out.len() {
+        while written < limit {
             match self.audio_buffer.pop_front() {
                 Some(sample) => {
                     out[written] = sample;
@@ -1547,9 +1550,13 @@ mod tests {
         assert_eq!(nes.fill_audio(&mut period), 100);
         assert_eq!(nes.buffered_audio_frames(), queued - 50);
 
+        // An odd-sized buffer never yields half a stereo frame.
+        let mut odd = vec![0.0f32; 101];
+        assert_eq!(nes.fill_audio(&mut odd), 100);
+
         // An oversized request takes the rest, then reports nothing left.
         let mut rest = vec![0.0f32; 8192];
-        assert_eq!(nes.fill_audio(&mut rest), (queued - 50) * 2);
+        assert_eq!(nes.fill_audio(&mut rest), (queued - 100) * 2);
         assert_eq!(nes.fill_audio(&mut rest), 0);
         assert_eq!(nes.buffered_audio_frames(), 0);
     }
