@@ -142,6 +142,16 @@ impl RomHeader {
         let prg_rom_size = data[4] as usize * 16 * 1024; // 16KB units
         let chr_rom_size = data[5] as usize * 8 * 1024; // 8KB units
 
+        // Every cartridge carries at least one PRG bank, and mappers address
+        // PRG with `% prg_rom.len()`. A header claiming zero banks slips past
+        // the size check below and divides by zero the moment the reset vector
+        // is read, so reject it here rather than let a crafted header panic.
+        if data[4] == 0 {
+            return Err(NesError::InvalidRomFormat(
+                "ROM declares no PRG-ROM".to_string(),
+            ));
+        }
+
         let flags6 = data[6];
         let flags7 = data[7];
 
@@ -1533,6 +1543,49 @@ mod tests {
         // The console still ran a whole frame; only sample capture is off.
         assert_eq!(silent.frame_number(), 1);
         assert_eq!(silent.buffered_audio_frames(), 0);
+    }
+
+    #[test]
+    fn test_rom_without_prg_banks_is_rejected_not_panicked() {
+        // A header claiming zero PRG banks used to slip past the size check and
+        // divide by zero while reading the reset vector.
+        let mut rom = marker_rom(0);
+        rom[4] = 0;
+
+        let mut nes = Nes::new();
+        assert!(matches!(
+            nes.load_rom(&rom),
+            Err(NesError::InvalidRomFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_malformed_cartridges_never_panic() {
+        // Whatever a user hands the emulator has to come back as a value: over
+        // FFI a panic is a crash, so no header combination may turn into one.
+        // This walks small-but-plausible PRG sizes, a promised-but-absent CHR
+        // image (CHR-RAM) and unknown mapper numbers.
+        for prg_banks in [0u8, 1, 2, 16] {
+            for chr_banks in [0u8, 1, 8] {
+                for mapper in [0u8, 1, 4, 5, 69, 119, 241, 254] {
+                    let mut rom = vec![0u8; 16];
+                    rom[0..4].copy_from_slice(b"NES\x1a");
+                    rom[4] = prg_banks;
+                    rom[5] = chr_banks;
+                    rom[6] = (mapper & 0x0F) << 4;
+                    rom[7] = mapper & 0xF0;
+                    // The CHR image the header promises is deliberately absent.
+                    rom.resize(16 + prg_banks as usize * 16 * 1024, 0);
+
+                    let mut nes = Nes::new();
+                    match nes.load_rom(&rom) {
+                        Ok(()) => nes.frame(),
+                        Err(NesError::InvalidRomFormat(_)) | Err(NesError::UnsupportedMapper(_)) => {}
+                        Err(other) => panic!("mapper {mapper} came back with {other:?}"),
+                    }
+                }
+            }
+        }
     }
 
     #[test]
