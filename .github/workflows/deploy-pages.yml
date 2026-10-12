@@ -45,7 +45,9 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates/nes-wasm
+          # The Cargo workspace (and its `target/`) lives at the repository root,
+          # even though the WASM build runs inside `crates/nes-wasm`.
+          workspaces: .
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack
