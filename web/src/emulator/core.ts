@@ -7,11 +7,28 @@ import init, {
 } from '../wasm/nes_wasm.js';
 
 let wasmInit: Promise<unknown> | null = null;
+let wasmMemory: WebAssembly.Memory | null = null;
 
 /** Instantiate the WASM module once, no matter how many callers ask for it. */
 export function initWasm(): Promise<unknown> {
-  wasmInit ??= init();
+  wasmInit ??= init().then((exports) => {
+    wasmMemory = exports.memory;
+    return exports;
+  });
   return wasmInit;
+}
+
+/**
+ * The module's linear memory.
+ *
+ * Callers that read the core's buffers through a pointer take `buffer` afresh
+ * every time: the module replaces it whenever it grows.
+ */
+export function wasmMemoryBuffer(): ArrayBuffer {
+  if (!wasmMemory) {
+    throw new Error('WASM 内核尚未初始化，无法读取其内存。');
+  }
+  return wasmMemory.buffer;
 }
 
 /**

@@ -12,7 +12,7 @@ import {
 } from '../wasm/nes_wasm.js';
 import { AudioOutput } from './AudioOutput';
 import { BUTTON_NAMES, type ButtonName } from './constants';
-import { coreInfo, initWasm } from './core';
+import { coreInfo, initWasm, wasmMemoryBuffer } from './core';
 
 export type EmulatorState = 'idle' | 'running' | 'paused';
 
@@ -58,8 +58,6 @@ export class NesEmulator {
   private readonly imageData: ImageData;
   private readonly audio = new AudioOutput();
   private readonly options: NesEmulatorOptions;
-  private readonly width: number;
-  private readonly height: number;
   /** Scratch buffer the core fills with audio, reused every frame. */
   private readonly audioChunk = new Float32Array(8192);
 
@@ -90,8 +88,6 @@ export class NesEmulator {
     // host never repeats it — and let CSS scale the element up with integer
     // factors, cheaper and crisper than scaling in JS.
     const { width, height } = coreInfo();
-    this.width = width;
-    this.height = height;
     canvas.width = width;
     canvas.height = height;
     context.imageSmoothingEnabled = false;
@@ -369,21 +365,37 @@ export class NesEmulator {
     this.nes?.set_button(1, index, pressed);
   }
 
-  /** Blit the core's frame buffer into the canvas, honouring its pixel layout. */
+  /**
+   * Blit the core's frame buffer into the canvas, honouring its pixel layout.
+   *
+   * The pixels are read straight out of the core's own memory instead of
+   * through a copy of it, and written into the canvas image one 32-bit pixel at
+   * a time. The canvas still needs RGBA while the core stores `0xAARRGGBB`
+   * (i.e. BGRA in memory), so this swizzle cannot be skipped without moving the
+   * picture to WebGL — worth doing if this ever shows up in a profile.
+   */
   private render(): void {
-    if (!this.nes) return;
+    const nes = this.nes;
+    if (!nes) return;
 
     const [redShift, greenShift, blueShift, alphaShift] = coreInfo().pixelShifts;
-    const pixels = this.nes.get_frame_buffer();
-    const target = this.imageData.data;
-    const count = Math.min(pixels.length, this.width * this.height);
+    // Re-read the pointer every frame: the buffer is the core's, and
+    // `load_state` may move it.
+    const pixels = new Uint32Array(
+      wasmMemoryBuffer(),
+      nes.get_frame_buffer_ptr(),
+      nes.get_frame_buffer_len(),
+    );
+    const target = new Uint32Array(this.imageData.data.buffer);
+    const count = Math.min(pixels.length, target.length);
 
-    for (let i = 0, j = 0; i < count; i += 1, j += 4) {
+    for (let i = 0; i < count; i += 1) {
       const pixel = pixels[i];
-      target[j] = (pixel >>> redShift) & 0xff;
-      target[j + 1] = (pixel >>> greenShift) & 0xff;
-      target[j + 2] = (pixel >>> blueShift) & 0xff;
-      target[j + 3] = (pixel >>> alphaShift) & 0xff;
+      target[i] =
+        ((pixel >>> redShift) & 0xff) |
+        (((pixel >>> greenShift) & 0xff) << 8) |
+        (((pixel >>> blueShift) & 0xff) << 16) |
+        (((pixel >>> alphaShift) & 0xff) << 24);
     }
 
     this.context.putImageData(this.imageData, 0, 0);

@@ -377,6 +377,32 @@ impl Nes {
     pub fn peek(&self, address: u16) -> u8 {
         self.machine().peek(address)
     }
+
+    /// Address of the core's own frame buffer.
+    ///
+    /// With [`Nes::frame_buffer_len`] this lets a host hand the picture to the
+    /// GPU **without copying it**: wrap the address in
+    /// `MTLBuffer(bytesNoCopy:length:options:deallocator:)` on Apple platforms,
+    /// or build a `CGDataProvider` over it. The bytes are `0xAARRGGBB`, which on
+    /// a little-endian host is `B, G, R, A` in memory — exactly
+    /// `MTLPixelFormatBGRA8Unorm`.
+    ///
+    /// Read the address again on every frame rather than caching it:
+    /// [`Nes::load_state`] may resize the buffer. Its *contents* are valid until
+    /// the next call that advances or replaces the machine
+    /// ([`Nes::frame`], [`Nes::run_cycles`], [`Nes::step_instruction`],
+    /// [`Nes::load_rom`], [`Nes::load_state`]).
+    ///
+    /// Copying is the safer default: [`Nes::frame_buffer`] returns pixels the
+    /// host owns, with no lifetime attached.
+    pub fn frame_buffer_ptr(&self) -> u64 {
+        self.machine().frame_buffer_ptr() as u64
+    }
+
+    /// Pixels in the frame buffer: `frame_width * frame_height`.
+    pub fn frame_buffer_len(&self) -> u64 {
+        self.machine().frame_buffer().len() as u64
+    }
 }
 
 /// Fixed-timestep pacer shared by every front end.
@@ -660,5 +686,23 @@ mod tests {
         assert_eq!(clock.frames_due(10.0), 1);
         assert_eq!(clock.frames_due(13.0), 0);
         assert_eq!(clock.frames_due(33.0), 2);
+    }
+
+    #[test]
+    fn the_frame_buffer_can_be_read_without_copying() {
+        let nes = Nes::new();
+        nes.load_rom(tiny_rom()).unwrap();
+        nes.frame().expect("frame should run");
+
+        let copied = nes.frame_buffer();
+        let len = nes.frame_buffer_len() as usize;
+        assert_eq!(len, copied.len(), "the pointer and the copy must agree");
+        assert!(nes.frame_buffer_ptr() != 0, "a loaded console has a buffer");
+
+        // Sound here because nothing advances the machine in between: no Rust
+        // code runs concurrently, and the buffer is 256x240 of `u32`.
+        let through_ptr =
+            unsafe { std::slice::from_raw_parts(nes.frame_buffer_ptr() as *const u32, len) };
+        assert_eq!(through_ptr, copied.as_slice());
     }
 }
