@@ -85,6 +85,7 @@ React + Vite + TypeScript；Rust 内核经 `wasm-bindgen` 编译成 WASM，在�
 ```
 crates/nes-core/   模拟器内核：CPU / PPU / APU / 总线 / mapper / 存档编码
 crates/nes-wasm/   wasm-bindgen 绑定（Nes），对内核的薄封装
+crates/nes-uniffi/ UniFFI 绑定，供 iOS / macOS（Swift）与 Android（Kotlin）接入
 web/               React + Vite + TypeScript 前端
 docs/              架构说明（docs/architecture.md）与界面截图（docs/img/）
 roms/              本地测试 ROM（可选；缺失时相关测试会跳过）

@@ -37,7 +37,7 @@ flowchart TB
 
     subgraph Bindings["绑定层（把内核翻译成宿主语言）"]
         Wasm["nes-wasm<br/>wasm-bindgen · 类 Nes / FrameClock"]
-        Future["（新增平台）nes-ffi / nes-uniffi<br/>同一套方法语义"]
+        Uni["nes-uniffi<br/>UniFFI · Swift / Kotlin"]
     end
 
     subgraph Core["内核层 crates/nes-core（无宿主依赖 · 可 no_std）"]
@@ -48,9 +48,9 @@ flowchart TB
     end
 
     Web --> Wasm
-    Native --> Future
+    Native --> Uni
     Wasm --> Api
-    Future --> Api
+    Uni --> Api
     Api --> System
     System --> Units
 ```
@@ -61,6 +61,7 @@ flowchart TB
 | --- | --- | --- |
 | `crates/nes-core/` | 模拟器内核：CPU / PPU / APU / 总线 / Mapper / 存档编码 / 节奏组件 | 运行时只依赖 `bitflags` |
 | `crates/nes-wasm/` | `wasm-bindgen` 绑定，`src/lib.rs` 为薄封装 | → `nes-core` |
+| `crates/nes-uniffi/` | UniFFI 绑定，供 Swift（iOS/macOS）与 Kotlin（Android）使用 | → `nes-core`、`uniffi` |
 | `web/` | React + Vite 前端：Canvas 渲染、Web Audio、存档持久化、控制器 UI | → `web/src/wasm`（生成物） |
 | `web/src/wasm/`、`crates/nes-wasm/pkg/` | `wasm-pack` 生成物，**不入库**（由 `npm run build:wasm` 重新生成） | — |
 | `docs/` | 本文与界面截图 | — |
@@ -523,8 +524,8 @@ stateDiagram-v2
 | 平台 | 帧回调 | 音频 | 备注 |
 | --- | --- | --- | --- |
 | Web | `requestAnimationFrame` | `AudioWorklet`（回退 `ScriptProcessorNode`） | 已实现，见第 12 节 |
-| iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` 渲染回调 | 把回调时间戳（秒→毫秒）喂给 `FrameClock` |
-| Android | `Choreographer` | Oboe（低延迟） | 建议模拟器放独立线程，音频回调只做 `fill_audio` |
+| iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` 渲染回调 | 绑定已就绪（`nes-uniffi`，见 §11.2）；把回调时间戳（秒→毫秒）喂给 `FrameClock` |
+| Android | `Choreographer` | Oboe（低延迟） | 同一份 `nes-uniffi`，换 `--language kotlin`；建议模拟器放独立线程，音频回调只做 `fill_audio` |
 | macOS / Windows | `CVDisplayLink` / 定时器 | CoreAudio / WASAPI | 与 iOS/Native 一致：时间戳 + 拉音频 |
 
 三者共同点：**内核不主动回调宿主，宿主主动喂时间戳并拉数据**。因此新增平台不需要改内核，
@@ -558,7 +559,13 @@ flowchart LR
 
 ---
 
-## 11. WASM 绑定层
+## 11. 绑定层：WASM 与 UniFFI
+
+两个绑定 crate 都是纯搬运层：每个方法都 1:1 转发到内核，不含任何模拟逻辑，
+对外发布的是同一套契约（帧尺寸、像素格式、Mapper 列表、帧率、音频采样率），
+因此从 Web 迁到原生只需要换语法。
+
+### 11.1 `nes-wasm`（Web）
 
 `crates/nes-wasm/src/lib.rs` 是纯搬运层，类与方法命名尽量与内核一致。
 
@@ -577,6 +584,39 @@ flowchart LR
 - 绑定是**生成物**，修改必须落在 Rust 侧，然后 `cd web && npm run build:wasm`。
 - 方法一律使用 `snake_case`（与 wasm-bindgen 惯例一致），TS 侧按需包装。
 - `frame()` 与 `run_cycles()` 的 `frame_ready` 语义与内核一致，不做额外解释。
+
+### 11.2 `nes-uniffi`（iOS / macOS / Android）
+
+`crates/nes-uniffi/src/lib.rs` 是原生前端的入口，接口与 §11.1 逐条对应，
+但用 UniFFI 的惯用形态表达：
+
+| 内核概念 | UniFFI 形态 | 生成到 Swift |
+| --- | --- | --- |
+| `Nes` | Object（内部 `Mutex<CoreNes>`） | `open class Nes`，`Sendable`；`Nes()` / `Nes.withConfig(config:)` |
+| `FrameClock` | Object | `FrameClock(frameRate:)` / `FrameClock.forRegion(region:)` |
+| `Config` / `Region` | Record / Enum | `struct Config` / `enum Region` |
+| `NesError` | Error | `enum NesError: Swift.Error`，可 `switch` 到具体变体 |
+| 常量（宽高 / 像素格式 / Mapper 列表） | 自由函数 | `frameWidth()`、`pixelFormat()`、`supportedMappers()` … |
+
+三处需要留意的设计：
+
+- **句柄是引用计数的对象**，方法都取 `&self`，内部用 `Mutex` 串行化。宿主仍应把机器放在
+  自己的模拟线程上（§10.5）；锁只是为了"从别的线程误调"不会变成 UB。
+- **锁的中毒会被恢复**：CPU 遇到未定义 opcode 会 panic 并毒化 `Mutex`，若直接 `unwrap`
+  会让一次坏帧永久废掉句柄，因此这里取 `into_inner()` 继续可用（宿主应重新加载卡带）。
+- **panic 不会跨过边界**：UniFFI 会捕获 panic 并以"意外错误"抛回宿主语言，
+  所以损坏的卡带是被上报，而不是让 App 进程 abort。
+
+生成绑定（绑定文件是生成物，不入库）：
+
+```text
+cargo build -p nes-uniffi
+cargo run -p nes-uniffi --bin uniffi-bindgen -- \
+    generate --library target/debug/libnes_uniffi.dylib \
+    --language swift --out-dir out/swift      # Android 用 --language kotlin
+```
+
+设备构建请指向对应的产物（iOS 真机是 `.a`，模拟器是 `.dylib`）。
 
 ---
 
