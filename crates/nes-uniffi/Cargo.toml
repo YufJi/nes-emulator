@@ -1,0 +1,22 @@
+[package]
+name = "nes-uniffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+# No `rust-version` here on purpose: UniFFI sets the toolchain floor for this
+# crate and declares none of its own, so guessing a number would be worse than
+# omitting one. `nes-core` keeps its own 1.70 floor, so a host that only wants
+# the core is unaffected.
+description = "UniFFI bindings for the NES core - Swift (iOS/macOS) and Kotlin (Android)"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+nes-core = { workspace = true }
+uniffi = { version = "0.32.2", features = ["cli"] }

@@ -1,2 +1,4 @@
 target/
 pkg/
+# UniFFI bindings are generated, not committed.
+crates/nes-uniffi/out/
