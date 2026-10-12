@@ -236,6 +236,12 @@ pub const HEIGHT: usize = 240;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
     /// One `u32` per pixel in `0xAARRGGBB` order, alpha in the high byte.
+    ///
+    /// On a little-endian host those bytes land in memory as `B, G, R, A`,
+    /// which is exactly what `MTLPixelFormatBGRA8Unorm` (Metal) and
+    /// `kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst` (CoreGraphics)
+    /// expect: a native front end can upload the buffer as-is. The web needs a
+    /// swizzle only because `ImageData` is RGBA.
     Argb8888,
 }
 

@@ -508,6 +508,11 @@ stateDiagram-v2
 
 - **视频**：`frame_buffer() -> &[u32]`（`0xAARRGGBB`），或 `frame_buffer_ptr()` 做零拷贝；
   尺寸与通道偏移从内核常量取。
+- **像素字节序**：`0xAARRGGBB` 在小端内存里的字节序是 `B, G, R, A`，正好等于
+  `MTLPixelFormatBGRA8Unorm`（Metal）与
+  `kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst`（CoreGraphics）——
+  **原生前端可以直接上传，不需要 swizzle**；浏览器需要做通道重排，只是因为
+  `ImageData` 是 RGBA 序。
 - **输入**：`set_button(player, BUTTON_*, pressed)`，`player` 为 1/2；按键索引以 `BUTTON_*` 常量
   为准，绑定层也导出同名常量，避免两侧漂移。
 - **存档**：`save_state()` / `load_state()`（整机）、`save_ram()` / `load_save_ram()`（电池）。
@@ -524,6 +529,32 @@ stateDiagram-v2
 
 三者共同点：**内核不主动回调宿主，宿主主动喂时间戳并拉数据**。因此新增平台不需要改内核，
 只需实现这四条通道（时间、画面、声音、按键）。
+
+### 10.5 线程与所有权模型
+
+内核**不带线程**：没有定时器、没有后台线程、没有任何锁——线程策略完全留给宿主。
+这不是疏忽，而是刻意划出的边界，因此有两条必须遵守的契约（由
+`crates/nes-core/tests/host_contract.rs` 编译期断言钉住）：
+
+| 事实 | 含义 |
+| --- | --- |
+| `Nes: Send` | 可以把**整台机器**搬到专用模拟线程，这是原生前端的标准做法 |
+| `Nes: !Sync` | **不能**把 `&Nes` 共享给其他线程：`Apu` 里存着 `Box<dyn FnMut + Send>` 的 DMC 回调，只 Send 不 Sync；机器只有一个所有者 |
+| `fill_audio` 无分配、无锁 | 但它需要 `&mut Nes`，所以只能在**拥有机器的那条线程**上调用 |
+
+于是原生前端（iOS / Android / 桌面）的标准形态是：
+
+```mermaid
+flowchart LR
+    T["模拟线程（拥有 Nes）<br/>frame() → fill_audio()"] -->|推入宿主自己的无锁环形缓冲| R["环形缓冲<br/>宿主实现"]
+    R --> A["音频实时线程<br/>AVAudioEngine / Oboe 回调<br/>只读、绝不阻塞"]
+    T -->|frame_buffer_ptr()| G["渲染 / GPU 上传"]
+    U["UI 线程"] -->|投递输入事件| T
+```
+
+内核无需为多线程做任何改动：宿主在模拟线程把音频抽干（`fill_audio`）后交给自己的环，
+实时线程只读环、永不碰 `Nes`。反过来，如果宿主直接在音频回调里驱动模拟（同一线程跑
+`frame()` 再取音频），也可以，但那样帧率会被音频周期牵着走。
 
 ---
 
@@ -645,6 +676,11 @@ flowchart LR
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝（如 6、8、16、18、
   30、85、等等）。扩展方式见第 8 节。
+- **未定义的 opcode 会 panic**：CPU 只实现文档化指令集，遇到未定义 opcode 直接
+  `panic!`（`crates/nes-core/src/cpu/instructions.rs`）。6502 有约 40% 的字节值不是
+  文档化指令，所以**损坏的 ROM 很容易踩到**。把"不知道"升级成显式失败是当前刻意的选择，
+  但宿主必须在 FFI 边界用 `catch_unwind`（或 UniFFI 的 panic 捕获）兜住；如果希望损坏的
+  ROM 还能继续跑，需要决定是把未定义 opcode 当作 NOP（牺牲准确性）还是补齐它们的语义。
 
 ### 15.2 存档与回放
 
