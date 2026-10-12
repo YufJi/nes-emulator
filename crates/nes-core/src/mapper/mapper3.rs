@@ -11,6 +11,8 @@ use super::Mapper;
 pub struct Mapper3 {
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
+    /// Whether CHR is RAM (writable) instead of ROM
+    chr_is_ram: bool,
     /// Current CHR-ROM bank selected (8KB banks)
     chr_bank: usize,
     /// Number of 8KB CHR-ROM banks
@@ -34,6 +36,7 @@ impl Mapper3 {
         Self {
             prg_rom,
             chr_rom,
+            chr_is_ram,
             chr_bank: 0,
             chr_rom_banks: chr_rom_banks.max(1),
             irq_pending: false,
@@ -50,24 +53,28 @@ impl Mapper3 {
         self.prg_rom.get(index).copied().unwrap_or(0)
     }
 
-    /// Read from CHR-ROM at the given address
-    fn read_chr(&self, addr: u16) -> u8 {
+    /// Physical CHR address the current 8KB bank maps `addr` to.
+    fn chr_addr(&self, addr: u16) -> usize {
         let offset = addr as usize % 0x2000;
-        let chr_addr = (self.chr_bank * 0x2000 + offset) % self.chr_rom.len();
-        self.chr_rom.get(chr_addr).copied().unwrap_or(0)
+        (self.chr_bank * 0x2000 + offset) % self.chr_rom.len().max(1)
     }
 
-    /// Write to CHR-RAM (if present)
+    /// Read from CHR-ROM/RAM at the given address
+    fn read_chr(&self, addr: u16) -> u8 {
+        self.chr_rom.get(self.chr_addr(addr)).copied().unwrap_or(0)
+    }
+
+    /// Write to CHR-RAM.
+    ///
+    /// CNROM boards ship CHR-ROM, where writes are dropped; this only has an
+    /// effect when the header leaves CHR empty so the image doubles as RAM.
     fn write_chr(&mut self, addr: u16, value: u8) {
-        // CNROM uses CHR-ROM, but some variants may have CHR-RAM
-        // We'll allow writes if the CHR data is modifiable
-        if self.chr_rom.len() == 8192 && self.chr_rom_banks == 1 {
-            // Likely CHR-RAM
-            let index = addr as usize % self.chr_rom.len();
-            if index < self.chr_rom.len() {
-                // Note: In a real implementation, we'd need to track if this is RAM
-                // For now, we don't allow writes to CHR-ROM
-            }
+        if !self.chr_is_ram {
+            return;
+        }
+        let chr_addr = self.chr_addr(addr);
+        if let Some(byte) = self.chr_rom.get_mut(chr_addr) {
+            *byte = value;
         }
     }
 }
@@ -88,10 +95,9 @@ impl Mapper for Mapper3 {
 
     fn write(&mut self, addr: u16, value: u8) {
         match addr {
-            // CHR-ROM is read-only, but some variants may have CHR-RAM
-            0x0000..=0x1FFF => {
-                self.write_chr(addr, value);
-            }
+            // $0000-$1FFF: CHR-RAM uploads land on the cartridge image; on
+            // CHR-ROM boards the mapper drops them.
+            0x0000..=0x1FFF => self.write_chr(addr, value),
             // Bank select: $8000-$FFFF
             0x8000..=0xFFFF => {
                 // Any write to $8000-$FFFF selects the CHR-ROM bank
@@ -238,5 +244,47 @@ mod tests {
 
         // CNROM doesn't generate IRQs
         assert!(!mapper.irq_pending());
+    }
+
+    #[test]
+    fn test_chr_ram_write_is_visible_to_reads() {
+        let prg = vec![0u8; 32768];
+        let mut mapper = Mapper3::new(prg, Vec::new()); // Empty CHR -> CHR-RAM
+        assert!(mapper.chr_is_ram);
+
+        mapper.write(0x0100, 0x5A);
+        assert_eq!(mapper.read(0x0100), 0x5A);
+
+        mapper.write(0x1FFF, 0xA5);
+        assert_eq!(mapper.read(0x1FFF), 0xA5);
+    }
+
+    #[test]
+    fn test_chr_rom_write_is_ignored() {
+        let prg = vec![0u8; 32768];
+        let chr = vec![0x11u8; 0x2000];
+        let mut mapper = Mapper3::new(prg, chr);
+        assert!(!mapper.chr_is_ram);
+
+        mapper.write(0x0100, 0x5A);
+        assert_eq!(mapper.read(0x0100), 0x11);
+    }
+
+    #[test]
+    fn test_save_state_keeps_chr_ram() {
+        use crate::state::{StateReader, StateWriter};
+
+        let prg = vec![0u8; 32768];
+        let mut mapper = Mapper3::new(prg, Vec::new()); // Empty CHR -> CHR-RAM
+        mapper.write(0x0100, 0x5A);
+
+        let mut w = StateWriter::new();
+        mapper.save_state(&mut w);
+        let saved = w.into_bytes();
+
+        mapper.write(0x0100, 0x00);
+        let mut r = StateReader::new(&saved);
+        mapper.load_state(&mut r);
+        assert_eq!(mapper.read(0x0100), 0x5A, "CHR-RAM was not restored");
     }
 }

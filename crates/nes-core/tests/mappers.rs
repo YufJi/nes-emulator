@@ -12,8 +12,8 @@ use nes_core::mapper::{
     mapper94::Mapper94, Mapper,
 };
 
-// Note: Mapper 118 and Mapper 119 exist as files but are not exported in mod.rs
-// They are tested through the factory function only
+// Mapper 118 and 119 are exported from `mapper::mod`; both are covered by their
+// own unit tests.
 
 // ============================================================================
 // Mapper Factory Tests
@@ -1005,4 +1005,65 @@ fn test_mapper_irq_clear_behavior() {
     // Clear IRQ
     mapper.clear_irq();
     assert!(!mapper.irq_pending());
+}
+
+// ============================================================================
+// CHR-RAM uploads through the PPU
+// ============================================================================
+
+/// Point the PPU's VRAM pointer at `addr` and write `value` through $2007.
+///
+/// This is the path a game uses to fill CHR-RAM: the PPU forwards writes for
+/// $0000-$1FFF to the cartridge, so the mapper has to keep the byte where the
+/// renderer will read it back.
+fn upload_byte_through_ppu(mapper: &mut (dyn Mapper + 'static), addr: u16, value: u8) {
+    use nes_core::ppu::{rendering::Mirroring, Ppu, PpuMemory};
+
+    let mut ppu = Ppu::new();
+    // The address latch never reaches the cartridge, so it needs no CHR source.
+    let no_chr = || PpuMemory::System {
+        chr: None,
+        mirroring: Mirroring::Horizontal,
+        open_bus: 0,
+    };
+
+    ppu.write_register_with(0x2006, (addr >> 8) as u8, no_chr());
+    ppu.write_register_with(0x2006, addr as u8, no_chr());
+    ppu.write_register_with(
+        0x2007,
+        value,
+        PpuMemory::System {
+            chr: Some(mapper),
+            mirroring: Mirroring::Horizontal,
+            open_bus: 0,
+        },
+    );
+}
+
+#[test]
+fn test_chr_ram_upload_through_ppu() {
+    use nes_core::mapper::mapper118::Mapper118;
+
+    // Every mapper that can back CHR with RAM must keep what the PPU hands it.
+    let cases: [(&str, Box<dyn Mapper>); 4] = [
+        ("mapper3", Box::new(Mapper3::new(vec![0u8; 32768], vec![]))),
+        ("mapper4", Box::new(Mapper4::new(vec![0u8; 0x8000], vec![]))),
+        (
+            "mapper79",
+            Box::new(Mapper79::new(vec![0u8; 32768], vec![])),
+        ),
+        (
+            "mapper118",
+            Box::new(Mapper118::new(vec![0u8; 0x20000], vec![])),
+        ),
+    ];
+
+    for (name, mut mapper) in cases {
+        upload_byte_through_ppu(mapper.as_mut(), 0x1000, 0xA5);
+        assert_eq!(
+            mapper.read(0x1000),
+            0xA5,
+            "{name}: CHR-RAM upload through $2007 did not reach the cartridge"
+        );
+    }
 }

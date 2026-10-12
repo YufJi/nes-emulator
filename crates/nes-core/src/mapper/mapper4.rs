@@ -166,26 +166,27 @@ impl Mapper4 {
         reg % self.chr_rom_banks
     }
 
-    /// Read from CHR-ROM/RAM at the given address
-    fn read_chr(&self, addr: u16) -> u8 {
+    /// Physical CHR address the 1KB slot holding `addr` maps to.
+    fn chr_addr(&self, addr: u16) -> usize {
         let slot = (addr / 0x0400) as u8;
         let bank = self.get_chr_bank_1k(slot);
         let offset = (addr & 0x03FF) as usize;
-        let chr_addr = (bank * 0x0400 + offset) % self.chr_rom.len();
-        self.chr_rom.get(chr_addr).copied().unwrap_or(0)
+        (bank * 0x0400 + offset) % self.chr_rom.len()
     }
 
-    /// Write to CHR-RAM (if enabled)
+    /// Read from CHR-ROM/RAM at the given address
+    fn read_chr(&self, addr: u16) -> u8 {
+        self.chr_rom.get(self.chr_addr(addr)).copied().unwrap_or(0)
+    }
+
+    /// Write to CHR-RAM (only when the cartridge ships without CHR-ROM).
     fn write_chr(&mut self, addr: u16, value: u8) {
-        if self.chr_is_ram {
-            let slot = (addr / 0x0400) as u8;
-            let bank = self.get_chr_bank_1k(slot);
-            let offset = (addr & 0x03FF) as usize;
-            let chr_addr = (bank * 0x0400 + offset) % self.chr_rom.len();
-            if chr_addr < self.chr_rom.len() {
-                // We can't easily write to the banked CHR-RAM in this simplified model
-                // In a full implementation, we'd need separate CHR-RAM storage
-            }
+        if !self.chr_is_ram {
+            return;
+        }
+        let chr_addr = self.chr_addr(addr);
+        if let Some(byte) = self.chr_rom.get_mut(chr_addr) {
+            *byte = value;
         }
     }
 
@@ -249,10 +250,9 @@ impl Mapper for Mapper4 {
 
     fn write(&mut self, addr: u16, value: u8) {
         match addr {
-            // CHR-RAM writes (if enabled)
-            0x0000..=0x1FFF => {
-                self.write_chr(addr, value);
-            }
+            // $0000-$1FFF: CHR-RAM uploads land on the cartridge image; on
+            // CHR-ROM boards the mapper drops them.
+            0x0000..=0x1FFF => self.write_chr(addr, value),
             // PRG RAM: $6000-$7FFF
             0x6000..=0x7FFF => {
                 let index = (addr - 0x6000) as usize;
@@ -583,6 +583,49 @@ mod tests {
         let mapper = Mapper4::new(prg, chr);
         assert!(mapper.chr_is_ram);
         assert_eq!(mapper.chr_rom.len(), 8192);
+    }
+
+    #[test]
+    fn test_chr_ram_write_is_visible_to_reads() {
+        let prg = vec![0u8; 0x8000];
+        let mut mapper = Mapper4::new(prg, Vec::new()); // Empty CHR -> CHR-RAM
+        assert!(mapper.chr_is_ram);
+
+        // Whatever bank the 1KB slot selects, a byte written through the
+        // mapper must read back at the address the PPU renders from.
+        for addr in [0x0000u16, 0x03FF, 0x0800, 0x1000, 0x1FFF] {
+            mapper.write(addr, 0x5A);
+            assert_eq!(mapper.read(addr), 0x5A, "CHR-RAM write lost at {addr:#06X}");
+        }
+    }
+
+    #[test]
+    fn test_chr_rom_write_is_ignored() {
+        let prg = vec![0u8; 0x8000];
+        let chr = vec![0x11u8; 0x2000];
+        let mut mapper = Mapper4::new(prg, chr);
+        assert!(!mapper.chr_is_ram);
+
+        mapper.write(0x0000, 0x5A);
+        assert_eq!(mapper.read(0x0000), 0x11);
+    }
+
+    #[test]
+    fn test_save_state_keeps_chr_ram() {
+        use crate::state::{StateReader, StateWriter};
+
+        let prg = vec![0u8; 0x8000];
+        let mut mapper = Mapper4::new(prg, Vec::new()); // Empty CHR -> CHR-RAM
+        mapper.write(0x0000, 0x5A);
+
+        let mut w = StateWriter::new();
+        mapper.save_state(&mut w);
+        let saved = w.into_bytes();
+
+        mapper.write(0x0000, 0x00);
+        let mut r = StateReader::new(&saved);
+        mapper.load_state(&mut r);
+        assert_eq!(mapper.read(0x0000), 0x5A, "CHR-RAM was not restored");
     }
 
     #[test]
