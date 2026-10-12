@@ -596,7 +596,6 @@ struct RomHeader {
     prg_rom_size: usize, // in 16KB units
     chr_rom_size: usize, // in 8KB units
     mapper_number: u16,
-    has_trainer: bool,
 }
 
 impl RomHeader {
@@ -628,7 +627,6 @@ impl RomHeader {
             prg_rom_size,
             chr_rom_size,
             mapper_number,
-            has_trainer,
         };
 
         let header_size = 16;
@@ -844,18 +842,6 @@ fn run_nestest(rom_path: &str) -> Result<NestestResults, JsnesError> {
         }
 
         instruction_count += 1;
-
-        // Check if we've reached a stable state (test completed)
-        // The ROM stores results at $02 and $03
-        // If both are non-zero or we've run many instructions, we can check
-        if instruction_count > 50000 {
-            // Check results periodically after many instructions
-            let result02 = bus.read(0x0002);
-            let result03 = bus.read(0x0003);
-
-            // If both results are set and stable, we can stop
-            // But we need to run long enough for all tests to complete
-        }
     }
 
     // Read final results

@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_save_state_keeps_chr_ram() {
-        use crate::state::{StateField, StateReader, StateWriter};
+        use crate::state::{StateReader, StateWriter};
 
         let mut mapper = Mapper0::new(vec![0u8; 0x4000], vec![]); // CHR-RAM
         mapper.write(0x0000, 0x5A);
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_save_state_leaves_chr_rom_out() {
-        use crate::state::{StateField, StateReader, StateWriter};
+        use crate::state::{StateReader, StateWriter};
 
         let mut mapper = Mapper0::new(vec![0u8; 0x4000], vec![0x11u8; 8192]); // CHR-ROM
         assert!(!mapper.chr_is_ram);

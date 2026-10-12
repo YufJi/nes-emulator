@@ -504,18 +504,6 @@ impl BackgroundRenderer {
         }
     }
 
-    /// Get the base nametable address
-    ///
-    /// # Arguments
-    /// * `ctrl` - PPUCTRL register value
-    ///
-    /// # Returns
-    /// The base nametable address ($2000, $2400, $2800, or $2C00)
-    fn get_nametable_base_addr(&self, ctrl: PpuCtrl) -> u16 {
-        let nt_select = ctrl.bits() & 0x03;
-        0x2000 + (nt_select as u16 * 0x400)
-    }
-
     /// Read a byte from VRAM with mirroring applied
     ///
     /// # Arguments

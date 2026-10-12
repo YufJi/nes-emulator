@@ -162,7 +162,7 @@ impl Mapper1 {
             return self.chr_rom.get(index).copied().unwrap_or(0);
         }
 
-        let bank: usize = if self.vrom_switching_size == 0 {
+        if self.vrom_switching_size == 0 {
             // 8KB mode - use chr_bank_0 with bit 0 ignored
             let bank_8k = ((self.chr_bank_0 & 0x1E) >> 1) as usize;
             let offset = addr as usize;
@@ -179,7 +179,7 @@ impl Mapper1 {
             let offset = (addr & 0x0FFF) as usize;
             let chr_addr = (bank_4k as usize * 0x1000 + offset) % self.chr_rom.len();
             return self.chr_rom.get(chr_addr).copied().unwrap_or(0);
-        };
+        }
     }
 
     /// Write to CHR-RAM
@@ -286,12 +286,6 @@ impl Mapper for Mapper1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn create_test_mapper() -> Mapper1 {
-        let prg = vec![0u8; 0x40000]; // 256KB (16 x 16KB banks)
-        let chr = vec![0u8; 0x10000]; // 64KB (16 x 4KB banks)
-        Mapper1::new(prg, chr)
-    }
 
     #[test]
     fn test_mapper1_new() {

@@ -111,7 +111,6 @@ struct RomHeader {
     mirroring: Mirroring,
     region: Region,
     has_battery: bool,
-    has_trainer: bool,
 }
 
 impl RomHeader {
@@ -166,7 +165,6 @@ impl RomHeader {
             mirroring,
             region,
             has_battery,
-            has_trainer,
         };
 
         let header_size = 16;

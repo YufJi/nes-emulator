@@ -107,7 +107,6 @@ impl Bus for BenchBus {
             0x2000..=0x3FFF => self.ppu.write_register(addr, value),
             0x4000..=0x4015 => self.apu.write_register(addr, value),
             0x4016..=0x4017 => {} // Controller strobe
-            0x4017 => self.apu.write_register(addr, value),
             _ => self.mapper.write(addr, value),
         }
     }

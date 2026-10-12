@@ -410,14 +410,14 @@ impl SpritePatternFetcher {
         let fine_y = sprite.get_fine_y(scanline, sprite_height, attrs.vertical_flip());
 
         // Calculate pattern table address
-        let (tile_index, pattern_addr) = if sprite_height == 8 {
+        let pattern_addr = if sprite_height == 8 {
             // 8x8 sprites: use pattern table from PPUCTRL bit 3
             let base_addr = if ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
                 0x1000
             } else {
                 0x0000
             };
-            (sprite.tile, base_addr + (sprite.tile as u16 * 16))
+            base_addr + (sprite.tile as u16 * 16)
         } else {
             // 8x16 sprites: tile index bit 0 selects pattern table
             // Top tile is (index & $FE), bottom is (index & $FE) + 1
@@ -432,7 +432,7 @@ impl SpritePatternFetcher {
             };
 
             let tile_index = base_tile + tile_offset;
-            (tile_index, base_addr + (tile_index as u16 * 16))
+            base_addr + (tile_index as u16 * 16)
         };
 
         // Calculate row offset within the tile

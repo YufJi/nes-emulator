@@ -324,7 +324,7 @@ impl AudioChannel for NoiseChannel {
         }
     }
 
-    fn read_register(&self, addr: u16) -> u8 {
+    fn read_register(&self, _addr: u16) -> u8 {
         // Noise channel registers are write-only
         // Return open bus (0 for now)
         0

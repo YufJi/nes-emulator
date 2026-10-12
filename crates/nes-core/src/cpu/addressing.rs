@@ -386,10 +386,6 @@ mod tests {
         fn get_reads(&self) -> &[u16] {
             &self.reads
         }
-
-        fn clear_reads(&mut self) {
-            self.reads.clear();
-        }
     }
 
     impl Bus for MockBus {

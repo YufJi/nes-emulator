@@ -735,9 +735,7 @@ mod tests {
         let mut dmc = DmcChannel::new();
 
         // Set up DMA callback
-        let mut dma_call_count = 0;
-        dmc.set_dma_callback(move |addr| {
-            dma_call_count += 1;
+        dmc.set_dma_callback(|addr| {
             assert_eq!(addr, 0xC000);
             0xAB // Return test byte
         });
@@ -760,10 +758,7 @@ mod tests {
         let mut dmc = DmcChannel::new();
 
         // Set up IRQ callback
-        let mut irq_triggered = false;
-        dmc.set_irq_callback(move || {
-            irq_triggered = true;
-        });
+        dmc.set_irq_callback(|| {});
 
         // Set up for IRQ
         dmc.irq_generated = true;

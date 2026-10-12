@@ -620,9 +620,6 @@ fn test_triangle_channel_output_silencing() {
     ch.reload_linear_counter();
     ch.clock_linear_counter();
     
-    // Should output (if all conditions met)
-    let output1 = ch.get_output();
-    
     // Disable channel
     ch.set_enabled(false);
     assert_eq!(ch.get_output(), 0);

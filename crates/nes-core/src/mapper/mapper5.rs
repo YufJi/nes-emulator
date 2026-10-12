@@ -1076,7 +1076,7 @@ mod tests {
 
     #[test]
     fn test_save_state_restores_banks_and_ram() {
-        use crate::state::{StateField, StateReader, StateWriter};
+        use crate::state::{StateReader, StateWriter};
 
         let mut mapper = create_test_mapper();
         mapper.write(0x5102, 0x02);

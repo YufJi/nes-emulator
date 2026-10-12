@@ -79,11 +79,6 @@ impl Mapper9 {
         self.prg_rom.len() / 0x2000
     }
 
-    /// Get CHR-ROM size in 4KB banks
-    fn chr_rom_banks(&self) -> usize {
-        self.chr_rom.len() / 0x1000
-    }
-
     /// Get the current CHR bank index for $0000 based on latch0 state
     fn current_chr_bank_0(&self) -> u8 {
         if self.latch0 == 0xFD {
