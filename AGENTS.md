@@ -51,3 +51,12 @@
 - Keep commits scoped, describe behavior changes, and state what you ran.
 - PRs: summary, linked issue, test evidence, and screenshots/GIFs for rendering
   or UI changes. Call out the mapper and ROM used when touching cartridge code.
+
+## Documentation Language
+
+- Docs are English-first: `README.md`, `docs/architecture.md`, `web/README.md`,
+  and `ios/README.md` are English.
+- Keep a Chinese translation alongside each translated page as `*.zh-CN.md`
+  (e.g. `README.zh-CN.md`, `docs/architecture.zh-CN.md`).
+- When you edit one language, update the other in the same change, and keep the
+  language switcher line at the top of both files pointing at each other.

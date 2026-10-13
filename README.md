@@ -1,178 +1,220 @@
-# NES Emulator（Rust + WebAssembly）
+# NES Emulator (Rust + WebAssembly)
 
-用 Rust 编写的 NES 模拟器内核，附带 WASM 绑定与 React 网页前端：把 `.nes`
-文件拖进页面，或填入一个 ROM 链接，即可开始游戏。
+[简体中文](./README.zh-CN.md) · **English**
 
-![网页前端：从内置游戏列表选中《超级玛莉》后的运行画面，右侧依次是控制台、从链接加载、即时存档、虚拟手柄与键位面板](docs/img/web-ui.png)
+A NES emulator core written in Rust, with WASM bindings and a React web front end:
+drag a `.nes` file onto the page, or paste a ROM URL, and start playing.
 
-## 特性
+> The web UI strings are currently Chinese; the docs are English-first, with
+> `*.zh-CN.md` alongside each translated page.
 
-- **CPU**：6502（Ricoh 2A03）指令集，附 nestest 集成校验。
-- **PPU**：背景与精灵渲染、sprite 0 命中、扫描线时序、OAM DMA、nametable 镜像。
-- **APU**：2 个脉冲、三角、噪声、DMC 五个通道，支持帧序列器 IRQ。
-- **Mapper**：33 个编号（NROM、MMC1/2/3/4/5、VRC 系列、Sunsoft、Irem 等）。
-- **扩展音频**：VRC6、MMC5、Sunsoft 5B。
-- **存档**：电池存档（按 ROM 名持久化）与即时存档（整机快照，4 个槽位）。
-- **可移植内核**：`nes-core` 不依赖任何宿主绑定，默认 `std`，也可
-  `--no-default-features` 以 `no_std` 构建；`Config` 可覆盖卡带声明的 TV 制式
-  并关闭音频采集，供原生前端（Windows / macOS / iOS / Android 等）按需裁剪。
-  画面尺寸、像素格式与支持的 Mapper 列表由内核导出（`WIDTH` / `HEIGHT` /
-  `PIXEL_FORMAT` / `supported_mappers()`），宿主不再重复这些常量。
-- **统一节奏**：`FrameClock` 把宿主的时间戳换算成整帧，追帧上限、卡顿后丢弃积压与
-  FPS 统计都在内核里；帧率按卡带制式精确推导（NTSC 60.0985 Hz、PAL 50.0067 Hz），
-  而非约定俗成的 60/50。子帧接口 `run_cycles` / `step_instruction` 供更细粒度的
-  驱动与调试使用，前端不必再各自实现定时器与追帧逻辑。
-- **音频直出**：采样率由宿主按声卡配置（`Config::sample_rate`，默认 48 kHz），
-  重采样在内核按制式完成（跟随 PPU 时钟，PAL 不再走音）；`fill_audio` 让宿主以设备
-  周期为单位把音频拉进自己的缓冲，Oboe / CoreAudio / Web Audio 都不用再各写一遍
-  重采样。队列有上限，宿主长时间不取就丢弃最旧的样本，不会无限积压。
-- **前端**：拖拽 / 链接 / 游戏列表三种载入方式、虚拟手柄、整数倍像素缩放、
-  AudioWorklet 音频输出、4 槽即时存档；界面基于
-  [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格组件库。
-  详见[网页前端](#网页前端)。
+![Web front end: Super Mario Bros. running after being picked from the built-in game list; on the right are the console, load-from-URL, save states, virtual pad, and key binding panels](docs/img/web-ui.png)
 
-## 网页前端
+## Features
 
-React + Vite + TypeScript；Rust 内核经 `wasm-bindgen` 编译成 WASM，在前端按帧驱动。
+- **CPU**: 6502 (Ricoh 2A03) instruction set, validated by nestest integration tests.
+- **PPU**: background and sprite rendering, sprite 0 hit, scanline timing, OAM DMA,
+  nametable mirroring.
+- **APU**: five channels — two pulses, triangle, noise, DMC — with frame-sequencer IRQ.
+- **Mappers**: 33 supported numbers (NROM, MMC1/2/3/4/5, the VRC family, Sunsoft, Irem, …).
+- **Expansion audio**: VRC6, MMC5, Sunsoft 5B.
+- **Saves**: battery-backed saves (persisted per ROM name) and save states
+  (full-machine snapshots, 4 slots).
+- **Portable core**: `nes-core` depends on no host bindings; `std` by default, and it
+  builds as `no_std` with `--no-default-features`. `Config` can override the TV system
+  declared by the cartridge and turn off audio capture, so native front ends
+  (Windows / macOS / iOS / Android, …) can trim what they don't need. Frame size, pixel
+  format, and the supported mapper list are all exported by the core
+  (`WIDTH` / `HEIGHT` / `PIXEL_FORMAT` / `supported_mappers()`), so hosts no longer
+  duplicate these constants.
+- **Unified pacing**: `FrameClock` turns host timestamps into whole frames; the catch-up
+  limit, dropping a backlog after a stall, and FPS statistics all live in the core. Frame
+  rate is derived exactly from the cartridge's TV system (NTSC 60.0985 Hz, PAL 50.0067 Hz)
+  rather than the customary 60/50. The sub-frame APIs `run_cycles` / `step_instruction`
+  are there for finer-grained driving and debugging, so front ends no longer each
+  implement their own timers and catch-up logic.
+- **Audio straight out**: the sample rate is chosen by the host from its audio device
+  configuration (`Config::sample_rate`, 48 kHz by default) and resampling happens in the
+  core according to the TV system (following the PPU clock, so PAL no longer plays out of
+  tune); `fill_audio` lets hosts pull audio into their own buffers on device-period
+  boundaries, so Oboe / CoreAudio / Web Audio no longer each reimplement resampling. The
+  queue is bounded: if the host doesn't pull for a long time, the oldest samples are
+  dropped instead of piling up without bound.
+- **Front end**: three ways to load (drag & drop / URL / game list), a virtual pad,
+  integer-multiple pixel scaling, AudioWorklet output, and 4 save-state slots; the UI is
+  built on the Animal Crossing–style
+  [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) component library.
+  See [Web front end](#web-front-end).
 
-### 载入 ROM
+## Web front end
 
-- **拖拽**：把 `.nes` 文件拖到页面任意位置松手即可，也可以用工具栏的「选择 ROM」。
-- **链接**：侧栏「从链接加载」粘贴直链后回车，省略 `http(s)://` 时按 `https` 处理。
-  GitHub 的 `blob`（文件页面）与 `raw` 链接会自动改写成 `raw.githubusercontent.com`
-  的直链——`github.com/…/raw/…` 的 302 跳转不带 `Access-Control-Allow-Origin`，
-  浏览器会直接丢弃响应；其他站点需要服务器允许跨域（CORS）。
-- **游戏列表**：内置 [mengfei523060/nesrom](https://github.com/mengfei523060/nesrom)
-  的 932 个 ROM 目录（只有名称与直链，不含 ROM 数据），可按名称搜索、滚动翻看，
-  正在运行的卡带标有「当前」。列表是静态的 `public/games.json`，弹窗第一次打开时
-  才请求，可用 `cd web && npm run build:games` 重新生成。
-- 三种来源走同一套校验（iNES 文件头 + Mapper 支持检查）；加载失败会保留当前正在
-  运行的游戏，并用通知说明原因。
+React + Vite + TypeScript; the Rust core is compiled to WASM with `wasm-bindgen` and
+driven frame by frame in the browser.
 
-### 控制
+### Loading a ROM
 
-- **键盘**：见下方[操作方式](#操作方式)。
-- **虚拟手柄**：触屏可用，按下即持续按住，直到抬手。
-- **暂停 / 继续**：工具栏按钮或 `P` 键。**全屏**：工具栏「全屏」，画面铺满屏幕。
+- **Drag & drop**: drop a `.nes` file anywhere on the page, or use "选择 ROM" in the
+  toolbar.
+- **URL**: paste a direct link into "从链接加载" in the sidebar and press Enter; a link
+  without `http(s)://` is treated as `https`. GitHub `blob` (file page) and `raw` links
+  are rewritten to the direct `raw.githubusercontent.com` URL — the 302 redirect from
+  `github.com/…/raw/…` carries no `Access-Control-Allow-Origin`, so the browser discards
+  the response outright; other sites must allow cross-origin requests (CORS).
+- **Game list**: ships a catalog of the 932 ROMs in
+  [mengfei523060/nesrom](https://github.com/mengfei523060/nesrom) (names and direct links
+  only, no ROM data), searchable by name and scrollable; the running cartridge is marked
+  as the current one. The list is the static `public/games.json`, requested only when the
+  dialog is first opened, and can be regenerated with
+  `cd web && npm run build:games`.
+- All three sources go through the same validation (iNES header + mapper support check);
+  a failed load keeps the game that is currently running and explains the reason in a
+  notification.
 
-### 画面与声音
+### Controls
 
-- 画布后备缓冲固定 256×240，CSS 尺寸按**整数倍**缩放（配合
-  `image-rendering: pixelated`），不会出现非整数倍带来的模糊。
-- 内核每个模拟帧产出的交错立体声样本交给 **AudioWorklet** 按声卡节奏播放；不支持
-  AudioWorklet 的浏览器自动回退到 `ScriptProcessorNode`。工具栏「静音」开关。
-- 顶栏状态：运行状态（待机 / 运行中 / 已暂停 / 加载中）、卡带名（悬停显示来源）、实时 FPS。
+- **Keyboard**: see [Key bindings](#key-bindings) below.
+- **Virtual pad**: available on touch screens; pressing holds the button down until you
+  lift your finger.
+- **Pause / resume**: the toolbar button or the `P` key. **Fullscreen**: the
+  "全屏" toolbar button, which fills the screen with the picture.
 
-### 存档
+### Picture and sound
 
-- **电池存档**：带电池的卡带按 ROM 名写入 `localStorage`，再次载入同一张时自动恢复；
-  工具栏「清空存档」在二次确认后删除存档并重置卡带。
-- **即时存档**：`save_state` / `load_state` 把 CPU、PPU、APU、总线与卡带的可变状态
-  编码成一段字节流（PRG-ROM 不重复存储），4 个槽位存放在 IndexedDB，可随时保存、
-  读取或清除。读取必须发生在同一张卡带上。
+- The canvas back buffer is fixed at 256×240, and the CSS size is scaled by **integer
+  multiples** (together with `image-rendering: pixelated`), so the blur that fractional
+  scaling causes never appears.
+- The interleaved stereo samples the core produces for each emulated frame are handed to
+  **AudioWorklet**, which plays them at the sound card's pace; browsers without
+  AudioWorklet fall back to `ScriptProcessorNode` automatically. Muting is a toolbar
+  switch.
+- Top-bar status: run state (idle / running / paused / loading), cartridge name (hover to
+  see the source), and live FPS.
 
-### 界面
+### Saves
 
-- 基于 [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) 的动森风格
-  组件库；`src/styles.css` 只负责布局并读取库暴露的 `--animal-*` 变量，不覆盖组件的
-  颜色、圆角与阴影。
-- 窄屏（<940px）自动改为上下布局：画面在上，面板在下。
-- 手机浏览器请用 **`/m`**：游戏列表是独立的一页（dashboard），从列表进入
-  `/m/play?game=<游戏名>` 后画面在上、触控手柄在下，暂停 / 存档 / 换 ROM 等操作收在
-  右上角工具栏里；横屏时手柄分列画面两侧（方向键在左、A/B 在右）。用手机访问根地址会
-  自动进入 `/m`，界面不提供桌面 / 手机互切的入口，详见
-  [`web/README.md`](web/README.md#手机页面m)。
-- 构建时会裁掉库中未使用的字体与场景插画，`dist/` 约 730 KB。详见
-  [`web/README.md`](web/README.md)。
+- **Battery saves**: cartridges with a battery write to `localStorage` keyed by ROM name,
+  and the save is restored automatically the next time the same cartridge is loaded;
+  "清空存档" in the toolbar deletes the save and resets the cartridge after a
+  confirmation.
+- **Save states**: `save_state` / `load_state` encode the mutable state of the CPU, PPU,
+  APU, bus, and cartridge into a byte stream (PRG-ROM is not stored again); 4 slots live
+  in IndexedDB and can be saved to, loaded from, or cleared at any time. Loading must
+  happen on the same cartridge.
 
-## 目录结构
+### Interface
+
+- Built on the Animal Crossing–style
+  [animal-island-ui](https://github.com/guokaigdg/animal-island-ui) component library;
+  `src/styles.css` only handles layout and reads the `--animal-*` variables the library
+  exposes — it does not override component colors, corner radii, or shadows.
+- Narrow viewports (<940px) switch to a stacked layout automatically: picture on top,
+  panels below.
+- On a phone browser use **`/m`**: the game list is a page of its own (a dashboard), and
+  opening `/m/play?game=<game name>` from the list puts the picture on top with the touch
+  pad below, while pause / save / switch-ROM and friends live in a toolbar in the top-right
+  corner; in landscape the pad splits to either side of the picture (D-pad on the left,
+  A/B on the right). Visiting the root address on a phone enters `/m` automatically, and
+  the UI offers no desktop/mobile toggle; see
+  [`web/README.md`](web/README.md#mobile-page-m).
+- The build strips the fonts and scene illustrations the library doesn't use here, leaving
+  `dist/` at about 730 KB. See [`web/README.md`](web/README.md).
+
+## Directory layout
 
 ```
-crates/nes-core/   模拟器内核：CPU / PPU / APU / 总线 / mapper / 存档编码
-crates/nes-wasm/   wasm-bindgen 绑定（Nes），对内核的薄封装
-crates/nes-uniffi/ UniFFI 绑定，供 iOS / macOS（Swift）与 Android（Kotlin）接入
-web/               React + Vite + TypeScript 前端
-docs/              架构说明（docs/architecture.md）与界面截图（docs/img/）
-roms/              本地测试 ROM（可选；缺失时相关测试会跳过）
+crates/nes-core/   emulator core: CPU / PPU / APU / bus / mappers / save-state encoding
+crates/nes-wasm/   wasm-bindgen bindings (Nes), a thin wrapper over the core
+crates/nes-uniffi/ UniFFI bindings, for iOS / macOS (Swift) and Android (Kotlin)
+web/               React + Vite + TypeScript front end
+docs/              architecture notes (docs/architecture.md) and UI screenshots (docs/img/)
+roms/              local test ROMs (optional; tests that need them are skipped when absent)
 ```
 
-## 环境要求
+## Requirements
 
-- Rust 1.70+（edition 2021）
+- Rust 1.70+ (edition 2021)
 - Node.js 18+
-- `wasm-pack`（仅在重新生成 WASM 绑定时需要）
+- `wasm-pack` (only needed when regenerating the WASM bindings)
 
-## 构建与运行
+## Building and running
 
-内核：
+Core:
 
 ```bash
-cargo build -p nes-core     # 构建内核
-cargo test --workspace      # 运行全部 Rust 测试
+cargo build -p nes-core     # build the core
+cargo test --workspace      # run all Rust tests
 ```
 
-网页前端（首次需生成 WASM 绑定，`web/src/wasm/` 未纳入版本控制）：
+Web front end (generate the WASM bindings first; `web/src/wasm/` is not under version
+control):
 
 ```bash
 cd web
 npm install
-npm run build:wasm   # 用 wasm-pack 生成 web/src/wasm（需要联网）
-npm run dev          # 开发服务器 http://localhost:5173
-npm run build        # 类型检查 + 生产构建
+npm run build:wasm   # generate web/src/wasm with wasm-pack (needs network)
+npm run dev          # dev server at http://localhost:5173
+npm run build        # typecheck + production build
 ```
 
-## 部署（GitHub Pages）
+## Deployment (GitHub Pages)
 
-推送到 `main` 会触发 [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml)：
-先在 runner 上编译 WASM 内核（`web/src/wasm/` 未入库，必须重新生成），再构建前端，
-最后通过 Pages 的 Actions 流程发布。
+Pushing to `main` triggers
+[`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml): it compiles
+the WASM core on the runner (`web/src/wasm/` is not committed, so it must be regenerated),
+then builds the front end, and finally publishes it through the Pages Actions workflow.
 
-首次使用需要手动开启一次：仓库 **Settings → Pages → Source** 选择 **GitHub Actions**。
-工作流不会替你开启——GITHUB_TOKEN 没有仓库管理权限。开启后站点地址是
-`https://<owner>.github.io/<repo>/`。
+First-time use needs one manual step: set **Settings → Pages → Source** in the repository
+to **GitHub Actions**. The workflow will not do it for you — GITHUB_TOKEN has no
+repository-administration rights. Once enabled, the site is at
+`https://<owner>.github.io/<repo>/`.
 
-Vite 的 `base` 由工作流按仓库名推导（普通仓库 `/<repo>/`，`<owner>.github.io`
-这类用户站点 `/`），所以本地 `npm run build` 仍按站点根目录构建。要在本地复现
-子路径构建（排查部署问题时很有用）：
+Vite's `base` is derived by the workflow from the repository name (`/<repo>/` for a normal
+repository, `/` for user sites such as `<owner>.github.io`), so a local `npm run build`
+still builds for the site root. To reproduce a sub-path build locally (handy when
+debugging deployment problems):
 
 ```bash
 cd web
-PAGES_BASE=/<repo>/ npm run build:pages   # 产物在 web/dist
+PAGES_BASE=/<repo>/ npm run build:pages   # output in web/dist
 ```
 
-部署后的站点从 `raw.githubusercontent.com` 拉取游戏列表里的 ROM（对方允许跨域），
-因此只能联网使用；断网环境请改用本地文件或自建 ROM 直链。
+Once deployed, the site fetches the ROMs in the game list from
+`raw.githubusercontent.com` (which allows cross-origin requests), so it only works
+online; offline, use local files or your own direct ROM links.
 
-Pages 是纯静态托管，没有服务端 rewrite，所以构建会额外产出一个 `404.html`：访问
-`/m/play?game=…` 这类深链时由它把地址交回应用，`web/src/router.ts` 在首帧前还原，
-刷新与分享链接都不会再落到 404 页面。
+Pages is purely static hosting with no server-side rewrite, so the build also emits a
+`404.html`: when a deep link such as `/m/play?game=…` is requested, it hands the address
+back to the app, and `web/src/router.ts` restores it before the first frame, so refreshes
+and shared links never land on a 404 page.
 
-## 操作方式
+## Key bindings
 
-| 动作 | 按键 |
+| Action | Keys |
 | --- | --- |
-| 方向 | `W` `A` `S` `D` |
+| D-pad | `W` `A` `S` `D` |
 | A | `J` / `I` |
 | B | `K` / `O` |
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
-| 暂停 / 继续 | `P` |
+| Pause / resume | `P` |
 
-触屏设备可直接使用右侧的虚拟手柄；手机浏览器建议改用 [`/m`](#网页前端) 的手机页面。
-更多前端细节见 [`web/README.md`](web/README.md)。
+On touch devices you can use the virtual pad on the right; on a phone browser prefer the
+mobile page at [`/m`](#web-front-end). More front-end detail is in
+[`web/README.md`](web/README.md).
 
-## 测试
+## Testing
 
-- `cargo test --workspace`：单元测试 + 集成测试（`ppu`、`apu`、`mappers`、
-  `nestest`）+ 端到端 Super Mario Bros 冒烟测试。
-- 需要 ROM 的用例在 `roms/` 缺失时跳过或被标记为 `#[ignore]`。
-- 前端改动请运行 `npm run typecheck` 与 `npm run build`。
+- `cargo test --workspace`: unit tests + integration tests (`ppu`, `apu`, `mappers`,
+  `nestest`) + an end-to-end Super Mario Bros smoke test.
+- Tests that need a ROM are skipped or marked `#[ignore]` when `roms/` is missing.
+- For front-end changes, run `npm run typecheck` and `npm run build`.
 
-## 说明
+## Notes
 
-- 仅支持 iNES 格式；模拟器本身不附带游戏，请自备 ROM。
-- 仓库里的 ROM 一律不入版本控制，内置游戏列表只保存名称与直链。
+- Only the iNES format is supported; the emulator ships no games, so bring your own ROMs.
+- ROMs in this repository are never committed; the built-in game list stores names and
+  direct links only.
 
-## 许可
+## License
 
-MIT（见 [`Cargo.toml`](Cargo.toml) 中的 `license` 字段）。
+MIT (see the `license` field in [`Cargo.toml`](Cargo.toml)).
