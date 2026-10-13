@@ -593,10 +593,10 @@ So the standard shape for a native front end (iOS / Android / desktop) is:
 
 ```mermaid
 flowchart LR
-    T["Emulation thread (owns Nes)<br/>frame() → fill_audio()"] -->|push into the host's own lock-free ring| R["Ring buffer<br/>implemented by the host"]
+    T["Emulation thread (owns Nes)<br/>frame() → fill_audio()"] -->|"push into the host's own lock-free ring"| R["Ring buffer<br/>implemented by the host"]
     R --> A["Audio realtime thread<br/>AVAudioEngine / Oboe callback<br/>read-only, never blocks"]
-    T -->|frame_buffer_ptr()| G["Rendering / GPU upload"]
-    U["UI thread"] -->|deliver input events| T
+    T -->|"frame_buffer_ptr()"| G["Rendering / GPU upload"]
+    U["UI thread"] -->|"deliver input events"| T
 ```
 
 The core needs no changes for multithreading: the host drains audio on the emulation thread

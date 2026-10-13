@@ -550,10 +550,10 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    T["模拟线程（拥有 Nes）<br/>frame() → fill_audio()"] -->|推入宿主自己的无锁环形缓冲| R["环形缓冲<br/>宿主实现"]
+    T["模拟线程（拥有 Nes）<br/>frame() → fill_audio()"] -->|"推入宿主自己的无锁环形缓冲"| R["环形缓冲<br/>宿主实现"]
     R --> A["音频实时线程<br/>AVAudioEngine / Oboe 回调<br/>只读、绝不阻塞"]
-    T -->|frame_buffer_ptr()| G["渲染 / GPU 上传"]
-    U["UI 线程"] -->|投递输入事件| T
+    T -->|"frame_buffer_ptr()"| G["渲染 / GPU 上传"]
+    U["UI 线程"] -->|"投递输入事件"| T
 ```
 
 内核无需为多线程做任何改动：宿主在模拟线程把音频抽干（`fill_audio`）后交给自己的环，
