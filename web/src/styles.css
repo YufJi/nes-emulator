@@ -796,7 +796,17 @@ body.phone-ui [contenteditable='true'] {
 .tpad__actions {
   grid-area: actions;
   display: flex;
-  align-items: flex-end;
+  /* Column, so the combined key sits above B/A without widening the row: the
+     face buttons stay exactly where the thumb already rests. */
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.tpad__pair {
+  display: flex;
+  justify-content: flex-end;
   gap: 12px;
 }
 
@@ -812,6 +822,14 @@ body.phone-ui [contenteditable='true'] {
   height: 68px;
   padding: 0;
   font-size: 20px;
+}
+
+.tpad .tpad__key--both {
+  /* Same height as the B/A circles it sits above, so the three read as one block
+     of keys; the label grows with it rather than looking lost in a tall bar. */
+  height: 68px;
+  padding: 0;
+  font-size: 16px;
 }
 
 .tpad .tpad__key--system {
@@ -931,6 +949,10 @@ body.phone-ui [contenteditable='true'] {
     width: 58px;
     height: 58px;
     font-size: 18px;
+  }
+
+  .tpad .tpad__key--both {
+    height: 58px;
   }
 
   /* Select and Start take the far ends under each thumb, clear of the picture. */

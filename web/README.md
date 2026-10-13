@@ -161,6 +161,10 @@ picture tiny, so the mobile version is two separate routes:
   and only the dead zone or lifting the finger releases it — while a button press hands over
   to a neighbouring button (that is how B→A rolls work), keeps holding when the thumb drifts
   into the pad's empty space, and lets go once the finger leaves the pad.
+- The actions column carries an extra **A+B** key above B/A. One thumb cannot hold B (run) and
+  tap A (jump) at the same time, and this key reports both at once — which is the run-jump. It
+  is a genuine press of both buttons rather than autofire: the console sees A and B down
+  together until the finger lifts, and it can be held alongside a direction on the stick.
 - Presses buzz on the platforms that can: `src/mobile/haptics.ts` wraps `navigator.vibrate`
   (Android browsers; WebKit has never implemented it, so an iPhone stays silent and the switch
   is disabled there) with 12 ms for the face buttons and 6 ms once per stick push — rolling

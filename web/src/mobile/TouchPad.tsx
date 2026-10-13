@@ -30,10 +30,23 @@ const NOTHING: Held = new Set<ButtonName>();
 
 const DIRECTIONS: readonly ButtonName[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
 
+/**
+ * The combined key: one thumb cannot hold B (run) and tap A (jump) at once, so
+ * this key reports both at the same time — which is exactly the run-jump.
+ */
+type Control = 'dpad' | 'AB' | ButtonName;
+
+const COMBINED = 'AB';
+
+/** Buttons a control stands for; every control maps to one or two of them. */
+function buttonsOf(control: Control): readonly ButtonName[] {
+  return control === COMBINED ? ['A', 'B'] : [control as ButtonName];
+}
+
 /** What a pointer is holding, and the control it landed on. */
 interface Press {
-  /** `'dpad'`, or the button the finger went down on. */
-  control: 'dpad' | ButtonName;
+  /** `'dpad'`, the combined key, or the button the finger went down on. */
+  control: Control;
   /** Held by this pointer alone; the union across pointers is what is pressed. */
   buttons: Held;
   /** The pad element, kept for the stick so later moves need no hit test. */
@@ -45,14 +58,15 @@ function controlAt(
   root: HTMLElement,
   x: number,
   y: number,
-): { element: HTMLElement; control: 'dpad' | ButtonName } | null {
+): { element: HTMLElement; control: Control } | null {
   const element = document.elementFromPoint(x, y);
   const found = element instanceof Element ? element.closest('[data-control]') : null;
   if (!(found instanceof HTMLElement) || !root.contains(found)) return null;
 
   const name = found.getAttribute('data-control');
   if (!name) return null;
-  return { element: found, control: name === 'dpad' ? 'dpad' : (name as ButtonName) };
+  const control = name === 'dpad' ? 'dpad' : name === COMBINED ? COMBINED : (name as ButtonName);
+  return { element: found, control };
 }
 
 /**
@@ -148,7 +162,7 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
         buttons:
           hit.control === 'dpad'
             ? resolveDirection(hit.element, event.clientX, event.clientY)
-            : new Set([hit.control]),
+            : new Set(buttonsOf(hit.control)),
         pad: hit.control === 'dpad' ? hit.element : null,
       });
       sync();
@@ -179,7 +193,12 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
 
         // Handing over happens between buttons only; the stick is not a target a
         // button press migrates to. Off the pad entirely, the button lets go.
-        const buttons = hit && hit.control !== 'dpad' ? new Set([hit.control]) : inside ? press.buttons : NOTHING;
+        const buttons =
+          hit && hit.control !== 'dpad'
+            ? new Set(buttonsOf(hit.control))
+            : inside
+              ? press.buttons
+              : NOTHING;
         pointers.current.set(event.pointerId, { ...press, buttons });
       }
       sync();
@@ -276,24 +295,41 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
       </div>
 
       <div className="tpad__actions">
+        {/* Both face buttons at once, for the run-and-jump a single thumb cannot
+            do: it sits above B/A so the same thumb reaches it, and it lights up
+            whenever the console is being told both are down. */}
         <Button
-          className="tpad__key tpad__key--ab"
-          data-control="B"
-          data-pressed={direction('B')}
+          block
+          size="small"
+          className="tpad__key tpad__key--both"
+          data-control="AB"
+          data-pressed={direction('A') && direction('B')}
           disabled={disabled}
           tabIndex={-1}
         >
-          B
+          A+B
         </Button>
-        <Button
-          className="tpad__key tpad__key--ab"
-          data-control="A"
-          data-pressed={direction('A')}
-          disabled={disabled}
-          tabIndex={-1}
-        >
-          A
-        </Button>
+
+        <div className="tpad__pair">
+          <Button
+            className="tpad__key tpad__key--ab"
+            data-control="B"
+            data-pressed={direction('B')}
+            disabled={disabled}
+            tabIndex={-1}
+          >
+            B
+          </Button>
+          <Button
+            className="tpad__key tpad__key--ab"
+            data-control="A"
+            data-pressed={direction('A')}
+            disabled={disabled}
+            tabIndex={-1}
+          >
+            A
+          </Button>
+        </div>
       </div>
     </div>
   );
