@@ -43,6 +43,10 @@ interface ToolsDrawerProps {
   onReset: () => void;
   onClearSave: () => void;
   onToggleMute: () => void;
+  haptics: boolean;
+  /** False on devices without `navigator.vibrate` — iOS, in other words. */
+  hapticsSupported: boolean;
+  onToggleHaptics: () => void;
   onFullscreen: () => void;
   onSaveSlot: (slot: number) => void;
   onLoadSlot: (slot: number) => void;
@@ -80,6 +84,9 @@ export function ToolsDrawer({
   onReset,
   onClearSave,
   onToggleMute,
+  haptics,
+  hapticsSupported,
+  onToggleHaptics,
   onFullscreen,
   onSaveSlot,
   onLoadSlot,
@@ -167,6 +174,22 @@ export function ToolsDrawer({
                 unCheckedChildren={<VolumeIcon size={14} color="currentColor" aria-hidden />}
               />
             </div>
+
+            <div className="toolbar__row">
+              <span className="toolbar__label">震动</span>
+              <Switch
+                checked={haptics}
+                onChange={onToggleHaptics}
+                disabled={!hapticsSupported}
+                aria-label="震动反馈"
+              />
+            </div>
+
+            <p className="panel__note">
+              {hapticsSupported
+                ? '按键与方向都会有轻微振动；觉得吵可以关掉。'
+                : '当前浏览器不提供震动接口（iOS Safari 没有该 API），此处无法开启。'}
+            </p>
           </Card>
         </section>
 

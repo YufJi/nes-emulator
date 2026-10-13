@@ -156,6 +156,16 @@ picture tiny, so the mobile version is two separate routes:
   light up. Nothing has to be aimed at; the direction comes from where the thumb landed.
   A/B/SELECT/START stay discrete buttons — the NES reads eight digital directions and has no
   analogue value to offer a real stick.
+- A pointer belongs to the control it landed on, so a press is never dropped mid-game. On the
+  stick the direction keeps coming from the coordinates — sliding well past the rim holds it,
+  and only the dead zone or lifting the finger releases it — while a button press hands over
+  to a neighbouring button (that is how B→A rolls work), keeps holding when the thumb drifts
+  into the pad's empty space, and lets go once the finger leaves the pad.
+- Presses buzz on the platforms that can: `src/mobile/haptics.ts` wraps `navigator.vibrate`
+  (Android browsers; WebKit has never implemented it, so an iPhone stays silent and the switch
+  is disabled there) with 12 ms for the face buttons and 6 ms once per stick push — rolling
+  from one direction to the next does not buzz again. It starts on and can be turned off in
+  the toolbar, under 「震动」 next to 「静音」.
 - Row selection in the list listens for a **tap** rather than `click`
   (`src/mobile/useTap.ts`): when a list is still coasting (or has just stopped), WebKit uses
   the first tap to brake and dispatches no `click`, which turns into "you have to tap twice

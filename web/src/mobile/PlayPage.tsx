@@ -7,6 +7,7 @@ import { useGameList } from '../hooks/useGameList';
 import { useNesEmulator } from '../hooks/useNesEmulator';
 import { navigate } from '../router';
 import { MobileStage } from './MobileStage';
+import { hapticsAvailable } from './haptics';
 import { takePendingRom } from './romHandoff';
 import { ToolsDrawer } from './ToolsDrawer';
 import { TouchPad } from './TouchPad';
@@ -55,6 +56,9 @@ export function PlayPage({ query }: PlayPageProps) {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
+  /** Starts off on the devices that can do it; the switch in the drawer is the
+   *  escape hatch for a phone whose buzz is more annoying than useful. */
+  const [haptics, setHaptics] = useState(hapticsAvailable);
   /** What the page has already put in the console, so it is not loaded twice. */
   const started = useRef<string | null>(null);
 
@@ -183,7 +187,7 @@ export function PlayPage({ query }: PlayPageProps) {
         </MobileStage>
 
         <div className="mplay__controls">
-          <TouchPad disabled={!hasRom} onButton={setButton} />
+          <TouchPad disabled={!hasRom} haptics={haptics} onButton={setButton} />
         </div>
       </div>
 
@@ -213,6 +217,9 @@ export function PlayPage({ query }: PlayPageProps) {
         onReset={reset}
         onClearSave={clearSave}
         onToggleMute={toggleMute}
+        haptics={haptics}
+        hapticsSupported={hapticsAvailable()}
+        onToggleHaptics={() => setHaptics((on) => !on)}
         onFullscreen={toggleFullscreen}
         onSaveSlot={saveSlot}
         onLoadSlot={loadSlot}

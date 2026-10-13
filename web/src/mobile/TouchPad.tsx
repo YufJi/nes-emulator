@@ -2,9 +2,12 @@ import { useCallback, useRef, useState, type PointerEvent } from 'react';
 import { Button } from 'animal-island-ui';
 import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon } from 'naive-icons';
 import { BUTTON_NAMES, type ButtonName } from '../emulator/constants';
+import { buzzButton, buzzStick } from './haptics';
 
 interface TouchPadProps {
   disabled: boolean;
+  /** Whether presses should buzz; off means the visitor turned it off. */
+  haptics: boolean;
   onButton: (button: ButtonName, pressed: boolean) => void;
 }
 
@@ -17,11 +20,6 @@ const DEAD_ZONE = 0.24;
 /** How far the stick head leans at full deflection, in CSS pixels. */
 const STICK_THROW_PX = 16;
 
-/** `navigator.vibrate` does not exist on iOS; a missing buzz is not an error. */
-function buzz(ms: number): void {
-  navigator.vibrate?.(ms);
-}
-
 /**
  * Buttons a single pointer holds. One finger can hold two at once: the d-pad
  * reports each axis on its own, which is what makes diagonals work.
@@ -30,15 +28,31 @@ type Held = ReadonlySet<ButtonName>;
 
 const NOTHING: Held = new Set<ButtonName>();
 
-/** Which buttons the element under the finger is meant to press, if any. */
-function resolve(root: HTMLElement, x: number, y: number): Held {
-  const element = document.elementFromPoint(x, y);
-  const control = element instanceof Element ? element.closest('[data-control]') : null;
-  if (!control || !root.contains(control)) return NOTHING;
+const DIRECTIONS: readonly ButtonName[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
 
-  const name = control.getAttribute('data-control');
-  if (name === 'dpad') return resolveDirection(control as HTMLElement, x, y);
-  return name ? new Set([name as ButtonName]) : NOTHING;
+/** What a pointer is holding, and the control it landed on. */
+interface Press {
+  /** `'dpad'`, or the button the finger went down on. */
+  control: 'dpad' | ButtonName;
+  /** Held by this pointer alone; the union across pointers is what is pressed. */
+  buttons: Held;
+  /** The pad element, kept for the stick so later moves need no hit test. */
+  pad: HTMLElement | null;
+}
+
+/** The control under a point, if it belongs to this pad. */
+function controlAt(
+  root: HTMLElement,
+  x: number,
+  y: number,
+): { element: HTMLElement; control: 'dpad' | ButtonName } | null {
+  const element = document.elementFromPoint(x, y);
+  const found = element instanceof Element ? element.closest('[data-control]') : null;
+  if (!(found instanceof HTMLElement) || !root.contains(found)) return null;
+
+  const name = found.getAttribute('data-control');
+  if (!name) return null;
+  return { element: found, control: name === 'dpad' ? 'dpad' : (name as ButtonName) };
 }
 
 /**
@@ -47,6 +61,10 @@ function resolve(root: HTMLElement, x: number, y: number): Held {
  * Independent axes are what give a diagonal for free (a thumb in the top-right
  * corner returns `UP` and `RIGHT`), and they keep the boundary stable while the
  * thumb rolls around the middle.
+ *
+ * The offset is not clamped to the pad: a thumb that slides past the rim keeps
+ * its direction (the ratios only grow), which is how a real stick behaves and
+ * what stops a drifting thumb from dropping the input mid-jump.
  */
 function resolveDirection(pad: HTMLElement, x: number, y: number): Held {
   const rect = pad.getBoundingClientRect();
@@ -67,22 +85,32 @@ function resolveDirection(pad: HTMLElement, x: number, y: number): Held {
  * Every press is handled by the wrapper rather than by the buttons themselves:
  * touch pointers are implicitly captured by whatever is under the finger, so a
  * per-button handler would keep the thumb stuck to the button it landed on and
- * make slides (d-pad rolls, B→A rolls) impossible. Here each pointer is resolved
- * from its coordinates on every move, which is also what lets the d-pad behave
- * as one piece instead of four separate keys.
+ * make slides (d-pad rolls, B→A rolls) impossible.
+ *
+ * A pointer belongs to the control it landed on:
+ *
+ * - on the stick, the direction keeps coming from the coordinates, wherever the
+ *   thumb goes — sliding past the rim does not release it, only returning to the
+ *   dead zone or lifting the finger does;
+ * - on a button, sliding onto a neighbouring button hands the pointer over (that
+ *   is how B→A rolls work), sliding into the pad's empty space keeps holding the
+ *   button, and leaving the pad altogether lets go of it.
  */
-export function TouchPad({ disabled, onButton }: TouchPadProps) {
+export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  /** Buttons held per pointer id; the union across pointers is what is pressed. */
-  const pointers = useRef(new Map<number, Held>());
+  const pointers = useRef(new Map<number, Press>());
   const held = useRef<Set<ButtonName>>(new Set());
   const [active, setActive] = useState<Held>(NOTHING);
 
   const sync = useCallback(() => {
     const next = new Set<ButtonName>();
-    for (const buttons of pointers.current.values()) {
-      for (const button of buttons) next.add(button);
+    for (const press of pointers.current.values()) {
+      for (const button of press.buttons) next.add(button);
     }
+
+    // Whether the stick was already pushing before this update, so a roll from
+    // one direction to the next buzzes once rather than at every quadrant.
+    const wasNeutral = !DIRECTIONS.some((button) => held.current.has(button));
 
     for (const button of BUTTON_NAMES) {
       const was = held.current.has(button);
@@ -90,41 +118,73 @@ export function TouchPad({ disabled, onButton }: TouchPadProps) {
       if (was === now) continue;
       onButton(button, now);
       // Only the press buzzes: a release is felt through the picture.
-      if (now) buzz(8);
+      if (!now || !haptics) continue;
+      if (DIRECTIONS.includes(button)) {
+        if (wasNeutral) buzzStick();
+      } else {
+        buzzButton();
+      }
     }
 
     held.current = next;
     setActive(next);
-  }, [onButton]);
-
-  const track = useCallback(
-    (event: PointerEvent<HTMLDivElement>) => {
-      const root = rootRef.current;
-      if (!root) return;
-      pointers.current.set(event.pointerId, resolve(root, event.clientX, event.clientY));
-      sync();
-    },
-    [sync],
-  );
+  }, [haptics, onButton]);
 
   const onPointerDown = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
       if (disabled) return;
+      const root = rootRef.current;
+      if (!root) return;
+      const hit = controlAt(root, event.clientX, event.clientY);
+      // A press that starts on empty space between the controls is not a press.
+      if (!hit) return;
+
       // Keeps the browser from turning a touch into a scroll, a text selection
       // or a long-press menu, and hands every later move to this element.
       event.preventDefault();
       event.currentTarget.setPointerCapture(event.pointerId);
-      track(event);
+      pointers.current.set(event.pointerId, {
+        control: hit.control,
+        buttons:
+          hit.control === 'dpad'
+            ? resolveDirection(hit.element, event.clientX, event.clientY)
+            : new Set([hit.control]),
+        pad: hit.control === 'dpad' ? hit.element : null,
+      });
+      sync();
     },
-    [disabled, track],
+    [disabled, sync],
   );
 
   const onPointerMove = useCallback(
     (event: PointerEvent<HTMLDivElement>) => {
-      if (!pointers.current.has(event.pointerId)) return;
-      track(event);
+      const press = pointers.current.get(event.pointerId);
+      const root = rootRef.current;
+      if (!press || !root) return;
+
+      if (press.control === 'dpad' && press.pad) {
+        // Stays on the stick: the direction follows the thumb past the rim.
+        pointers.current.set(event.pointerId, {
+          ...press,
+          buttons: resolveDirection(press.pad, event.clientX, event.clientY),
+        });
+      } else {
+        const hit = controlAt(root, event.clientX, event.clientY);
+        const rect = root.getBoundingClientRect();
+        const inside =
+          event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom;
+
+        // Handing over happens between buttons only; the stick is not a target a
+        // button press migrates to. Off the pad entirely, the button lets go.
+        const buttons = hit && hit.control !== 'dpad' ? new Set([hit.control]) : inside ? press.buttons : NOTHING;
+        pointers.current.set(event.pointerId, { ...press, buttons });
+      }
+      sync();
     },
-    [track],
+    [sync],
   );
 
   const onPointerEnd = useCallback(
@@ -135,8 +195,7 @@ export function TouchPad({ disabled, onButton }: TouchPadProps) {
     [sync],
   );
 
-  // A thumb that leaves the pad entirely stops holding a direction; the buttons
-  // stay reachable because the wrapper holds the capture until the finger lifts.
+  // The arrows and the head only light up for what the console is being told.
   const direction = (button: ButtonName) => active.has(button);
 
   // Direction the stick head leans in. One axis shows a short throw, two (a
