@@ -81,6 +81,8 @@ src/
 public/
   games.json          # 游戏列表（名称 + 直链），由 npm run build:games 生成
   nes-audio-processor.js  # 运行在音频线程上的 AudioWorklet
+  favicon.svg         # 标签页图标：island 绿底上的像素风卡带
+  apple-touch-icon.png    # 同一张卡带的满幅版本，供「添加到主屏幕」使用
 scripts/
   build-game-list.mjs # 从 GitHub 仓库读取文件树，生成 public/games.json
   build-wasm.mjs      # wasm-pack 构建 + 生成物拷贝

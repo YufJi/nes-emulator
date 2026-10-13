@@ -87,6 +87,7 @@ function spaFallback(): Plugin {
   <head>
     <meta charset="UTF-8" />
     <meta name="robots" content="noindex" />
+    <link rel="icon" type="image/svg+xml" href="${base}favicon.svg" />
     <title>NES Emulator</title>
     <script>
       // Served for every path that has no file of its own: hand the requested
