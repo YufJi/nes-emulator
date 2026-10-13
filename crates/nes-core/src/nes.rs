@@ -1522,7 +1522,7 @@ mod tests {
         // image (CHR-RAM) and unknown mapper numbers.
         for prg_banks in [0u8, 1, 2, 16] {
             for chr_banks in [0u8, 1, 8] {
-                for mapper in [0u8, 1, 4, 5, 69, 119, 241, 254] {
+                for mapper in [0u8, 1, 4, 5, 69, 74, 119, 241, 254] {
                     let mut rom = vec![0u8; 16];
                     rom[0..4].copy_from_slice(b"NES\x1a");
                     rom[4] = prg_banks;
@@ -1677,7 +1677,7 @@ mod tests {
 
     #[test]
     fn test_new_mappers_boot_a_rom() {
-        for mapper in [10u8, 21, 22, 23, 24, 25, 26, 32, 33, 48, 65, 69] {
+        for mapper in [10u8, 21, 22, 23, 24, 25, 26, 32, 33, 48, 65, 69, 74] {
             let mut nes = Nes::new();
             nes.load_rom(&marker_rom(mapper))
                 .unwrap_or_else(|e| panic!("mapper {mapper} rejected the ROM: {e:?}"));

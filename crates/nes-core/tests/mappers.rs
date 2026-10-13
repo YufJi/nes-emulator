@@ -8,8 +8,8 @@ use nes_core::mapper::{
     create_mapper, mapper0::Mapper0, mapper1::Mapper1, mapper11::Mapper11, mapper140::Mapper140,
     mapper180::Mapper180, mapper2::Mapper2, mapper240::Mapper240, mapper241::Mapper241,
     mapper3::Mapper3, mapper34::Mapper34, mapper38::Mapper38, mapper4::Mapper4, mapper5::Mapper5,
-    mapper66::Mapper66, mapper7::Mapper7, mapper71::Mapper71, mapper79::Mapper79, mapper9::Mapper9,
-    mapper94::Mapper94, Mapper,
+    mapper66::Mapper66, mapper7::Mapper7, mapper71::Mapper71, mapper74::Mapper74,
+    mapper79::Mapper79, mapper9::Mapper9, mapper94::Mapper94, Mapper,
 };
 
 // Mapper 118 and 119 are exported from `mapper::mod`; both are covered by their
@@ -35,6 +35,7 @@ fn test_mapper_factory_all_mappers() {
     assert!(create_mapper(7, prg.clone(), chr.clone()).is_ok());
     assert!(create_mapper(9, prg.clone(), chr.clone()).is_ok());
     assert!(create_mapper(11, prg.clone(), chr.clone()).is_ok());
+    assert!(create_mapper(74, prg.clone(), chr.clone()).is_ok());
     assert!(create_mapper(140, prg.clone(), chr.clone()).is_ok());
     assert!(create_mapper(180, prg.clone(), chr.clone()).is_ok());
     assert!(create_mapper(240, prg.clone(), chr.clone()).is_ok());
@@ -644,6 +645,90 @@ fn test_mapper71_prg_ram() {
 
     mapper.write(0x6000, 0x42);
     assert_eq!(mapper.read(0x6000), 0x42);
+}
+
+// ============================================================================
+// Mapper 74 (Waixing MMC3 with CHR ROM + CHR RAM) Tests
+// ============================================================================
+
+#[test]
+fn test_mapper74_mmc3_banking_and_irq() {
+    let mut prg = vec![0u8; 0x80000]; // 512KB (64 x 8KB banks)
+    for bank in 0..64 {
+        prg[bank * 0x2000] = bank as u8;
+    }
+    let mut chr = vec![0u8; 0x40000]; // 256KB (256 x 1KB banks)
+    for bank in 0..256 {
+        chr[bank * 0x0400] = bank as u8;
+    }
+    let mut mapper = Mapper74::new(prg, chr);
+
+    // MMC3 PRG banking: R6 at $8000, R7 at $A000, last bank fixed at $E000.
+    mapper.write(0x8000, 0x06);
+    mapper.write(0x8001, 12);
+    mapper.write(0x8000, 0x07);
+    mapper.write(0x8001, 40);
+    assert_eq!(mapper.read(0x8000), 12);
+    assert_eq!(mapper.read(0xA000), 40);
+    assert_eq!(mapper.read(0xE000), 63);
+
+    // 1KB CHR bank, then the scanline IRQ.
+    mapper.write(0x8000, 0x02); // R2 -> $1000-$13FF
+    mapper.write(0x8001, 20);
+    assert_eq!(mapper.read(0x1000), 20);
+
+    mapper.write(0xC000, 2);
+    mapper.write(0xC001, 0);
+    mapper.write(0xE001, 0);
+    mapper.on_scanline(10, true); // reload to 2
+    mapper.on_scanline(11, true); // 2 -> 1
+    assert!(!mapper.irq_pending());
+    mapper.on_scanline(12, true); // 1 -> 0 -> IRQ
+    assert!(mapper.irq_pending());
+    mapper.clear_irq();
+    assert!(!mapper.irq_pending());
+}
+
+#[test]
+fn test_mapper74_chr_ram_sits_at_banks_8_and_9() {
+    let mut chr = vec![0x00u8; 0x40000];
+    chr[20 * 0x0400] = 0x33;
+    chr[8 * 0x0400] = 0x11; // shadowed by CHR RAM
+    let mut mapper = Mapper74::new(vec![0u8; 0x80000], chr);
+
+    // R2 selects the 1KB bank at $1000-$13FF.
+    mapper.write(0x8000, 0x02);
+
+    // CHR-ROM bank: read-only, writes dropped.
+    mapper.write(0x8001, 20);
+    mapper.write(0x1000, 0x5A);
+    assert_eq!(mapper.read(0x1000), 0x33);
+
+    // CHR-RAM banks: writable, and the ROM bytes they hide never show up.
+    mapper.write(0x8001, 8);
+    assert_ne!(mapper.read(0x1000), 0x11);
+    mapper.write(0x1000, 0x5A);
+    assert_eq!(mapper.read(0x1000), 0x5A);
+    mapper.write(0x8001, 9);
+    mapper.write(0x1000, 0xA5);
+    assert_eq!(mapper.read(0x1000), 0xA5);
+}
+
+#[test]
+fn test_mapper74_chr_ram_upload_through_ppu() {
+    let mut mapper = Mapper74::new(vec![0u8; 0x80000], vec![0u8; 0x40000]);
+
+    // Point slot 4 ($1000) at CHR RAM bank 8, the way a game loads its
+    // software-rendered Chinese text tiles.
+    mapper.write(0x8000, 0x02);
+    mapper.write(0x8001, 8);
+
+    upload_byte_through_ppu(&mut mapper, 0x1000, 0xA5);
+    assert_eq!(
+        mapper.read(0x1000),
+        0xA5,
+        "CHR-RAM upload through $2007 did not reach the cartridge"
+    );
 }
 
 // ============================================================================

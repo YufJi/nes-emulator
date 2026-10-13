@@ -124,7 +124,7 @@ impl crate::state::StateField for Option<Box<dyn Mapper>> {
 pub fn supported_mappers() -> &'static [u16] {
     &[
         0, 1, 2, 3, 4, 5, 7, 9, 10, 11, 21, 22, 23, 24, 25, 26, 32, 33, 34, 38, 48, 65, 66, 69,
-        71, 79, 94, 118, 119, 140, 180, 240, 241,
+        71, 74, 79, 94, 118, 119, 140, 180, 240, 241,
     ]
 }
 
@@ -159,6 +159,7 @@ pub fn create_mapper(
         38 => Ok(Box::new(mapper38::Mapper38::new(prg_rom, chr_rom))),
         66 => Ok(Box::new(mapper66::Mapper66::new(prg_rom, chr_rom))),
         71 => Ok(Box::new(mapper71::Mapper71::new(prg_rom, chr_rom))),
+        74 => Ok(Box::new(mapper74::Mapper74::new(prg_rom, chr_rom))),
         79 => Ok(Box::new(mapper79::Mapper79::new(prg_rom, chr_rom))),
         94 => Ok(Box::new(mapper94::Mapper94::new(prg_rom, chr_rom))),
         118 => Ok(Box::new(mapper118::Mapper118::new(prg_rom, chr_rom))),
@@ -196,6 +197,7 @@ pub mod mapper66;
 pub mod mapper69;
 pub mod mapper7;
 pub mod mapper71;
+pub mod mapper74;
 pub mod mapper79;
 pub mod mapper9;
 pub mod mapper94;

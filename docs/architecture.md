@@ -85,7 +85,7 @@ flowchart LR
     Rend["ppu/rendering.rs<br/>background rendering · frame buffer · mirroring"]
     Spr["ppu/sprite.rs<br/>sprite evaluation · rendering"]
     Apu["apu/<br/>five channels · frame sequencer · expansion audio"]
-    Mapper["mapper/<br/>Mapper trait + 33 implementations"]
+    Mapper["mapper/<br/>Mapper trait + 34 implementations"]
     State["state.rs<br/>StateField · encode/decode macros"]
 
     Nes --> Cpu
@@ -449,6 +449,7 @@ up front.
 | 66 | `mapper66` | GxROM |
 | 69 | `mapper69` | Sunsoft FME-7 (5B) |
 | 71 | `mapper71` | Camerica |
+| 74 | `mapper74` | Waixing MMC3 with 2 KB CHR RAM (Metal Max / 机甲战士) |
 | 79 | `mapper79` | NINA-003 |
 | 94 | `mapper94` | Senjou no Ookami (UNROM variant) |
 | 118 / 119 | `mapper118` / `mapper119` | TxSROM / TQROM (MMC3 variants) |
@@ -736,11 +737,11 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 530 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 547 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
 | `tests/ppu.rs` | 85 (3 ignored) | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI |
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
-| `tests/mappers.rs` | 48 | Bank switching, IRQ, mirroring, battery RAM |
+| `tests/mappers.rs` | 51 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
 | `crates/nes-uniffi` unit tests | 8 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
 | Doc tests | 1 | `FrameClock` usage example |

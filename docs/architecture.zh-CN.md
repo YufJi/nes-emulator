@@ -83,7 +83,7 @@ flowchart LR
     Rend["ppu/rendering.rs<br/>背景渲染 · 帧缓冲 · 镜像"]
     Spr["ppu/sprite.rs<br/>精灵求值 · 渲染"]
     Apu["apu/<br/>五通道 · 帧序列器 · 扩展音频"]
-    Mapper["mapper/<br/>Mapper trait + 33 个实现"]
+    Mapper["mapper/<br/>Mapper trait + 34 个实现"]
     State["state.rs<br/>StateField · 编解码宏"]
 
     Nes --> Cpu
@@ -422,6 +422,7 @@ classDiagram
 | 66 | `mapper66` | GxROM |
 | 69 | `mapper69` | Sunsoft FME-7 (5B) |
 | 71 | `mapper71` | Camerica |
+| 74 | `mapper74` | 外星科技 MMC3 + 2 KB CHR RAM（重装机兵 / 机甲战士） |
 | 79 | `mapper79` | NINA-003 |
 | 94 | `mapper94` | Senjou no Ookami（UNROM 变体） |
 | 118 / 119 | `mapper118` / `mapper119` | TxSROM / TQROM（MMC3 变体） |
@@ -675,11 +676,11 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 530 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 547 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
 | `tests/ppu.rs` | 85（3 忽略） | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI |
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
-| `tests/mappers.rs` | 48 | 银行切换、IRQ、镜像、电池 RAM |
+| `tests/mappers.rs` | 51 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
 | `crates/nes-uniffi` 单元测试 | 8 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
