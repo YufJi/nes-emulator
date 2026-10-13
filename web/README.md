@@ -163,13 +163,24 @@ picture tiny, so the mobile version is two separate routes:
   scroller, so an inset in its top padding would be doubled up with the band a home-screen web
   app keeps for the status bar, and would slide away with the first flick anyway. The sticky
   search box still pins below the status bar instead of under it, the portalled overlays are
-  inset as well, and the wide-screen shell pads itself too. Overlays
-  are `fixed` against the physical screen, so their *height* matters as much as their padding:
-  the tools drawer is `100dvh` tall — `100vh` is the tall viewport on a phone, so with the URL
-  bar showing its last save slot would sit under the browser chrome — it pads away the notch,
-  the rounded corners and the home indicator, and the dialog `maskStyle` and the notification
-  wrapper (matched by class prefix, since the library exposes no prop for it) do the same. All
-  insets fall back to 0, so devices without them are unaffected.
+  inset as well, and the wide-screen shell pads itself too.
+- Those numbers have to be the ones the window is *in*, which is not what `env()` answers
+  with: a home-screen web app is first laid out while iOS still has its loading bar above the
+  page, style resolution keeps the insets of that bar, and the bar leaving fires nothing.
+  `src/mobile/useViewport.ts` therefore measures them again — asking a probe element created at
+  that moment, since a fresh element's padding is resolved against the insets as they are now —
+  on every window `resize`, on `orientationchange`, on `visualViewport` resize, and repeatedly
+  over the first seconds after the app opens. The answer is published on `:root` as
+  `--safe-area-top/right/bottom/left` and `--viewport-height`, which the phone stylesheet reads
+  ahead of `env()`/`100dvh`; those stay as the fallback, so the first paint and any device
+  without the mechanism are unaffected.
+  Overlays are `fixed` against the physical screen, so their *height* matters as much as their
+  padding: the tools drawer takes its height from the same measurement — `100vh` is the tall
+  viewport on a phone, so with the URL bar showing its last save slot would sit under the
+  browser chrome — it pads away the notch, the rounded corners and the home indicator, and the
+  dialog `maskStyle` and the notification wrapper (matched by class prefix, since the library
+  exposes no prop for it) do the same. All insets fall back to 0, so devices without them are
+  unaffected.
 - Fullscreen requests the whole page rather than the picture: the drawer, dialogs, and
   notifications are attached to `body`, and element fullscreen would hide them.
 - The touch pad is in `src/mobile/TouchPad.tsx`: one container handles pointer events for
