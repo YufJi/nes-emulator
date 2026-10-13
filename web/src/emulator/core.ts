@@ -5,6 +5,7 @@ import init, {
   get_pixel_shifts,
   get_supported_mappers,
 } from '../wasm/nes_wasm.js';
+import { t } from '../i18n';
 
 let wasmInit: Promise<unknown> | null = null;
 let wasmMemory: WebAssembly.Memory | null = null;
@@ -26,7 +27,7 @@ export function initWasm(): Promise<unknown> {
  */
 export function wasmMemoryBuffer(): ArrayBuffer {
   if (!wasmMemory) {
-    throw new Error('WASM 内核尚未初始化，无法读取其内存。');
+    throw new Error(t('error.coreNotReady'));
   }
   return wasmMemory.buffer;
 }
@@ -61,7 +62,7 @@ export function readCoreInfo(): CoreInfo {
   // The blit loop destructures four channels, so a layout the host does not
   // understand must fail loudly here rather than paint garbage.
   if (pixelShifts.length !== 4) {
-    throw new Error(`内核返回了无法识别的像素格式：${pixelFormat}`);
+    throw new Error(t('error.pixelFormat', { format: pixelFormat }));
   }
 
   cached = {
@@ -77,7 +78,7 @@ export function readCoreInfo(): CoreInfo {
 /** The contract cached by {@link readCoreInfo}, available once WASM is ready. */
 export function coreInfo(): CoreInfo {
   if (!cached) {
-    throw new Error('WASM 内核尚未初始化，无法读取画面规格。');
+    throw new Error(t('error.coreSpecUnavailable'));
   }
   return cached;
 }

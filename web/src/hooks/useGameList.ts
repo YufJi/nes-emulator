@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { loadGameList, type GameEntry } from '../games';
+import { t } from '../i18n';
 
 export interface UseGameListResult {
   /** Null until the catalogue arrives. */
@@ -21,7 +22,11 @@ export function useGameList(): UseGameListResult {
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setError(`游戏列表载入失败：${cause instanceof Error ? cause.message : String(cause)}`);
+        setError(
+          t('error.gamesUnavailable', {
+            reason: cause instanceof Error ? cause.message : String(cause),
+          }),
+        );
       });
 
     return () => {

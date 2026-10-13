@@ -1,5 +1,6 @@
 import { Button, Card, Tag, Title } from 'animal-island-ui';
 import { DownloadIcon, SaveIcon, TrashIcon } from 'naive-icons';
+import { useI18n } from '../i18n';
 
 interface SaveStatePanelProps {
   /** True when no ROM is loaded, which disables every slot. */
@@ -18,23 +19,25 @@ interface SaveStatePanelProps {
  * loaded at any point in a game rather than only from its title screen.
  */
 export function SaveStatePanel({ disabled, slots, onSave, onLoad, onClear }: SaveStatePanelProps) {
+  const { t } = useI18n();
+
   return (
     <section className="panel">
       <Title size="small" color="app-yellow">
-        即时存档
+        {t('saveState.title')}
       </Title>
       <Card className="card--tight">
         <ul className="save-state__list">
           {slots.map((filled, slot) => (
             <li key={slot} className="save-state__row">
               <div className="save-state__info">
-                <span className="save-state__name">槽位 {slot + 1}</span>
+                <span className="save-state__name">{t('saveState.slot', { slot: slot + 1 })}</span>
                 <Tag
                   size="small"
                   color={filled ? 'app-green' : 'default'}
                   variant={filled ? 'solid' : 'outlined'}
                 >
-                  {filled ? '已保存' : '空'}
+                  {filled ? t('saveState.filled') : t('saveState.empty')}
                 </Tag>
               </div>
 
@@ -43,14 +46,14 @@ export function SaveStatePanel({ disabled, slots, onSave, onLoad, onClear }: Sav
                   type="primary"
                   size="small"
                   icon={<SaveIcon size={15} color="currentColor" aria-hidden />}
-                  aria-label={`保存到槽位 ${slot + 1}`}
+                  aria-label={t('saveState.saveTo', { slot: slot + 1 })}
                   onClick={() => onSave(slot)}
                   disabled={disabled}
                 />
                 <Button
                   size="small"
                   icon={<DownloadIcon size={15} color="currentColor" aria-hidden />}
-                  aria-label={`读取槽位 ${slot + 1}`}
+                  aria-label={t('saveState.loadFrom', { slot: slot + 1 })}
                   onClick={() => onLoad(slot)}
                   disabled={disabled || !filled}
                 />
@@ -58,7 +61,7 @@ export function SaveStatePanel({ disabled, slots, onSave, onLoad, onClear }: Sav
                   danger
                   size="small"
                   icon={<TrashIcon size={15} color="currentColor" aria-hidden />}
-                  aria-label={`清除槽位 ${slot + 1}`}
+                  aria-label={t('saveState.clearSlot', { slot: slot + 1 })}
                   onClick={() => onClear(slot)}
                   disabled={disabled || !filled}
                 />
@@ -66,7 +69,7 @@ export function SaveStatePanel({ disabled, slots, onSave, onLoad, onClear }: Sav
             </li>
           ))}
         </ul>
-        <p className="panel__note">保存整个机器状态，可随时读取。</p>
+        <p className="panel__note">{t('saveState.note')}</p>
       </Card>
     </section>
   );

@@ -1,6 +1,7 @@
 import { Tag, Tooltip } from 'animal-island-ui';
 import { FileIcon } from 'naive-icons';
 import type { EmulatorState } from '../emulator/NesEmulator';
+import { useI18n, type MessageKey } from '../i18n';
 
 interface StatusBarProps {
   state: EmulatorState;
@@ -11,18 +12,23 @@ interface StatusBarProps {
   busy: boolean;
 }
 
-/** Island palette per emulator state, so colour says the same thing as the label. */
+/**
+ * Island palette per emulator state, so colour says the same thing as the label.
+ * The labels are message keys, not text: the bar re-renders when the language
+ * changes, and a table built at import time would keep the old one.
+ */
 const STATE_TAG: Record<
   EmulatorState,
-  { label: string; color: 'default' | 'app-green' | 'app-yellow' }
+  { label: MessageKey; color: 'default' | 'app-green' | 'app-yellow' }
 > = {
-  idle: { label: '待机', color: 'default' },
-  running: { label: '运行中', color: 'app-green' },
-  paused: { label: '已暂停', color: 'app-yellow' },
+  idle: { label: 'status.idle', color: 'default' },
+  running: { label: 'status.running', color: 'app-green' },
+  paused: { label: 'status.paused', color: 'app-yellow' },
 };
 
 export function StatusBar({ state, romName, romKey, fps, busy }: StatusBarProps) {
   const current = STATE_TAG[state];
+  const { t } = useI18n();
 
   return (
     <div className="status">
@@ -30,16 +36,16 @@ export function StatusBar({ state, romName, romKey, fps, busy }: StatusBarProps)
         color={busy ? 'app-orange' : current.color}
         variant={busy || state === 'idle' ? 'soft' : 'solid'}
       >
-        {busy ? '加载中' : current.label}
+        {busy ? t('status.loading') : t(current.label)}
       </Tag>
 
       {/* Tag swallows unknown props, so the Tooltip's hover handlers go on a
           plain wrapper element instead. */}
-      <Tooltip title={romKey ?? '还没有选择卡带'}>
+      <Tooltip title={romKey ?? t('status.noCart')}>
         <span className="status__rom">
           <Tag className="status__rom-tag" color="brown" variant="soft" size="small">
             <FileIcon size={13} color="currentColor" aria-hidden />
-            <span className="ellipsis">{romName ?? '未加载 ROM'}</span>
+            <span className="ellipsis">{romName ?? t('status.noRom')}</span>
           </Tag>
         </span>
       </Tooltip>

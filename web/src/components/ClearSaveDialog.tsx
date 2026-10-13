@@ -1,4 +1,5 @@
 import { Button, Modal } from 'animal-island-ui';
+import { useI18n } from '../i18n';
 
 interface ClearSaveDialogProps {
   open: boolean;
@@ -8,16 +9,18 @@ interface ClearSaveDialogProps {
 
 /** Second confirmation for deleting a cartridge's battery save. */
 export function ClearSaveDialog({ open, onCancel, onConfirm }: ClearSaveDialogProps) {
+  const { t } = useI18n();
+
   return (
     <Modal
       open={open}
-      title="清空卡带存档？"
+      title={t('clearSave.title')}
       width={420}
       typeSpeed={25}
       onClose={onCancel}
       footer={
         <>
-          <Button onClick={onCancel}>取消</Button>
+          <Button onClick={onCancel}>{t('clearSave.cancel')}</Button>
           <Button
             type="primary"
             danger
@@ -26,12 +29,12 @@ export function ClearSaveDialog({ open, onCancel, onConfirm }: ClearSaveDialogPr
               onConfirm();
             }}
           >
-            清空并重新开始
+            {t('clearSave.confirm')}
           </Button>
         </>
       }
     >
-      删除该卡带的电池存档并重新开始，此操作无法撤销。
+      {t('clearSave.body')}
     </Modal>
   );
 }

@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { KEY_BINDINGS, type ButtonName } from '../emulator/constants';
 import { initWasm, readCoreInfo } from '../emulator/core';
+import { t } from '../i18n';
 import { NesEmulator, type EmulatorState } from '../emulator/NesEmulator';
 import { fetchRomFromUrl, fileRomSource, readRomFile, type RomSource } from '../emulator/rom';
 import { clearSaveRam, readSaveRam, writeSaveRam } from '../emulator/saveRam';
@@ -97,9 +98,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
           // load another ROM — which builds a fresh one.
           onFatalError: (message) => {
             console.error('NES 内核异常：', message);
-            setError(
-              '模拟器内核异常，游戏已停止（ROM 可能已损坏）。换一个 ROM 即可继续；详情见浏览器控制台。',
-            );
+            setError(t('error.coreStopped'));
           },
           onSaveRamChange: (data) => {
             const key = romKeyRef.current;
@@ -112,7 +111,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
       .catch((cause: unknown) => {
         if (cancelled) return;
         setBusy(false);
-        setError(`WASM 模块加载失败：${cause instanceof Error ? cause.message : String(cause)}`);
+        setError(t('error.wasmFailed', { reason: cause instanceof Error ? cause.message : String(cause) }));
       });
 
     return () => {

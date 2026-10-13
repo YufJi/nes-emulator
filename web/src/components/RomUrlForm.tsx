@@ -1,6 +1,7 @@
 import { useCallback, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Title } from 'animal-island-ui';
 import { DownloadIcon, LinkIcon } from 'naive-icons';
+import { useI18n } from '../i18n';
 
 interface RomUrlFormProps {
   busy: boolean;
@@ -16,6 +17,7 @@ interface RomUrlFormProps {
  */
 export function RomUrlForm({ busy, onLoadUrl }: RomUrlFormProps) {
   const [url, setUrl] = useState('');
+  const { t } = useI18n();
 
   const submit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -30,7 +32,7 @@ export function RomUrlForm({ busy, onLoadUrl }: RomUrlFormProps) {
   return (
     <section className="panel">
       <Title size="small" color="app-blue">
-        从链接加载
+        {t('romUrl.title')}
       </Title>
       <Card className="card--tight">
         <form className="rom-url" onSubmit={submit}>
@@ -43,7 +45,7 @@ export function RomUrlForm({ busy, onLoadUrl }: RomUrlFormProps) {
             onChange={(event) => setUrl(event.target.value)}
             onClear={() => setUrl('')}
             placeholder="https://…/game.nes"
-            aria-label="ROM 链接"
+            aria-label={t('romUrl.label')}
             inputMode="url"
             spellCheck={false}
             autoComplete="off"
@@ -56,11 +58,11 @@ export function RomUrlForm({ busy, onLoadUrl }: RomUrlFormProps) {
             icon={<DownloadIcon size={18} color="currentColor" aria-hidden />}
             disabled={busy || url.trim() === ''}
           >
-            加载
+            {t('romUrl.submit')}
           </Button>
         </form>
         <p className="panel__note">
-          支持 iNES (.nes) 直链；GitHub 的 Raw / 文件页面链接会自动转换为直链，其他站点需允许跨域（CORS）。
+          {t('romUrl.note')}
         </p>
       </Card>
     </section>

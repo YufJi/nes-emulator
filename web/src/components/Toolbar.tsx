@@ -12,6 +12,7 @@ import {
   VolumeXIcon,
 } from 'naive-icons';
 import { ClearSaveDialog } from './ClearSaveDialog';
+import { useI18n } from '../i18n';
 
 interface ToolbarProps {
   state: 'idle' | 'running' | 'paused';
@@ -44,11 +45,12 @@ export function Toolbar({
 }: ToolbarProps) {
   const [confirmingClear, setConfirmingClear] = useState(false);
   const paused = state === 'paused';
+  const { t } = useI18n();
 
   return (
     <section className="panel">
       <Title size="small" color="app-teal">
-        控制台
+        {t('toolbar.title')}
       </Title>
       <Card className="card--tight">
         <div className="toolbar">
@@ -58,14 +60,14 @@ export function Toolbar({
             onClick={onPick}
             loading={busy}
           >
-            {hasRom ? '换一个 ROM' : '选择 ROM'}
+            {hasRom ? t('toolbar.swapRom') : t('toolbar.chooseRom')}
           </Button>
 
           <Button
             icon={<ListIcon size={18} color="currentColor" aria-hidden />}
             onClick={onOpenGames}
           >
-            游戏列表
+            {t('toolbar.gameList')}
           </Button>
 
           <Button
@@ -79,7 +81,7 @@ export function Toolbar({
             onClick={onTogglePause}
             disabled={!hasRom}
           >
-            {paused ? '继续' : '暂停'}
+            {paused ? t('toolbar.resume') : t('toolbar.pause')}
           </Button>
 
           <Button
@@ -87,7 +89,7 @@ export function Toolbar({
             onClick={onReset}
             disabled={!hasRom}
           >
-            重置
+            {t('toolbar.reset')}
           </Button>
 
           <Button
@@ -95,7 +97,7 @@ export function Toolbar({
             onClick={() => setConfirmingClear(true)}
             disabled={!hasRom || !hasBattery}
           >
-            清空存档
+            {t('toolbar.clearSave')}
           </Button>
 
           <Button
@@ -103,17 +105,17 @@ export function Toolbar({
             onClick={onFullscreen}
             disabled={!hasRom}
           >
-            全屏
+            {t('toolbar.fullscreen')}
           </Button>
         </div>
 
         <div className="toolbar__row">
-          <span className="toolbar__label">静音</span>
+          <span className="toolbar__label">{t('toolbar.mute')}</span>
           <Switch
             checked={muted}
             onChange={onToggleMute}
             disabled={!hasRom}
-            aria-label="静音"
+            aria-label={t('toolbar.mute')}
             checkedChildren={<VolumeXIcon size={14} color="currentColor" aria-hidden />}
             unCheckedChildren={<VolumeIcon size={14} color="currentColor" aria-hidden />}
           />
@@ -121,8 +123,8 @@ export function Toolbar({
 
         <p className="panel__note">
           {hasBattery
-            ? '清空存档会删除该卡带保存的电池存档，并让游戏从头开始。'
-            : '这张卡带没有电池存档，无需清空。'}
+            ? t('toolbar.clearSaveHint')
+            : t('toolbar.noBatteryHint')}
         </p>
       </Card>
 

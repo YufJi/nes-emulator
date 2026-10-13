@@ -1,4 +1,5 @@
 import { coreInfo } from './core';
+import { t } from '../i18n';
 
 const NES_MAGIC = [0x4e, 0x45, 0x53, 0x1a] as const;
 const INES_MIN_HEADER_SIZE = 16;
@@ -40,11 +41,11 @@ export function fileRomSource(file: File): RomSource {
 /** Read a dropped/selected file and validate it before handing it to WASM. */
 export async function readRomFile(file: File): Promise<Uint8Array> {
   if (file.size === 0) {
-    throw new RomError(`“${file.name}” 是空文件。`);
+    throw new RomError(t('error.emptyFile', { name: file.name }));
   }
   if (file.size > MAX_ROM_BYTES) {
     throw new RomError(
-      `“${file.name}” 有 ${(file.size / 1024 / 1024).toFixed(1)} MB，远超 NES ROM 的正常体积。`,
+      t('error.fileTooLarge', { name: file.name, size: (file.size / 1024 / 1024).toFixed(1) }),
     );
   }
 
@@ -62,7 +63,7 @@ export async function readRomFile(file: File): Promise<Uint8Array> {
 export function parseRomUrl(raw: string): URL {
   const trimmed = raw.trim();
   if (!trimmed) {
-    throw new RomError('请先填入 ROM 链接。');
+    throw new RomError(t('error.linkMissing'));
   }
 
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
@@ -70,11 +71,11 @@ export function parseRomUrl(raw: string): URL {
   try {
     url = new URL(withScheme);
   } catch {
-    throw new RomError(`“${trimmed}” 不是有效的链接。`);
+    throw new RomError(t('error.linkInvalid', { url: trimmed }));
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new RomError(`只能加载 http(s) 直链，暂不支持 ${url.protocol}// 链接。`);
+    throw new RomError(t('error.linkScheme', { protocol: url.protocol }));
   }
   return url;
 }
@@ -142,14 +143,14 @@ export async function fetchRomFromUrl(
       const status = response.statusText
         ? `${response.status} ${response.statusText}`
         : `${response.status}`;
-      throw new RomError(`下载失败：服务器返回 ${status}。`);
+      throw new RomError(t('error.downloadFailed', { status }));
     }
 
     // A web page instead of a file almost always means the link is a viewer URL
     // rather than the file itself, so say so before spending bandwidth on it.
     const contentType = response.headers.get('content-type') ?? '';
     if (contentType.includes('text/html')) {
-      throw new RomError(`“${target}” 返回的是网页而不是 ROM 文件，请改用文件的直链。`);
+      throw new RomError(t('error.notARom', { url: target }));
     }
 
     const declaredSize = Number(response.headers.get('content-length') ?? 0);
@@ -159,7 +160,7 @@ export async function fetchRomFromUrl(
 
     const buffer = await response.arrayBuffer();
     if (buffer.byteLength === 0) {
-      throw new RomError(`“${target}” 是空文件。`);
+      throw new RomError(t('error.emptyFile', { name: target }));
     }
     if (buffer.byteLength > MAX_ROM_BYTES) {
       throw oversizeError(buffer.byteLength);
@@ -172,18 +173,18 @@ export async function fetchRomFromUrl(
     // Messages that already tell the user what to fix pass through untouched.
     if (cause instanceof RomError) throw cause;
     if (controller.signal.aborted) {
-      throw new RomError(`下载超时（${ROM_FETCH_TIMEOUT_MS / 1000} 秒无响应）：${target}`);
+      throw new RomError(
+        t('error.timeout', { seconds: ROM_FETCH_TIMEOUT_MS / 1000, url: target }),
+      );
     }
-    throw new RomError(`无法下载“${target}”：${describeFetchFailure(cause)}`);
+    throw new RomError(t('error.fetchFailed', { url: target, reason: describeFetchFailure(cause) }));
   } finally {
     clearTimeout(timer);
   }
 }
 
 function oversizeError(bytes: number): RomError {
-  return new RomError(
-    `该链接有 ${(bytes / 1024 / 1024).toFixed(1)} MB，远超 NES ROM 的正常体积。`,
-  );
+  return new RomError(t('error.linkTooLarge', { size: (bytes / 1024 / 1024).toFixed(1) }));
 }
 
 /**
@@ -192,7 +193,7 @@ function oversizeError(bytes: number): RomError {
  */
 function describeFetchFailure(cause: unknown): string {
   const detail = cause instanceof Error && cause.message ? `${cause.message}；` : '';
-  return `${detail}链接可能已失效，或该服务器未允许跨域访问（CORS）。`;
+  return t('error.linkUnavailable', { detail });
 }
 
 /**
@@ -204,19 +205,19 @@ function describeFetchFailure(cause: unknown): string {
  */
 export function validateRom(data: Uint8Array, name = 'ROM'): void {
   if (data.length < INES_MIN_HEADER_SIZE) {
-    throw new RomError(`“${name}” 太小（${data.length} 字节），不是 NES ROM 文件。`);
+    throw new RomError(t('error.tooSmall', { name, bytes: data.length }));
   }
 
   const hasMagic = NES_MAGIC.every((byte, index) => data[index] === byte);
   if (!hasMagic) {
     const hint = isRomFileName(name)
-      ? '文件头缺少 NES\\x1a 标识，文件可能已损坏。'
-      : '扩展名不是 .nes，如果是压缩包请先解压。';
-    throw new RomError(`“${name}” 不是 iNES 格式文件：${hint}`);
+      ? t('error.badHeader')
+      : t('error.badExtension');
+    throw new RomError(t('error.notInes', { name, hint }));
   }
 
   if (data.length >= 8 && /^(NESM|Unif)/.test(String.fromCharCode(...data.subarray(0, 4)))) {
-    throw new RomError(`“${name}” 使用了 UNIF/NES 2.0 容器，当前仅支持 iNES 格式。`);
+    throw new RomError(t('error.unif', { name }));
   }
 
   const mapper = readMapperNumber(data);
@@ -224,7 +225,7 @@ export function validateRom(data: Uint8Array, name = 'ROM'): void {
   const supported = coreInfo().supportedMappers;
   if (!supported.includes(mapper)) {
     throw new RomError(
-      `“${name}” 使用了 Mapper ${mapper}，当前内核尚未实现该 Mapper（已支持 ${supported.join(', ')}）。`,
+      t('error.unsupportedMapper', { name, mapper, supported: supported.join(', ') }),
     );
   }
 }

@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Notification, type NotificationPosition } from 'animal-island-ui';
+import { useI18n } from '../i18n';
 
 /**
  * Surface a load failure as an island notification.
@@ -15,15 +16,17 @@ export function useErrorNotification(
   clearError: () => void,
   position: NotificationPosition = 'bottomRight',
 ): void {
+  const { t } = useI18n();
+
   useEffect(() => {
     if (!error) return;
     Notification.error({
       key: 'nes-error',
-      message: '出错了',
+      message: t('notification.failed'),
       description: error,
       position,
       duration: 6,
       onClose: clearError,
     });
-  }, [error, clearError, position]);
+  }, [error, clearError, position, t]);
 }

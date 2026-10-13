@@ -102,12 +102,13 @@ dd {
   gap: 12px;
 }
 
-.brand__badge {
-  display: grid;
-  place-items: center;
+/* The logo is the tab icon itself (`public/favicon.svg`); its own rounded
+   corners scale with the box, so nothing is rounded here. */
+.brand__logo {
+  display: block;
+  flex: none;
   width: 46px;
   height: 46px;
-  padding: 0;
 }
 
 .brand__text {
@@ -128,6 +129,29 @@ dd {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* Status tags and the language switcher share the top-right corner. */
+.topbar__side {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/*
+ * Three short labels rather than a dropdown: there are only three languages, and
+ * a visitor who cannot read the current one still recognises their own name in
+ * the list. Kept narrow so the row fits a phone's header.
+ */
+.langs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.langs__item {
+  padding: 0 9px;
 }
 
 .status__rom {
@@ -593,6 +617,10 @@ body.phone-ui [contenteditable='true'] {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Wraps rather than squeezing: a long tagline in one language must not push
+     the language switcher off the edge of a narrow phone. */
+  flex-wrap: wrap;
+  row-gap: 8px;
   gap: 10px;
 }
 

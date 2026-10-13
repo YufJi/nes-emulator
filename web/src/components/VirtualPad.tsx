@@ -2,6 +2,7 @@ import type { PointerEvent } from 'react';
 import { Button, Card, Title } from 'animal-island-ui';
 import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon } from 'naive-icons';
 import type { ButtonName } from '../emulator/constants';
+import { useI18n } from '../i18n';
 
 interface VirtualPadProps {
   disabled: boolean;
@@ -10,6 +11,8 @@ interface VirtualPadProps {
 
 /** Touch/mouse friendly gamepad mirroring the physical controller layout. */
 export function VirtualPad({ disabled, onButton }: VirtualPadProps) {
+  const { t } = useI18n();
+
   const hold = (button: ButtonName) => ({
     onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -24,7 +27,7 @@ export function VirtualPad({ disabled, onButton }: VirtualPadProps) {
   return (
     <section className="panel">
       <Title size="small" color="app-orange">
-        虚拟手柄
+        {t('pad.group')}
       </Title>
       <Card className="card--tight">
         <div className={`pad${disabled ? ' pad--disabled' : ''}`}>
@@ -32,28 +35,28 @@ export function VirtualPad({ disabled, onButton }: VirtualPadProps) {
             <Button
               className="pad__key pad__key--up"
               icon={<ArrowUpIcon size={20} color="currentColor" aria-hidden />}
-              aria-label="上"
+              aria-label={t('pad.up')}
               disabled={disabled}
               {...hold('UP')}
             />
             <Button
               className="pad__key pad__key--left"
               icon={<ArrowLeftIcon size={20} color="currentColor" aria-hidden />}
-              aria-label="左"
+              aria-label={t('pad.left')}
               disabled={disabled}
               {...hold('LEFT')}
             />
             <Button
               className="pad__key pad__key--right"
               icon={<ArrowRightIcon size={20} color="currentColor" aria-hidden />}
-              aria-label="右"
+              aria-label={t('pad.right')}
               disabled={disabled}
               {...hold('RIGHT')}
             />
             <Button
               className="pad__key pad__key--down"
               icon={<ArrowDownIcon size={20} color="currentColor" aria-hidden />}
-              aria-label="下"
+              aria-label={t('pad.down')}
               disabled={disabled}
               {...hold('DOWN')}
             />
@@ -62,7 +65,7 @@ export function VirtualPad({ disabled, onButton }: VirtualPadProps) {
           <div className="pad__actions">
             <Button
               className="pad__key--round"
-              aria-label="B 键"
+              aria-label={t('pad.b')}
               disabled={disabled}
               {...hold('B')}
             >
@@ -70,7 +73,7 @@ export function VirtualPad({ disabled, onButton }: VirtualPadProps) {
             </Button>
             <Button
               className="pad__key--round"
-              aria-label="A 键"
+              aria-label={t('pad.a')}
               disabled={disabled}
               {...hold('A')}
             >

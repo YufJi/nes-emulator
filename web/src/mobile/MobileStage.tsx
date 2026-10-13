@@ -2,6 +2,7 @@ import type { ReactNode, RefObject } from 'react';
 import { Button, Card, Title } from 'animal-island-ui';
 import { PlayIcon } from 'naive-icons';
 import { useIntegerScale } from '../hooks/useIntegerScale';
+import { useI18n } from '../i18n';
 import type { EmulatorState } from '../emulator/NesEmulator';
 
 interface MobileStageProps {
@@ -35,6 +36,7 @@ export function MobileStage({
   onResume,
 }: MobileStageProps) {
   useIntegerScale(stageRef, canvasRef, screen?.width ?? null, screen?.height ?? null, false);
+  const { t } = useI18n();
 
   return (
     <section
@@ -44,7 +46,7 @@ export function MobileStage({
          from the core rather than being repeated here. */
       style={screen ? { aspectRatio: `${screen.width} / ${screen.height}` } : undefined}
     >
-      <canvas ref={canvasRef} className="stage__canvas" aria-label="NES 画面" />
+      <canvas ref={canvasRef} className="stage__canvas" aria-label={t('stage.canvasLabel')} />
 
       {state === 'idle' && <div className="stage__overlay">{children}</div>}
 
@@ -54,15 +56,15 @@ export function MobileStage({
         <div className="stage__overlay stage__overlay--soft" onClick={onResume}>
           <Card color="app-yellow" className="stage__card">
             <Title size="small" color="app-orange">
-              已暂停
+              {t('stage.paused')}
             </Title>
-            <p className="stage__hint">点按画面继续；其他操作在右上角工具栏里。</p>
+            <p className="stage__hint">{t('stage.mobilePausedHint')}</p>
             <Button
               type="primary"
               icon={<PlayIcon size={18} color="currentColor" aria-hidden />}
               onClick={onResume}
             >
-              继续游戏
+              {t('stage.resume')}
             </Button>
           </Card>
         </div>

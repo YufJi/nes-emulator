@@ -51,6 +51,26 @@ declares on `:root`, keeping custom parts on the same palette as the components.
   hand-made SVG.
 - Load failures go through the imperative `Notification` API, and the confirmation for
   "clear save" goes through `Modal`.
+- The brand mark is `public/favicon.svg` itself, so the tab and the page can never drift
+  apart.
+
+## Languages
+
+The interface speaks Chinese, English and Japanese, and starts in Chinese.
+
+- Every string lives in `src/i18n/messages.ts`. The Chinese table defines the keys, and the
+  other two are typed as `Dictionary`, so a key added to one and forgotten in another is a
+  compile error rather than a Chinese sentence on a translated page. Placeholders are
+  `{name}` and are filled by `t(key, params)`.
+- `src/i18n/index.ts` holds the current language for the whole module graph rather than in a
+  React context: the cartridge loader (`src/emulator/rom.ts`) and the emulator produce the
+  errors the pages show, and they are not components. Components subscribe with
+  `useI18n()`, which re-renders them when the language changes.
+- The switcher (`src/components/LanguageSwitcher.tsx`) sits in the wide page's top bar, in
+  the phone dashboard's header, and in the phone player's tools drawer. The choice is
+  remembered in `localStorage`, and `<html lang>` follows it.
+- Keys and labels are not translated: `A`, `B`, `Start`, `Select`, `NES Emulator`, the game
+  names from the catalogue, and the diagnostics written to the browser console.
 
 ## Bundle size
 

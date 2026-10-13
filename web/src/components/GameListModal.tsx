@@ -4,6 +4,7 @@ import { SearchIcon } from 'naive-icons';
 import { gameId } from '../games';
 import { useGameList } from '../hooks/useGameList';
 import { usePagedList } from '../hooks/usePagedList';
+import { useI18n } from '../i18n';
 
 interface GameListModalProps {
   /** While a download is in flight the rows are disabled. */
@@ -24,6 +25,7 @@ interface GameListModalProps {
 export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListModalProps) {
   const { games, error } = useGameList();
   const [query, setQuery] = useState('');
+  const { t } = useI18n();
 
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -36,7 +38,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
   return (
     <Modal
       open
-      title="游戏列表"
+      title={t('gameList.title')}
       width={620}
       typewriter={false}
       onClose={onClose}
@@ -51,8 +53,8 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onClear={() => setQuery('')}
-          placeholder="搜索游戏名…"
-          aria-label="搜索游戏"
+          placeholder={t('gameList.searchPlaceholder')}
+          aria-label={t('gameList.searchLabel')}
           spellCheck={false}
           autoComplete="off"
           prefix={<SearchIcon size={18} color="#b09a7e" aria-hidden />}
@@ -71,7 +73,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
       )}
 
       {games && results.length === 0 && (
-        <p className="rom-list__empty">没有匹配 “{query.trim()}” 的游戏。</p>
+        <p className="rom-list__empty">{t('gameList.noMatch', { query: query.trim() })}</p>
       )}
 
       {visible.length > 0 && (
@@ -90,7 +92,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
                   <span className="ellipsis rom-list__name">{game.name}</span>
                   {game.url === currentUrl && (
                     <Tag size="small" color="app-green" variant="solid">
-                      当前
+                      {t('gameList.current')}
                     </Tag>
                   )}
                 </span>
@@ -102,8 +104,8 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
       )}
 
       <p className="rom-list__foot">
-        {games ? `共 ${games.length} 个游戏` : '游戏列表'}
-        {' · 资料来自 '}
+        {games ? t('gameList.footCount', { count: games.length }) : t('gameList.footList')}
+        {t('gameList.footSource')}
         <a href="https://github.com/mengfei523060/nesrom" target="_blank" rel="noreferrer">
           mengfei523060/nesrom
         </a>

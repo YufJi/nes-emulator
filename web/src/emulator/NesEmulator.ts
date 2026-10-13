@@ -13,6 +13,7 @@ import {
 import { AudioOutput } from './AudioOutput';
 import { BUTTON_NAMES, type ButtonName } from './constants';
 import { coreInfo, initWasm, wasmMemoryBuffer } from './core';
+import { t } from '../i18n';
 
 export type EmulatorState = 'idle' | 'running' | 'paused';
 
@@ -80,7 +81,7 @@ export class NesEmulator {
 
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) {
-      throw new Error('无法创建 Canvas 2D 上下文。');
+      throw new Error(t('error.canvasUnavailable'));
     }
     this.context = context;
 
@@ -123,7 +124,7 @@ export class NesEmulator {
       next.load_rom(data);
     } catch (error) {
       freeQuietly(next);
-      throw new Error(`模拟器内核拒绝了该 ROM：${describe(error)}`);
+      throw new Error(t('error.coreRejected', { reason: describe(error) }));
     }
 
     this.nes?.free();
@@ -149,7 +150,7 @@ export class NesEmulator {
     try {
       this.stepFrames(1);
     } catch (error) {
-      throw new Error(`模拟器内核拒绝了该 ROM：${describe(error)}`);
+      throw new Error(t('error.coreRejected', { reason: describe(error) }));
     }
     this.render();
 
@@ -459,7 +460,7 @@ export class NesEmulator {
 
   private assertUsable(): void {
     if (this.disposed) {
-      throw new Error('模拟器实例已销毁。');
+      throw new Error(t('error.disposed'));
     }
     if (!this.canvas.isConnected) {
       console.warn('画布当前不在文档中，画面将不会被显示。');

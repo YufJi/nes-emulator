@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Background, Card, Cursor, Footer, Title } from 'animal-island-ui';
-import { PlayIcon } from 'naive-icons';
+import { Background, Cursor, Footer, Title } from 'animal-island-ui';
 import { useErrorNotification } from '../hooks/useErrorNotification';
 import { useNesEmulator } from '../hooks/useNesEmulator';
+import { APP_NAME, useI18n } from '../i18n';
+import { LanguageSwitcher } from './LanguageSwitcher';
 import { DropOverlay } from './DropOverlay';
 import { GameListModal } from './GameListModal';
 import { GameScreen } from './GameScreen';
@@ -17,6 +18,7 @@ const ROM_ACCEPT = '.nes,.fds,.unf,.unif,application/octet-stream';
 
 /** Wide-screen page: picture and controls side by side, with ROM drop support. */
 export function DesktopApp() {
+  const { t } = useI18n();
   const {
     canvasRef,
     screen,
@@ -160,18 +162,27 @@ export function DesktopApp() {
         <div className="app">
           <header className="topbar">
             <div className="brand">
-              <Card color="app-green" className="brand__badge">
-                <PlayIcon size={22} color="currentColor" aria-hidden />
-              </Card>
+              {/* The tab icon doubles as the logo, so the tab and the page can
+                  never drift apart. */}
+              <img
+                className="brand__logo"
+                src={`${import.meta.env.BASE_URL}favicon.svg`}
+                alt=""
+                width={46}
+                height={46}
+              />
               <div className="brand__text">
                 <h1 className="visually-hidden">NES Emulator</h1>
                 <Title size="small" color="app-teal">
-                  NES Emulator
+                  {APP_NAME}
                 </Title>
-                <p className="brand__sub">Rust + WebAssembly 内核 · 拖入 ROM 即可开玩</p>
+                <p className="brand__sub">{t('brand.tagline')}</p>
               </div>
             </div>
-            <StatusBar state={state} romName={romName} romKey={romKey} fps={fps} busy={busy} />
+            <div className="topbar__side">
+              <StatusBar state={state} romName={romName} romKey={romKey} fps={fps} busy={busy} />
+              <LanguageSwitcher />
+            </div>
           </header>
 
           <main className="layout">

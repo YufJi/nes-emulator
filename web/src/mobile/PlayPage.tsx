@@ -5,6 +5,7 @@ import { findGame } from '../games';
 import { useErrorNotification } from '../hooks/useErrorNotification';
 import { useGameList } from '../hooks/useGameList';
 import { useNesEmulator } from '../hooks/useNesEmulator';
+import { useI18n } from '../i18n';
 import { navigate } from '../router';
 import { MobileStage } from './MobileStage';
 import { hapticsAvailable } from './haptics';
@@ -29,6 +30,7 @@ interface PlayPageProps {
 export function PlayPage({ query }: PlayPageProps) {
   const gameParam = query.get('game');
   const { games, error: listError } = useGameList();
+  const { t } = useI18n();
   const {
     canvasRef,
     screen,
@@ -65,7 +67,13 @@ export function PlayPage({ query }: PlayPageProps) {
   const hasRom = state !== 'idle';
   const game = gameParam && games ? findGame(games, gameParam) : undefined;
   const missing = Boolean(gameParam) && games !== null && !game;
-  const statusLabel = busy ? '加载中' : state === 'running' ? `${fps} FPS` : state === 'paused' ? '已暂停' : '待机';
+  const statusLabel = busy
+    ? t('status.loading')
+    : state === 'running'
+      ? `${fps} FPS`
+      : state === 'paused'
+        ? t('status.paused')
+        : t('status.idle');
   const statusColor = busy ? 'app-orange' : state === 'running' ? 'app-green' : 'default';
 
   // One notification channel for both the cartridge and the catalogue, kept
@@ -134,12 +142,12 @@ export function PlayPage({ query }: PlayPageProps) {
           <Button
             type="text"
             icon={<ChevronLeftIcon size={18} color="currentColor" aria-hidden />}
-            aria-label="返回游戏列表"
+            aria-label={t('play.back')}
             {...back}
           />
 
           <div className="mplay__title">
-            <span className="ellipsis mplay__name">{romName ?? '没有卡带'}</span>
+            <span className="ellipsis mplay__name">{romName ?? t('play.noCartName')}</span>
             <Tag size="small" color={statusColor} variant="soft">
               {statusLabel}
             </Tag>
@@ -147,7 +155,7 @@ export function PlayPage({ query }: PlayPageProps) {
 
           <Button
             icon={<SlidersIcon size={18} color="currentColor" aria-hidden />}
-            aria-label="打开工具栏"
+            aria-label={t('play.openTools')}
             {...openTools}
           />
         </header>
@@ -161,12 +169,16 @@ export function PlayPage({ query }: PlayPageProps) {
         >
           <Card type="dashed" className="stage__card">
             <Title size="small" color="app-blue">
-              {missing ? '找不到这个游戏' : busy ? '正在准备内核…' : '还没有选择卡带'}
+              {missing
+                ? t('play.missingTitle')
+                : busy
+                  ? t('play.preparingTitle')
+                  : t('play.noCartTitle')}
             </Title>
             <p className="stage__hint">
               {missing
-                ? `游戏列表里没有 “${gameParam}”，可能列表已经更新过了。`
-                : '从游戏列表挑一个，或载入自己的 .nes 文件。'}
+                ? t('play.missingHint', { game: gameParam ?? '' })
+                : t('play.noCartHint')}
             </p>
             <div className="stage__actions">
               <Button
@@ -174,13 +186,13 @@ export function PlayPage({ query }: PlayPageProps) {
                 icon={<FolderIcon size={18} color="currentColor" aria-hidden />}
                 onClick={pickRom}
               >
-                选择 ROM 文件
+                {t('stage.chooseRom')}
               </Button>
               <Button
                 icon={<ListIcon size={18} color="currentColor" aria-hidden />}
                 onClick={openGames}
               >
-                游戏列表
+                {t('toolbar.gameList')}
               </Button>
             </div>
           </Card>

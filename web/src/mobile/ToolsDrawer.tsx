@@ -12,17 +12,19 @@ import {
   VolumeXIcon,
 } from 'naive-icons';
 import { ClearSaveDialog } from '../components/ClearSaveDialog';
+import { LanguageSwitcher } from '../components/LanguageSwitcher';
 import { RomUrlForm } from '../components/RomUrlForm';
 import { SaveStatePanel } from '../components/SaveStatePanel';
 import type { EmulatorState } from '../emulator/NesEmulator';
+import { useI18n, type MessageKey } from '../i18n';
 
 const STATE_TAG: Record<
   EmulatorState,
-  { label: string; color: 'default' | 'app-green' | 'app-yellow' }
+  { label: MessageKey; color: 'default' | 'app-green' | 'app-yellow' }
 > = {
-  idle: { label: '待机', color: 'default' },
-  running: { label: '运行中', color: 'app-green' },
-  paused: { label: '已暂停', color: 'app-yellow' },
+  idle: { label: 'status.idle', color: 'default' },
+  running: { label: 'status.running', color: 'app-green' },
+  paused: { label: 'status.paused', color: 'app-yellow' },
 };
 
 interface ToolsDrawerProps {
@@ -94,11 +96,12 @@ export function ToolsDrawer({
 }: ToolsDrawerProps) {
   const [confirmingClear, setConfirmingClear] = useState(false);
   const paused = state === 'paused';
+  const { t } = useI18n();
 
   return (
     <Drawer
       open={open}
-      title="工具栏"
+      title={t('tools.title')}
       className="tools-drawer"
       placement="right"
       width="min(88vw, 350px)"
@@ -108,10 +111,10 @@ export function ToolsDrawer({
       <div className="mtools">
         <div className="mtools__status">
           <Tag color={busy ? 'app-orange' : STATE_TAG[state].color} variant="soft">
-            {busy ? '加载中' : STATE_TAG[state].label}
+            {busy ? t('status.loading') : t(STATE_TAG[state].label)}
           </Tag>
           <Tag size="small" color="brown" variant="soft">
-            <span className="ellipsis">{romName ?? '未加载 ROM'}</span>
+            <span className="ellipsis">{romName ?? t('status.noRom')}</span>
           </Tag>
           <Tag size="small" color={state === 'running' ? 'app-blue' : 'default'} variant="soft">
             {state === 'running' ? `${fps} FPS` : '—'}
@@ -120,7 +123,7 @@ export function ToolsDrawer({
 
         <section className="panel">
           <Title size="small" color="app-teal">
-            控制台
+            {t('toolbar.title')}
           </Title>
           <Card className="card--tight">
             <div className="toolbar">
@@ -135,7 +138,7 @@ export function ToolsDrawer({
                 onClick={onTogglePause}
                 disabled={!hasRom}
               >
-                {paused ? '继续' : '暂停'}
+                {paused ? t('toolbar.resume') : t('toolbar.pause')}
               </Button>
 
               <Button
@@ -143,7 +146,7 @@ export function ToolsDrawer({
                 onClick={onReset}
                 disabled={!hasRom}
               >
-                重置
+                {t('toolbar.reset')}
               </Button>
 
               <Button
@@ -151,7 +154,7 @@ export function ToolsDrawer({
                 onClick={onFullscreen}
                 disabled={!hasRom}
               >
-                全屏
+                {t('toolbar.fullscreen')}
               </Button>
 
               <Button
@@ -159,43 +162,46 @@ export function ToolsDrawer({
                 onClick={() => setConfirmingClear(true)}
                 disabled={!hasRom || !hasBattery}
               >
-                清空存档
+                {t('toolbar.clearSave')}
               </Button>
             </div>
 
             <div className="toolbar__row">
-              <span className="toolbar__label">静音</span>
+              <span className="toolbar__label">{t('toolbar.mute')}</span>
               <Switch
                 checked={muted}
                 onChange={onToggleMute}
                 disabled={!hasRom}
-                aria-label="静音"
+                aria-label={t('toolbar.mute')}
                 checkedChildren={<VolumeXIcon size={14} color="currentColor" aria-hidden />}
                 unCheckedChildren={<VolumeIcon size={14} color="currentColor" aria-hidden />}
               />
             </div>
 
             <div className="toolbar__row">
-              <span className="toolbar__label">震动</span>
+              <span className="toolbar__label">{t('toolbar.haptics')}</span>
               <Switch
                 checked={haptics}
                 onChange={onToggleHaptics}
                 disabled={!hapticsSupported}
-                aria-label="震动反馈"
+                aria-label={t('toolbar.haptics')}
               />
             </div>
 
             <p className="panel__note">
-              {hapticsSupported
-                ? '按键与方向都会有轻微振动；觉得吵可以关掉。'
-                : '当前浏览器不提供震动接口（iOS Safari 没有该 API），此处无法开启。'}
+              {hapticsSupported ? t('toolbar.hapticsHint') : t('toolbar.hapticsUnsupported')}
             </p>
+
+            <div className="toolbar__row">
+              <span className="toolbar__label">{t('language.label')}</span>
+              <LanguageSwitcher />
+            </div>
           </Card>
         </section>
 
         <section className="panel">
           <Title size="small" color="app-orange">
-            载入
+            {t('tools.load')}
           </Title>
           <Card className="card--tight">
             <div className="toolbar">
@@ -205,13 +211,13 @@ export function ToolsDrawer({
                 onClick={onPickRom}
                 loading={busy}
               >
-                {hasRom ? '换一个 ROM' : '选择 ROM'}
+                {hasRom ? t('toolbar.swapRom') : t('toolbar.chooseRom')}
               </Button>
               <Button
                 icon={<ListIcon size={18} color="currentColor" aria-hidden />}
                 onClick={onOpenGames}
               >
-                游戏列表
+                {t('toolbar.gameList')}
               </Button>
             </div>
           </Card>

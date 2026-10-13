@@ -36,11 +36,19 @@ export const KEY_BINDINGS: Record<string, ButtonName> = {
   ShiftRight: 'SELECT',
 };
 
-/** Rows rendered by the on-screen key legend; each entry is one key cap. */
-export const KEY_GUIDE: ReadonlyArray<{ action: string; keys: readonly string[] }> = [
-  { action: '方向', keys: ['W', 'A', 'S', 'D'] },
-  { action: 'A', keys: ['J', 'I'] },
-  { action: 'B', keys: ['K', 'O'] },
+/**
+ * Rows rendered by the on-screen key legend; each entry is one key cap.
+ *
+ * `action` is the button name, except for the D-pad — the only row that needs a
+ * word of its own, so `KeyGuide` translates it.
+ */
+export const KEY_GUIDE: ReadonlyArray<{
+  action: 'dpad' | 'A' | 'B' | 'Start' | 'Select';
+  keys: readonly string[];
+}> = [
+  { action: 'dpad', keys: ['W', 'A', 'S', 'D'] },
+  { action: 'B', keys: ['J', 'I'] },
+  { action: 'A', keys: ['K', 'O'] },
   { action: 'Start', keys: ['Enter', 'Space'] },
   { action: 'Select', keys: ['Shift'] },
 ];

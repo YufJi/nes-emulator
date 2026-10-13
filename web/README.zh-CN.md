@@ -43,6 +43,22 @@ npm run build:wasm  # 用 wasm-pack 重新生成 src/wasm/ 下的内核绑定
   `Cursor` / `Footer`。
 - 图标一律取自 `naive-icons`（库的运行时依赖），不使用 emoji 或自制 SVG。
 - 加载失败提示走 `Notification` 命令式接口，「清空存档」的二次确认走 `Modal`。
+- 品牌图标直接就是 `public/favicon.svg`，标签页与页面不会各画一套。
+
+## 多语言
+
+界面支持中文 / English / 日本語，默认中文。
+
+- 所有文案集中在 `src/i18n/messages.ts`：中文表定义 key，另外两份以 `Dictionary` 类型标注，
+  因此「某个 key 加了中文却忘了英文/日文」会直接变成编译错误，而不是在译文页面里冒出一句中文。
+  占位符写成 `{name}`，由 `t(key, params)` 填充。
+- `src/i18n/index.ts` 把当前语言放在模块级而不是 React context：卡带加载（`src/emulator/rom.ts`）
+  与模拟器内核也要产出页面要显示的报错文案，而它们不是组件。组件用 `useI18n()` 订阅，切换语言时
+  自动重渲染。
+- 切换器（`src/components/LanguageSwitcher.tsx`）出现在宽屏页顶栏、手机列表页头部、手机播放页的
+  工具栏抽屉里；选择记在 `localStorage`，`<html lang>` 同步跟随。
+- 不翻译的内容：`A` / `B` / `Start` / `Select`、`NES Emulator`、游戏列表里的游戏名，以及写进浏览器
+  控制台的诊断日志。
 
 ## 产物体积
 

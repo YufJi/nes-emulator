@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, type PointerEvent } from 'react';
 import { Button } from 'animal-island-ui';
 import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon } from 'naive-icons';
 import { BUTTON_NAMES, type ButtonName } from '../emulator/constants';
+import { useI18n } from '../i18n';
 import { buzzButton, buzzStick } from './haptics';
 
 interface TouchPadProps {
@@ -112,6 +113,7 @@ function resolveDirection(pad: HTMLElement, x: number, y: number): Held {
  */
 export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const { t } = useI18n();
   const pointers = useRef(new Map<number, Press>());
   const held = useRef<Set<ButtonName>>(new Set());
   const [active, setActive] = useState<Held>(NOTHING);
@@ -234,7 +236,7 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
       ref={rootRef}
       className={`tpad${disabled ? ' tpad--disabled' : ''}`}
       role="group"
-      aria-label="虚拟手柄"
+      aria-label={t('pad.group')}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerEnd}
@@ -304,6 +306,7 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
           className="tpad__key tpad__key--both"
           data-control="AB"
           data-pressed={direction('A') && direction('B')}
+          aria-label={t('pad.ab')}
           disabled={disabled}
           tabIndex={-1}
         >

@@ -1,10 +1,12 @@
 import { useCallback, useMemo, useRef, useState, type ChangeEvent } from 'react';
-import { Background, Button, Card, Input, Skeleton, Title } from 'animal-island-ui';
-import { ChevronRightIcon, FolderIcon, PlayIcon, SearchIcon, StarIcon } from 'naive-icons';
+import { Background, Button, Input, Skeleton, Title } from 'animal-island-ui';
+import { ChevronRightIcon, FolderIcon, SearchIcon, StarIcon } from 'naive-icons';
 import { gameId, type GameEntry } from '../games';
 import { useGameList } from '../hooks/useGameList';
 import { usePagedList } from '../hooks/usePagedList';
+import { APP_NAME, useI18n } from '../i18n';
 import { navigate } from '../router';
+import { LanguageSwitcher } from '../components/LanguageSwitcher';
 import { setPendingRom } from './romHandoff';
 import { useTap } from './useTap';
 
@@ -35,6 +37,7 @@ export function DashboardPage() {
   const { games, error } = useGameList();
   const [query, setQuery] = useState('');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const { t } = useI18n();
 
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -72,17 +75,24 @@ export function DashboardPage() {
       <div className="mdash">
         <header className="mdash__head">
           <div className="brand">
-            <Card color="app-green" className="brand__badge">
-              <PlayIcon size={22} color="currentColor" aria-hidden />
-            </Card>
+            {/* The tab icon doubles as the logo, so the tab and the page can
+                never drift apart. */}
+            <img
+              className="brand__logo"
+              src={`${import.meta.env.BASE_URL}favicon.svg`}
+              alt=""
+              width={46}
+              height={46}
+            />
             <div className="brand__text">
-              <h1 className="visually-hidden">NES Emulator 手机版</h1>
+              <h1 className="visually-hidden">{t('brand.mobileTitle')}</h1>
               <Title size="small" color="app-teal">
-                NES Emulator
+                {APP_NAME}
               </Title>
-              <p className="brand__sub">手机版 · 点一个游戏开玩</p>
+              <p className="brand__sub">{t('dashboard.sub')}</p>
             </div>
           </div>
+          <LanguageSwitcher />
         </header>
 
         <div className="mdash__quick">
@@ -92,7 +102,7 @@ export function DashboardPage() {
             icon={<FolderIcon size={18} color="currentColor" aria-hidden />}
             {...pickLocal}
           >
-            本地 ROM
+            {t('dashboard.localRom')}
           </Button>
           <Button
             size="large"
@@ -101,7 +111,7 @@ export function DashboardPage() {
             {...pickRandom}
             disabled={!games || games.length === 0}
           >
-            随便玩一个
+            {t('dashboard.random')}
           </Button>
         </div>
 
@@ -114,8 +124,8 @@ export function DashboardPage() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onClear={() => setQuery('')}
-            placeholder="搜索游戏名…"
-            aria-label="搜索游戏"
+            placeholder={t('gameList.searchPlaceholder')}
+            aria-label={t('gameList.searchLabel')}
             spellCheck={false}
             autoComplete="off"
             prefix={<SearchIcon size={18} color="#b09a7e" aria-hidden />}
@@ -134,7 +144,7 @@ export function DashboardPage() {
         )}
 
         {games && results.length === 0 && (
-          <p className="rom-list__empty">没有匹配 “{query.trim()}” 的游戏。</p>
+          <p className="rom-list__empty">{t('gameList.noMatch', { query: query.trim() })}</p>
         )}
 
         {visible.length > 0 && (
@@ -149,8 +159,8 @@ export function DashboardPage() {
         )}
 
         <p className="rom-list__foot">
-          {games ? `共 ${games.length} 个游戏` : '游戏列表'}
-          {' · 资料来自 '}
+          {games ? t('gameList.footCount', { count: games.length }) : t('gameList.footList')}
+          {t('gameList.footSource')}
           <a href="https://github.com/mengfei523060/nesrom" target="_blank" rel="noreferrer">
             mengfei523060/nesrom
           </a>
