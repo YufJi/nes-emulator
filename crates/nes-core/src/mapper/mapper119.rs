@@ -152,12 +152,10 @@ impl Mapper119 {
             4 | 5 | 6 | 7 => {
                 if self.chr_address_select == 0 {
                     slot - 2 // R2-R5 for slots 4-7
+                } else if slot < 6 {
+                    0 // R0 for slots 4-5
                 } else {
-                    if slot < 6 {
-                        slot - 4 // R0-R1 for slots 4-5
-                    } else {
-                        slot - 4 // R6-R7 for slots 6-7
-                    }
+                    1 // R1 for slots 6-7
                 }
             }
             _ => 0,
@@ -228,11 +226,11 @@ impl Mapper119 {
                         (reg_value & 0x3F) as usize
                     }
                 } else {
-                    // R6-R7 are 1KB banks in swapped mode
+                    // R1 is a 2KB bank in swapped mode, covering $1800-$1FFF
                     if is_ram {
-                        (reg_value & 0x07) as usize
+                        (((reg_value & 0x06) >> 1) as usize * 2) + (slot as usize & 1)
                     } else {
-                        (reg_value & 0x3F) as usize
+                        (((reg_value & 0x3E) >> 1) as usize * 2) + (slot as usize & 1)
                     }
                 }
             }
@@ -528,6 +526,32 @@ mod tests {
         assert_eq!(mapper.read(0xA000), 5); // R7
         assert_eq!(mapper.read(0xC000), 14); // Second-to-last
         assert_eq!(mapper.read(0xE000), 15); // Last
+    }
+
+    #[test]
+    fn test_swapped_mode_maps_both_2kb_chr_banks() {
+        let prg = vec![0u8; 0x20000];
+        let mut chr = vec![0u8; 0x10000]; // 64KB CHR ROM (64 x 1KB banks)
+        for bank in 0..64 {
+            for byte in &mut chr[bank * 0x0400..(bank + 1) * 0x0400] {
+                *byte = bank as u8;
+            }
+        }
+        let mut mapper = Mapper119::new(prg, chr);
+
+        // R0 = 12 and R1 = 20 (bit 6 clear, so CHR ROM), then CHR mode 1: the two
+        // 2KB banks move to $1000-$17FF and $1800-$1FFF. Serving slots 6-7 from
+        // R2/R3 instead would show banks 0/1 there.
+        mapper.write(0x8000, 0x00);
+        mapper.write(0x8001, 12);
+        mapper.write(0x8000, 0x01);
+        mapper.write(0x8001, 20);
+        mapper.write(0x8000, 0x80); // CHR mode 1, command 0
+
+        assert_eq!(mapper.read(0x1000), 12);
+        assert_eq!(mapper.read(0x1400), 13);
+        assert_eq!(mapper.read(0x1800), 20);
+        assert_eq!(mapper.read(0x1C00), 21);
     }
 
     #[test]
