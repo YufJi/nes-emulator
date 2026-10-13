@@ -153,12 +153,12 @@ impl Mapper4 {
                     // R2-R5 for slots 4-7 (1KB banks)
                     self.bank_regs[(slot - 2) as usize] as usize
                 } else {
-                    // R0-R1 for slots 4-5 (2KB bank), R6-R7 for slots 6-7 (not used in 8KB mode)
+                    // Swapped mode mirrors the two 2KB banks into the upper
+                    // half: R0 covers $1000-$17FF and R1 covers $1800-$1FFF.
                     if slot < 6 {
-                        (self.bank_regs[(slot - 4) as usize] & 0xFE) as usize
-                            + (slot as usize & 1)
+                        (self.bank_regs[0] & 0xFE) as usize + (slot as usize & 1)
                     } else {
-                        self.bank_regs[(slot - 4) as usize] as usize
+                        (self.bank_regs[1] & 0xFE) as usize + (slot as usize & 1)
                     }
                 }
             }
@@ -486,6 +486,30 @@ mod tests {
         assert_eq!(mapper.read(0x0000), 2);  // R0 first 1KB
         assert_eq!(mapper.read(0x0400), 3);  // R0 second 1KB
         assert_eq!(mapper.read(0x1000), 10); // R2 at $1000
+    }
+
+    #[test]
+    fn test_chr_bank_switching_swapped_mode_maps_both_2kb_banks() {
+        let mut chr = vec![0u8; 0x40000];
+        for bank in 0..256 {
+            for byte in &mut chr[bank * 0x0400..(bank + 1) * 0x0400] {
+                *byte = bank as u8;
+            }
+        }
+        let mut mapper = Mapper4::new(vec![0u8; 0x80000], chr);
+
+        // CHR mode 1 puts the two 2KB banks at $1000-$17FF (R0) and
+        // $1800-$1FFF (R1). Slots 6-7 must follow R1, not R2/R3.
+        mapper.write(0x8000, 0x00);
+        mapper.write(0x8001, 12); // R0
+        mapper.write(0x8000, 0x01);
+        mapper.write(0x8001, 20); // R1
+        mapper.write(0x8000, 0x80); // CHR mode 1, command 0
+
+        assert_eq!(mapper.read(0x1000), 12);
+        assert_eq!(mapper.read(0x1400), 13);
+        assert_eq!(mapper.read(0x1800), 20);
+        assert_eq!(mapper.read(0x1C00), 21);
     }
 
     #[test]

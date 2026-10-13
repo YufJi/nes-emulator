@@ -155,11 +155,12 @@ impl Mapper118 {
                     // R2-R5 for slots 4-7 (1KB banks)
                     (self.bank_regs[(slot - 2) as usize] & 0x7F) as usize
                 } else {
-                    // R0-R1 for slots 4-5 (2KB bank), R6-R7 for slots 6-7 (not used in 8KB mode)
+                    // Swapped mode mirrors the two 2KB banks into the upper
+                    // half: R0 covers $1000-$17FF and R1 covers $1800-$1FFF.
                     if slot < 6 {
-                        (self.bank_regs[(slot - 4) as usize] & 0xFE) as usize + (slot as usize & 1)
+                        (self.bank_regs[0] & 0xFE) as usize + (slot as usize & 1)
                     } else {
-                        (self.bank_regs[(slot - 4) as usize] & 0x7F) as usize
+                        (self.bank_regs[1] & 0xFE) as usize + (slot as usize & 1)
                     }
                 }
             }
