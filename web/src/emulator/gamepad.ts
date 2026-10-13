@@ -28,10 +28,10 @@ import type { PadInput } from './constants';
  * does not map itself onto the standard layout, so both are taken.
  */
 const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, input: PadInput]> = [
-  [0, 'A'],
-  [1, 'B'],
-  [2, 'TURBO_B'],
-  [3, 'TURBO_A'],
+  [0, 'A'], // bottom — Cross on a DualSense, A on an Xbox pad
+  [1, 'B'], // right — Circle, or B
+  [2, 'TURBO_B'], // left — opposite B, so it fires B
+  [3, 'TURBO_A'], // top — opposite A, so it fires A
   [4, 'TURBO_B'],
   [5, 'TURBO_A'],
   [6, 'TURBO_B'],
