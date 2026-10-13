@@ -156,10 +156,14 @@ picture tiny, so the mobile version is two separate routes:
   pad container itself is `pointer-events: none`, and only buttons are tappable, so the
   middle of the picture still belongs to the picture (tapping it resumes after a pause).
 - `viewport-fit=cover` hands the whole screen to the page, so every edge the system claims is
-  given back with `env(safe-area-inset-*)`: the phone pages pad all four sides (holding a
-  notched phone sideways puts the unsafe areas on the *left and right*, which is exactly where
-  the pad sits), the sticky search box pins below the status bar instead of under it, the
-  portalled overlays are inset as well, and the wide-screen shell pads itself too. Overlays
+  given back with `env(safe-area-inset-*)`: the phone pages pad the sides and the bottom
+  (holding a notched phone sideways puts the unsafe areas on the *left and right*, which is
+  exactly where the pad sits), and the play page pads its top as well, since it is a fixed grid
+  that never scrolls. The dashboard keeps the plain 14px there instead — that page *is* the
+  scroller, so an inset in its top padding would be doubled up with the band a home-screen web
+  app keeps for the status bar, and would slide away with the first flick anyway. The sticky
+  search box still pins below the status bar instead of under it, the portalled overlays are
+  inset as well, and the wide-screen shell pads itself too. Overlays
   are `fixed` against the physical screen, so their *height* matters as much as their padding:
   the tools drawer is `100dvh` tall — `100vh` is the tall viewport on a phone, so with the URL
   bar showing its last save slot would sit under the browser chrome — it pads away the notch,

@@ -631,10 +631,21 @@ body.phone-ui [contenteditable='true'] {
   touch-action: manipulation;
   /* Inherited, so the library's buttons on this page get it too. */
   -webkit-tap-highlight-color: transparent;
-  /* `viewport-fit=cover` hands the whole screen to the page, so every edge the
-     system claims — the notch, the rounded corners, the home indicator — has to
-     be given back here. Sideways, the first two are on the left and right. */
-  padding: calc(env(safe-area-inset-top, 0px) + 14px) calc(env(safe-area-inset-right, 0px) + 14px)
+  /*
+   * `viewport-fit=cover` hands the whole screen to the page, so every edge the
+   * system claims — the notch, the rounded corners, the home indicator — has to
+   * be given back here. Sideways, the first two are on the left and right.
+   *
+   * The top is the exception, and it keeps the plain 14px. This page *is* the
+   * scroller (see `usePagedList`), so a status-bar inset in this padding is
+   * doubled up with the band the system already keeps for itself when the page
+   * is opened from the home screen — and, being part of the scrolling flow, it
+   * slides away with the first flick anyway, which reads as the margin
+   * vanishing. Leaving the top to the system makes the page start at the same
+   * place whether it is opened in the browser or as a home-screen web app. The
+   * sticky search box below still pins clear of the status bar.
+   */
+  padding: 14px calc(env(safe-area-inset-right, 0px) + 14px)
     calc(env(safe-area-inset-bottom, 0px) + 22px) calc(env(safe-area-inset-left, 0px) + 14px);
 }
 
