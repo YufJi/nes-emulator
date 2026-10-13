@@ -6,7 +6,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { KEY_BINDINGS, type ButtonName } from '../emulator/constants';
+import { KEY_BINDINGS, type PadInput } from '../emulator/constants';
 import { initWasm, readCoreInfo } from '../emulator/core';
 import { t } from '../i18n';
 import { NesEmulator, type EmulatorState } from '../emulator/NesEmulator';
@@ -48,7 +48,7 @@ export interface UseNesEmulatorResult {
   togglePause: () => void;
   toggleMute: () => void;
   clearError: () => void;
-  setButton: (button: ButtonName, pressed: boolean) => void;
+  setButton: (input: PadInput, pressed: boolean) => void;
   /** Physical controllers the browser reports, for the key guide. */
   gamepad: GamepadStatus;
   wakeAudio: () => void;
@@ -292,10 +292,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
 
   const clearError = useCallback(() => setError(null), []);
 
-  const setButton = useCallback((button: ButtonName, pressed: boolean) => {
+  const setButton = useCallback((input: PadInput, pressed: boolean) => {
     const emulator = emulatorRef.current;
     if (pressed) emulator?.wakeAudio();
-    emulator?.setButton(button, pressed);
+    emulator?.setButton(input, pressed);
   }, []);
 
   // Bluetooth and wired controllers drive the same emulated pad as the keyboard

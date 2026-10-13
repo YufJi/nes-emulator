@@ -1,7 +1,12 @@
 import { useCallback, useRef, useState, type PointerEvent } from 'react';
 import { Button } from 'animal-island-ui';
 import { ArrowDownIcon, ArrowLeftIcon, ArrowRightIcon, ArrowUpIcon } from 'naive-icons';
-import { BUTTON_NAMES, type ButtonName } from '../emulator/constants';
+import {
+  isTurbo,
+  PAD_INPUTS,
+  type ButtonName,
+  type PadInput,
+} from '../emulator/constants';
 import { useI18n } from '../i18n';
 import { buzzButton, buzzStick } from './haptics';
 
@@ -9,7 +14,7 @@ interface TouchPadProps {
   disabled: boolean;
   /** Whether presses should buzz; off means the visitor turned it off. */
   haptics: boolean;
-  onButton: (button: ButtonName, pressed: boolean) => void;
+  onButton: (input: PadInput, pressed: boolean) => void;
 }
 
 /**
@@ -22,12 +27,12 @@ const DEAD_ZONE = 0.24;
 const STICK_THROW_PX = 16;
 
 /**
- * Buttons a single pointer holds. One finger can hold two at once: the d-pad
+ * Inputs a single pointer holds. One finger can hold two at once: the d-pad
  * reports each axis on its own, which is what makes diagonals work.
  */
-type Held = ReadonlySet<ButtonName>;
+type Held = ReadonlySet<PadInput>;
 
-const NOTHING: Held = new Set<ButtonName>();
+const NOTHING: Held = new Set<PadInput>();
 
 const DIRECTIONS: readonly ButtonName[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
 
@@ -35,13 +40,13 @@ const DIRECTIONS: readonly ButtonName[] = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
  * The combined key: one thumb cannot hold B (run) and tap A (jump) at once, so
  * this key reports both at the same time — which is exactly the run-jump.
  */
-type Control = 'dpad' | 'AB' | ButtonName;
+type Control = 'dpad' | 'AB' | PadInput;
 
 const COMBINED = 'AB';
 
-/** Buttons a control stands for; every control maps to one or two of them. */
-function buttonsOf(control: Control): readonly ButtonName[] {
-  return control === COMBINED ? ['A', 'B'] : [control as ButtonName];
+/** Inputs a control stands for; every control maps to one or two of them. */
+function buttonsOf(control: Exclude<Control, 'dpad'>): readonly PadInput[] {
+  return control === COMBINED ? ['A', 'B'] : [control];
 }
 
 /** What a pointer is holding, and the control it landed on. */
@@ -66,7 +71,7 @@ function controlAt(
 
   const name = found.getAttribute('data-control');
   if (!name) return null;
-  const control = name === 'dpad' ? 'dpad' : name === COMBINED ? COMBINED : (name as ButtonName);
+  const control = name === 'dpad' ? 'dpad' : name === COMBINED ? COMBINED : (name as PadInput);
   return { element: found, control };
 }
 
@@ -86,7 +91,7 @@ function resolveDirection(pad: HTMLElement, x: number, y: number): Held {
   const dx = (x - (rect.left + rect.width / 2)) / (rect.width / 2);
   const dy = (y - (rect.top + rect.height / 2)) / (rect.height / 2);
 
-  const held = new Set<ButtonName>();
+  const held = new Set<PadInput>();
   if (dx <= -DEAD_ZONE) held.add('LEFT');
   else if (dx >= DEAD_ZONE) held.add('RIGHT');
   if (dy <= -DEAD_ZONE) held.add('UP');
@@ -115,11 +120,11 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const { t } = useI18n();
   const pointers = useRef(new Map<number, Press>());
-  const held = useRef<Set<ButtonName>>(new Set());
+  const held = useRef<Set<PadInput>>(new Set());
   const [active, setActive] = useState<Held>(NOTHING);
 
   const sync = useCallback(() => {
-    const next = new Set<ButtonName>();
+    const next = new Set<PadInput>();
     for (const press of pointers.current.values()) {
       for (const button of press.buttons) next.add(button);
     }
@@ -128,14 +133,14 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
     // one direction to the next buzzes once rather than at every quadrant.
     const wasNeutral = !DIRECTIONS.some((button) => held.current.has(button));
 
-    for (const button of BUTTON_NAMES) {
-      const was = held.current.has(button);
-      const now = next.has(button);
+    for (const input of PAD_INPUTS) {
+      const was = held.current.has(input);
+      const now = next.has(input);
       if (was === now) continue;
-      onButton(button, now);
+      onButton(input, now);
       // Only the press buzzes: a release is felt through the picture.
       if (!now || !haptics) continue;
-      if (DIRECTIONS.includes(button)) {
+      if (!isTurbo(input) && DIRECTIONS.includes(input)) {
         if (wasNeutral) buzzStick();
       } else {
         buzzButton();
@@ -217,7 +222,7 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
   );
 
   // The arrows and the head only light up for what the console is being told.
-  const direction = (button: ButtonName) => active.has(button);
+  const direction = (input: PadInput) => active.has(input);
 
   // Direction the stick head leans in. One axis shows a short throw, two (a
   // diagonal) a shorter one each, so the head travels the same distance either
@@ -297,6 +302,31 @@ export function TouchPad({ disabled, haptics, onButton }: TouchPadProps) {
       </div>
 
       <div className="tpad__actions">
+        {/* The turbo switches, above the keys they fire: holding one keeps that
+            button firing, while a plain press of B or A still holds it down. */}
+        <div className="tpad__turbo">
+          <Button
+            className="tpad__key tpad__key--turbo"
+            data-control="TURBO_B"
+            data-pressed={direction('TURBO_B')}
+            aria-label={t('pad.turboB')}
+            disabled={disabled}
+            tabIndex={-1}
+          >
+            {t('pad.turboB')}
+          </Button>
+          <Button
+            className="tpad__key tpad__key--turbo"
+            data-control="TURBO_A"
+            data-pressed={direction('TURBO_A')}
+            aria-label={t('pad.turboA')}
+            disabled={disabled}
+            tabIndex={-1}
+          >
+            {t('pad.turboA')}
+          </Button>
+        </div>
+
         {/* Both face buttons at once, for the run-and-jump a single thumb cannot
             do: it sits above B/A so the same thumb reaches it, and it lights up
             whenever the console is being told both are down. */}

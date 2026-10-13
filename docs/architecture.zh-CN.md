@@ -766,7 +766,9 @@ flowchart LR
 
 ### 15.4 输入与周边
 
-- 仅实现标准双人手柄（各 8 键）。**未实现**：连发（turbo）、Zapper 光枪、Four Score 四人适配器。
+- 仅实现标准双人手柄（各 8 键）。内核**未实现**：连发（turbo）、Zapper 光枪、Four Score
+  四人适配器。连发不需要内核参与——Web 前端自己把按键打成脉冲，见
+  [`web/README.zh-CN.md`](../web/README.zh-CN.md)。
 - 无按键宏/重映射的持久化约定（重映射属于前端职责）。
 
 ### 15.5 前端与输出

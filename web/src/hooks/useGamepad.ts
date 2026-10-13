@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { BUTTON_NAMES, type ButtonName } from '../emulator/constants';
+import { PAD_INPUTS, type PadInput } from '../emulator/constants';
 import { gamepadButtons, gamepadLabel } from '../emulator/gamepad';
 
 export interface GamepadStatus {
@@ -23,7 +23,7 @@ export interface GamepadStatus {
  * press to start looking is how the press gets missed.
  */
 export function useGamepad(
-  onButton: (button: ButtonName, pressed: boolean) => void,
+  onButton: (input: PadInput, pressed: boolean) => void,
 ): GamepadStatus {
   const [names, setNames] = useState<string[]>([]);
   const press = useRef(onButton);
@@ -39,12 +39,12 @@ export function useGamepad(
     let frame = 0;
     // What the pads held last frame: the emulator only needs the changes, plus
     // a release for everything still down when the pads go away.
-    let held = new Set<ButtonName>();
+    let held = new Set<PadInput>();
     let reported = '';
 
     const release = () => {
       if (held.size === 0) return;
-      for (const button of held) press.current(button, false);
+      for (const input of held) press.current(input, false);
       held = new Set();
     };
 
@@ -54,15 +54,15 @@ export function useGamepad(
       const pads: Gamepad[] = [];
       for (const pad of navigator.getGamepads()) if (pad) pads.push(pad);
 
-      const now = new Set<ButtonName>();
+      const now = new Set<PadInput>();
       for (const pad of pads) {
-        for (const button of gamepadButtons(pad)) now.add(button);
+        for (const input of gamepadButtons(pad)) now.add(input);
       }
 
-      for (const button of BUTTON_NAMES) {
-        const was = held.has(button);
-        const is = now.has(button);
-        if (was !== is) press.current(button, is);
+      for (const input of PAD_INPUTS) {
+        const was = held.has(input);
+        const is = now.has(input);
+        if (was !== is) press.current(input, is);
       }
       held = now;
 

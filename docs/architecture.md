@@ -851,7 +851,9 @@ clone needs `npm run build:wasm` before building the front end.
 ### 15.4 Input and peripherals
 
 - Only the standard two-player controller (8 buttons each) is implemented. **Not
-  implemented**: turbo, Zapper light gun, Four Score four-player adapter.
+  implemented** in the core: turbo, Zapper light gun, Four Score four-player adapter. Turbo
+  needs nothing here — the web front end pulses the button itself, see
+  [`web/README.md`](../web/README.md).
 - No persistence convention for button macros/remapping (remapping is the front end's job).
 
 ### 15.5 Front end and output

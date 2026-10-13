@@ -1,6 +1,6 @@
 import { Card, Collapse, Divider, Tag, Title } from 'animal-island-ui';
 import { KEY_GUIDE } from '../emulator/constants';
-import { useI18n } from '../i18n';
+import { useI18n, type MessageKey } from '../i18n';
 
 interface KeyGuideProps {
   /** Names of the controllers the browser currently reports. */
@@ -11,10 +11,18 @@ interface KeyGuideProps {
 
 export function KeyGuide({ gamepads, gamepadsSupported }: KeyGuideProps) {
   const { t } = useI18n();
-  // A, B, Start and Select are printed on the console's own buttons, so only
-  // the D-pad row has a word to translate.
-  const label = (action: (typeof KEY_GUIDE)[number]['action']) =>
-    action === 'dpad' ? t('keyGuide.dpad') : action;
+
+  // A, B, Start and Select are printed on the console's own buttons; the rows
+  // that are not a button of the console have a word of their own to translate.
+  const WORDS: Partial<Record<(typeof KEY_GUIDE)[number]['action'], MessageKey>> = {
+    dpad: 'keyGuide.dpad',
+    TurboA: 'keyGuide.turboA',
+    TurboB: 'keyGuide.turboB',
+  };
+  const label = (action: (typeof KEY_GUIDE)[number]['action']) => {
+    const word = WORDS[action];
+    return word ? t(word) : action;
+  };
 
   return (
     <section className="panel">

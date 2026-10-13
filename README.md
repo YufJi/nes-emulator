@@ -75,6 +75,9 @@ driven frame by frame in the browser.
 - **Keyboard**: see [Key bindings](#key-bindings) below.
 - **Virtual pad**: available on touch screens; pressing holds the button down until you
   lift your finger.
+- **Turbo**: hold `I` or `O` (L1 / R1 on a controller, a switch above B/A on the on-screen
+  pads) and that button auto-fires at about 15 shots a second, leaving an ordinary press
+  untouched.
 - **Gamepad**: wired and Bluetooth controllers (DualSense, Xbox, Switch Pro…) work with no
   setup beyond pairing — the Gamepad API is polled, so on an iPad the pad is picked up as
   soon as one of its buttons is pressed.
@@ -195,8 +198,9 @@ and shared links never land on a 404 page.
 | Action | Keys |
 | --- | --- |
 | D-pad | `W` `A` `S` `D` |
-| A | `J` / `I` |
-| B | `K` / `O` |
+| A | `K` |
+| B | `J` |
+| Turbo A / Turbo B | `O` / `I` |
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
 | Pause / resume | `P` |

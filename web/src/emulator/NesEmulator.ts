@@ -11,7 +11,14 @@ import {
   Nes,
 } from '../wasm/nes_wasm.js';
 import { AudioOutput } from './AudioOutput';
-import { BUTTON_NAMES, type ButtonName } from './constants';
+import {
+  BUTTON_NAMES,
+  TURBO_PERIOD_FRAMES,
+  isTurbo,
+  turboTarget,
+  type ButtonName,
+  type PadInput,
+} from './constants';
 import { coreInfo, initWasm, wasmMemoryBuffer } from './core';
 import { t } from '../i18n';
 
@@ -64,6 +71,12 @@ export class NesEmulator {
 
   private nes: Nes | null = null;
   private buttons: Record<ButtonName, number> | null = null;
+  /** Buttons the player is holding, as opposed to the ones turbo is firing. */
+  private readonly held = new Set<ButtonName>();
+  /** Buttons whose turbo control is held down. */
+  private readonly turbo = new Set<ButtonName>();
+  /** Frames emulated since the turbo controls started; the pulse's phase. */
+  private turboFrame = 0;
   /** Core-owned pacer: catch-up budget, backpressure and FPS all live in Rust. */
   private clock: FrameClock | null = null;
 
@@ -205,12 +218,48 @@ export class NesEmulator {
     }
   }
 
-  setButton(button: ButtonName, pressed: boolean): void {
+  setButton(input: PadInput, pressed: boolean): void {
+    if (isTurbo(input)) {
+      this.setTurbo(turboTarget(input), pressed);
+      return;
+    }
+    this.setHeld(input, pressed);
+  }
+
+  /**
+   * Press or release a button the player is working by hand.
+   *
+   * Applied at once rather than at the next frame: the core latches the
+   * controller only when the game strobes it, so there is nothing to gain from
+   * waiting, and a press that lands between two frames is still seen by the
+   * frame that follows.
+   */
+  private setHeld(button: ButtonName, pressed: boolean): void {
+    if (pressed) this.held.add(button);
+    else this.held.delete(button);
     this.applyButton(button, pressed);
+  }
+
+  /** Turn a turbo control on or off; the pulse itself runs in the frame loop. */
+  private setTurbo(button: ButtonName, pressed: boolean): void {
+    if (pressed) {
+      // Begin the cycle on the press, so the first shot lands on the next frame
+      // rather than waiting out whatever half of the cycle was left over.
+      if (this.turbo.size === 0) this.turboFrame = 0;
+      this.turbo.add(button);
+      return;
+    }
+
+    this.turbo.delete(button);
+    // Let the button go the moment the turbo control is released, or the last
+    // pulse would keep firing until the next frame looks at it again.
+    if (!this.held.has(button)) this.applyButton(button, false);
   }
 
   /** Release every button, e.g. when the window loses focus mid-press. */
   releaseAllButtons(): void {
+    this.held.clear();
+    this.turbo.clear();
     for (const button of BUTTON_NAMES) {
       this.applyButton(button, false);
     }
@@ -295,9 +344,30 @@ export class NesEmulator {
    */
   private stepFrames(count: number): void {
     for (let i = 0; i < count; i += 1) {
+      this.applyTurbo();
       this.nes?.frame();
     }
     this.pollSaveRam(count);
+  }
+
+  /**
+   * Set the turbo buttons' state for the frame about to run.
+   *
+   * The phase is counted in emulated frames rather than in wall-clock time: it
+   * is what the console is being told that matters, and a frame counter keeps a
+   * replay of the same inputs identical to the run it came from. A button the
+   * player is holding by hand is left alone — the manual press wins, and the
+   * pulse picks up again on the next frame after it is released.
+   */
+  private applyTurbo(): void {
+    const phase = this.turboFrame % TURBO_PERIOD_FRAMES;
+    this.turboFrame += 1;
+    if (this.turbo.size === 0) return;
+
+    const pressed = phase < TURBO_PERIOD_FRAMES / 2;
+    for (const button of this.turbo) {
+      if (!this.held.has(button)) this.applyButton(button, pressed);
+    }
   }
 
   /**

@@ -76,7 +76,10 @@ export const ZH = {
 
   'keyGuide.title': '键位',
   'keyGuide.dpad': '方向',
-  'keyGuide.note': 'P 键暂停 / 继续；方向键不再绑定，移动请用 WASD。',
+  'keyGuide.turboA': '连发 A',
+  'keyGuide.turboB': '连发 B',
+  'keyGuide.note':
+    'P 键暂停 / 继续；方向键不再绑定，移动请用 WASD。按住连发键即自动连打 A / B（约 15 次 / 秒），普通按键不受影响。',
   'keyGuide.selectQuestion': 'Select 为什么要按好几次？',
   'keyGuide.selectAnswer':
     'Select 未做任何连发处理，完全按原机时序：初代标题画面每 16 帧才采样一次 Select，单次轻点常被游戏丢弃，来回切换 P1 / P2 需要多点几次。',
@@ -84,7 +87,7 @@ export const ZH = {
   'gamepad.title': '蓝牙手柄',
   'gamepad.none': '未连接',
   'gamepad.note':
-    '有线 / 蓝牙手柄都能直接开玩：先配对（iPad 在「设置 → 蓝牙」里），再按一下手柄上的任意键，它就会出现在这里。十字键与左摇杆 = 方向，下方或右侧面键 = A，左侧或上方面键 = B，+ / − = Start / Select。',
+    '有线 / 蓝牙手柄都能直接开玩：先配对（iPad 在「设置 → 蓝牙」里），再按一下手柄上的任意键，它就会出现在这里。十字键与左摇杆 = 方向，下方或右侧面键 = A，左侧或上方面键 = B，L1 / R1 = 连发 B / A，+ / − = Start / Select。',
   'gamepad.unsupported':
     '当前浏览器未开放 Gamepad 接口，读不到手柄，请改用键盘或虚拟手柄。',
 
@@ -125,6 +128,8 @@ export const ZH = {
   'pad.a': 'A 键',
   'pad.b': 'B 键',
   'pad.ab': 'A+B 合并键',
+  'pad.turboA': '连A',
+  'pad.turboB': '连B',
 
   'play.back': '返回游戏列表',
   'play.openTools': '打开工具栏',
@@ -224,7 +229,10 @@ export const EN: Dictionary = {
 
   'keyGuide.title': 'Keys',
   'keyGuide.dpad': 'D-pad',
-  'keyGuide.note': 'P pauses and resumes; the arrow keys are deliberately unbound — steer with WASD.',
+  'keyGuide.turboA': 'Turbo A',
+  'keyGuide.turboB': 'Turbo B',
+  'keyGuide.note':
+    'P pauses and resumes; the arrow keys are deliberately unbound — steer with WASD. Holding a turbo key fires that button about 15 times a second; an ordinary press is unaffected.',
   'keyGuide.selectQuestion': 'Why does Select need several presses?',
   'keyGuide.selectAnswer':
     "Select is never repeated or re-tried: the console's own timing is kept. The title screen samples Select once every 16 frames, so a quick tap is usually dropped — switching between 1P and 2P takes a few taps.",
@@ -232,7 +240,7 @@ export const EN: Dictionary = {
   'gamepad.title': 'Bluetooth gamepad',
   'gamepad.none': 'Not connected',
   'gamepad.note':
-    'Wired and Bluetooth controllers play as they are: pair the pad first (on an iPad, in Settings → Bluetooth), then press any of its buttons and it shows up here. D-pad and left stick steer; the bottom or right face button is A, the left or top one is B, and + / − are Start and Select.',
+    'Wired and Bluetooth controllers play as they are: pair the pad first (on an iPad, in Settings → Bluetooth), then press any of its buttons and it shows up here. D-pad and left stick steer; the bottom or right face button is A, the left or top one is B, L1 / R1 turbo B / A, and + / − are Start and Select.',
   'gamepad.unsupported':
     'This browser does not expose the Gamepad API, so it cannot see a controller; use the keyboard or the virtual pad instead.',
 
@@ -274,6 +282,8 @@ export const EN: Dictionary = {
   'pad.a': 'A button',
   'pad.b': 'B button',
   'pad.ab': 'A and B together',
+  'pad.turboA': 'Turbo A',
+  'pad.turboB': 'Turbo B',
 
   'play.back': 'Back to the game list',
   'play.openTools': 'Open the toolbar',
@@ -372,7 +382,10 @@ export const JA: Dictionary = {
 
   'keyGuide.title': 'キー配置',
   'keyGuide.dpad': '十字キー',
-  'keyGuide.note': 'P で一時停止 / 再開。矢印キーは割り当てていません。移動は WASD で。',
+  'keyGuide.turboA': '連射 A',
+  'keyGuide.turboB': '連射 B',
+  'keyGuide.note':
+    'P で一時停止 / 再開。矢印キーは割り当てていません。移動は WASD で。連射キーを押している間はそのボタンが毎秒約 15 回連射されます（通常の押下はそのまま）。',
   'keyGuide.selectQuestion': 'Select はなぜ何度も押す必要がある？',
   'keyGuide.selectAnswer':
     'Select は連打も再試行もせず、実機どおりのタイミングを保っています。タイトル画面は 16 フレームに 1 回しか Select を読まないため、軽いタップは捨てられがちで、1P / 2P の切り替えには数回押す必要があります。',
@@ -380,7 +393,7 @@ export const JA: Dictionary = {
   'gamepad.title': 'Bluetooth コントローラー',
   'gamepad.none': '未接続',
   'gamepad.note':
-    '有線・Bluetooth どちらのコントローラーもそのまま使えます。先にペアリングし（iPad なら「設定 → Bluetooth」）、どれかのボタンを押すとここに表示されます。十字キーと左スティック＝方向、下または右の面ボタン＝A、左または上の面ボタン＝B、＋ / − が Start / Select です。',
+    '有線・Bluetooth どちらのコントローラーもそのまま使えます。先にペアリングし（iPad なら「設定 → Bluetooth」）、どれかのボタンを押すとここに表示されます。十字キーと左スティック＝方向、下または右の面ボタン＝A、左または上の面ボタン＝B、L1 / R1＝連射 B / A、＋ / − が Start / Select です。',
   'gamepad.unsupported':
     'このブラウザは Gamepad API を公開しておらず、コントローラーを認識できません。キーボードか仮想パッドをお使いください。',
 
@@ -422,6 +435,8 @@ export const JA: Dictionary = {
   'pad.a': 'A ボタン',
   'pad.b': 'B ボタン',
   'pad.ab': 'A と B を同時に',
+  'pad.turboA': '連射A',
+  'pad.turboB': '連射B',
 
   'play.back': 'ゲーム一覧に戻る',
   'play.openTools': 'ツールバーを開く',

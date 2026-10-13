@@ -278,8 +278,9 @@ pages when rate-limited (no quota limit).
 | Action | Keys |
 | --- | --- |
 | D-pad | `W` `A` `S` `D` |
-| A | `J` / `I` |
-| B | `K` / `O` |
+| A | `K` |
+| B | `J` |
+| Turbo A / Turbo B | `O` / `I` |
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
 | Pause / resume | `P` |
@@ -303,6 +304,20 @@ why the poll runs before anything is connected; its name then shows up in the "K
 | Start | Start / Options |
 | Select | Select / Share |
 
+### Turbo
+
+Two controls auto-fire their button while they are held: `I` fires B and `O` fires A, each
+sitting right above the key it repeats; on a controller they are L1 and R1, and both
+on-screen pads carry a switch above B/A for each. They are separate controls rather than a
+mode, which is the point — an ordinary press of B or A is still reported exactly as pressed,
+so a game that wants a button held down keeps working.
+
+The pulse is counted in emulated frames — two frames down, two up, about 15 shots a second,
+the rate a NES Advantage fires at — and it starts on the press, so the first shot lands on
+the next frame. A manual press wins over the pulse and the pulse picks up again when it is
+released. The core knows nothing about any of this: `applyTurbo` in
+`src/emulator/NesEmulator.ts` sets the controller just before each frame runs.
+
 ### About Select
 
 The title screen of *Super Mario Bros.* only samples Select on **1 frame out of every 16**
@@ -313,12 +328,11 @@ holding the button down doesn't work at all — the flag has already expired bef
 sampling window opens. The game also has a secondary gate (`$07A2`) that periodically masks
 Select off, so even perfect timing can be discarded.
 
-This is the ROM's own logic, not a defect in the emulator or the front end. **This project
-deliberately does no turbo/retry handling**: a button is reported to the controller exactly
-as pressed, preserving the timing of the original hardware. The cost is that switching
-P1 / P2 takes several presses just like on real hardware (or a quick tap on the right
-frame). If input assistance is ever wanted, it only takes a pulse wrapper around
-`setButton` in `src/emulator/NesEmulator.ts`; neither the core nor the rendering changes.
+This is the ROM's own logic, not a defect in the emulator or the front end. **A button is
+reported to the controller exactly as pressed**: nothing is repeated behind the player's
+back, and the turbo controls are the only thing that pulses — an explicit switch the player
+holds, with Select deliberately not one of them. The cost is that switching P1 / P2 takes
+several presses just like on real hardware (or a quick tap on the right frame).
 
 ## Implementation notes
 
@@ -339,6 +353,11 @@ frame). If input assistance is ever wanted, it only takes a pulse wrapper around
   `useGamepad` reads it every frame, diffs it against the previous frame, and presses or
   releases exactly the buttons that changed — the emulated controller stays a set of held
   buttons, whatever the input device.
+- **Turbo**: the two turbo controls are held switches, not a mode. The emulator keeps the
+  buttons the player is holding apart from the ones turbo is firing, sets the pulse from the
+  emulated frame counter before each frame runs, and lets a manual press win over it.
+  Counting frames rather than milliseconds is what keeps a replay of the same inputs
+  identical to the run it came from.
 - **Battery saves**: a cartridge with a battery writes its save to `localStorage` under the
   ROM file name and restores it automatically when the same ROM is dropped in again; "clear
   save" in the toolbar deletes that save and resets the cartridge after a confirmation,

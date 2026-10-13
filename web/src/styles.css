@@ -416,9 +416,27 @@ dd {
 
 .pad__actions {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.pad__turbo,
+.pad__pair {
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
+}
+
+/* Shorter than the keys they fire, so the column stays close to the height of
+   the D-pad beside it. */
+.pad__key--turbo {
+  width: 58px;
+  height: 34px;
+  padding: 0;
+  font-size: 11px;
 }
 
 .pad__key--round {
@@ -886,6 +904,14 @@ body.phone-ui [contenteditable='true'] {
   gap: 12px;
 }
 
+/* Matches the pair below it: two half-width keys, so each turbo switch ends up
+   directly above the button it fires. */
+.tpad__turbo {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
 .tpad__system {
   grid-area: system;
   display: flex;
@@ -906,6 +932,13 @@ body.phone-ui [contenteditable='true'] {
   height: 68px;
   padding: 0;
   font-size: 16px;
+}
+
+.tpad .tpad__key--turbo {
+  flex: 1;
+  height: 34px;
+  padding: 0;
+  font-size: 12px;
 }
 
 .tpad .tpad__key--system {
@@ -1056,6 +1089,10 @@ body.phone-ui [class*='animal-position-'] {
 
   .tpad .tpad__key--both {
     height: 58px;
+  }
+
+  .tpad .tpad__key--turbo {
+    height: 30px;
   }
 
   /* Select and Start take the far ends under each thumb, clear of the picture. */

@@ -1,4 +1,4 @@
-import type { ButtonName } from './constants';
+import type { PadInput } from './constants';
 
 /**
  * Controllers, as the browser's Gamepad API reports them.
@@ -20,11 +20,15 @@ import type { ButtonName } from './constants';
  * the NES's own A sits on the right, so "the right-hand button jumps" stays
  * true on any pad, and either hand's instinctive press works.
  */
-const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, button: ButtonName]> = [
+const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, input: PadInput]> = [
   [0, 'A'],
   [1, 'A'],
   [2, 'B'],
   [3, 'B'],
+  // The shoulder buttons stand in for the turbo switches: on the left for the
+  // left-hand button, on the right for the right-hand one, like the face pair.
+  [4, 'TURBO_B'],
+  [5, 'TURBO_A'],
   // 8 is Select/Back/Share and 9 is Start/Options on every pad; the NES's two
   // centre buttons are the same pair under older names.
   [8, 'SELECT'],
@@ -46,10 +50,10 @@ const AXIS_THRESHOLD = 0.5;
  * The axes are compared separately, so a diagonal is two directions at once,
  * which is exactly what the NES D-pad does.
  */
-export function gamepadButtons(pad: Gamepad): Set<ButtonName> {
-  const held = new Set<ButtonName>();
-  for (const [index, button] of STANDARD_BUTTONS) {
-    if (pad.buttons[index]?.pressed) held.add(button);
+export function gamepadButtons(pad: Gamepad): Set<PadInput> {
+  const held = new Set<PadInput>();
+  for (const [index, input] of STANDARD_BUTTONS) {
+    if (pad.buttons[index]?.pressed) held.add(input);
   }
 
   const x = pad.axes[0] ?? 0;
