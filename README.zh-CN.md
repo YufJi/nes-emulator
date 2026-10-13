@@ -175,6 +175,12 @@ Pages 是纯静态托管，没有服务端 rewrite，所以构建会额外产出
 - 仅支持 iNES 格式；模拟器本身不附带游戏，请自备 ROM。
 - 仓库里的 ROM 一律不入版本控制，内置游戏列表只保存名称与直链。
 
+## 免责声明
+
+纯个人学习研究项目：不涉及任何商业行为，不提供也不分发任何 ROM / 游戏文件，与任天堂没有
+任何关联。该声明同时覆盖仓库、Web UI、iOS 应用，以及其他前端与绑定；完整内容见
+[`DISCLAIMER.zh-CN.md`](DISCLAIMER.zh-CN.md)。
+
 ## 许可
 
 MIT（见 [`Cargo.toml`](Cargo.toml) 中的 `license` 字段）。

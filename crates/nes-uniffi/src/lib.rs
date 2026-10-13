@@ -6,6 +6,10 @@
 //! web. The bindings therefore publish the same contract, and a host that ports
 //! between them only has to re-learn the syntax.
 //!
+//! Personal, non-commercial study project (see `DISCLAIMER.md` in the repository
+//! root): no ROM or game files are provided, and there is no Nintendo
+//! affiliation.
+//!
 //! # Shape of the API
 //!
 //! * [`Nes`] and [`FrameClock`] are UniFFI *objects*: reference-counted handles

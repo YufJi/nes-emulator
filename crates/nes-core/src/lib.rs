@@ -6,6 +6,10 @@
 //! - APU: Audio Processing Unit for sound
 //! - Bus: Memory bus interface
 //! - Mapper: Cartridge mapper interface
+//!
+//! A personal, non-commercial study project: it ships no ROM or game files and
+//! is not affiliated with Nintendo. The full statement is `DISCLAIMER.md` in the
+//! repository root.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 

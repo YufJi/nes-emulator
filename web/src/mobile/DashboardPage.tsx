@@ -6,6 +6,7 @@ import { useGameList } from '../hooks/useGameList';
 import { usePagedList } from '../hooks/usePagedList';
 import { APP_NAME, useI18n } from '../i18n';
 import { navigate } from '../router';
+import { Disclaimer } from '../components/Disclaimer';
 import { LanguageSwitcher } from '../components/LanguageSwitcher';
 import { setPendingRom } from './romHandoff';
 import { useTap } from './useTap';
@@ -165,6 +166,8 @@ export function DashboardPage() {
             mengfei523060/nesrom
           </a>
         </p>
+
+        <Disclaimer className="mdash__disclaimer" />
       </div>
 
       <input

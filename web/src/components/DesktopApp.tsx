@@ -3,8 +3,9 @@ import { Background, Cursor, Footer, Title } from 'animal-island-ui';
 import { useErrorNotification } from '../hooks/useErrorNotification';
 import { useNesEmulator } from '../hooks/useNesEmulator';
 import { APP_NAME, useI18n } from '../i18n';
-import { LanguageSwitcher } from './LanguageSwitcher';
+import { Disclaimer } from './Disclaimer';
 import { DropOverlay } from './DropOverlay';
+import { LanguageSwitcher } from './LanguageSwitcher';
 import { GameListModal } from './GameListModal';
 import { GameScreen } from './GameScreen';
 import { KeyGuide } from './KeyGuide';
@@ -184,6 +185,8 @@ export function DesktopApp() {
               <LanguageSwitcher />
             </div>
           </header>
+
+          <Disclaimer className="app__disclaimer" />
 
           <main className="layout">
             <div className="layout__screen">

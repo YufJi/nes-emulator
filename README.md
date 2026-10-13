@@ -215,6 +215,13 @@ mobile page at [`/m`](#web-front-end). More front-end detail is in
 - ROMs in this repository are never committed; the built-in game list stores names and
   direct links only.
 
+## Disclaimer
+
+A personal, non-commercial study project: there is no commercial activity of any kind, no
+ROM or game files are provided or distributed, and the project is not affiliated with
+Nintendo. The same statement covers the repository, the web UI, the iOS app, and the other
+front ends and bindings; see [`DISCLAIMER.md`](DISCLAIMER.md) for the full text.
+
 ## License
 
 MIT (see the `license` field in [`Cargo.toml`](Cargo.toml)).

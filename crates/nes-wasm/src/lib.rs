@@ -3,6 +3,10 @@
 //! Every method here is a thin pass-through to [`nes_core::Nes`]; the emulator
 //! itself lives in the core crate so it can also back native front ends and
 //! tests.
+//!
+//! Personal, non-commercial study project (see `DISCLAIMER.md` in the repository
+//! root): no ROM or game files are provided, and there is no Nintendo
+//! affiliation.
 
 use nes_core::nes::{
     Nes as CoreNes, BUTTON_A, BUTTON_B, BUTTON_DOWN, BUTTON_LEFT, BUTTON_RIGHT, BUTTON_SELECT,

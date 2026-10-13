@@ -100,3 +100,10 @@ Apple expects the render callback to be entirely lock-free. The sample rate is h
 - Battery saves to disk (`Emulator.saveRam()` already exists, it just needs wiring to
   `Documents/`) and save-state UI.
 - Turbo buttons, four-player adapter, light gun.
+
+## Disclaimer
+
+The app is part of a personal, non-commercial study project: it exists to learn, ships no
+ROM or game files, and is not affiliated with Nintendo. "关于" in the top bar shows the same
+notice inside the app, and the full statement — covering the repository, the web UI, and
+this app — is in [`../DISCLAIMER.md`](../DISCLAIMER.md).

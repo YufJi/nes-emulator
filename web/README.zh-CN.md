@@ -243,3 +243,9 @@ GITHUB_TOKEN=… npm run build:games       # 提高 GitHub API 额度（未认�
 - **即时存档**：`save_state` / `load_state` 把 CPU、PPU、APU、总线以及卡带的可变状态
   （bank 选择、IRQ 计数器、工作 RAM、扩展音频…）编码成一段字节流，PRG-ROM 不重复存储；
   侧栏提供 4 个槽位，保存在 IndexedDB，可随时保存、读取或清除。
+
+## 免责声明
+
+本站是纯个人学习研究项目：只为学习，不提供任何 ROM / 游戏文件，与任天堂没有任何关联。
+页面底部会重复这条提示，完整声明（覆盖仓库、本前端、iOS 应用等）见
+[`../DISCLAIMER.zh-CN.md`](../DISCLAIMER.zh-CN.md)。

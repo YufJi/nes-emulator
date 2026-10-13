@@ -34,6 +34,7 @@ final class GameViewController: UIViewController {
     private var screen: MetalScreen!
     private let status = UILabel()
     private let pickButton = UIButton(type: .system)
+    private let aboutButton = UIButton(type: .system)
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -95,10 +96,18 @@ final class GameViewController: UIViewController {
         pickButton.translatesAutoresizingMaskIntoConstraints = false
         pickButton.addTarget(self, action: #selector(pickRom), for: .touchUpInside)
 
+        // The disclaimer has to be reachable from inside the app, not only from
+        // the repository's README.
+        aboutButton.setTitle("关于", for: .normal)
+        aboutButton.titleLabel?.font = .systemFont(ofSize: 14, weight: .semibold)
+        aboutButton.translatesAutoresizingMaskIntoConstraints = false
+        aboutButton.addTarget(self, action: #selector(showDisclaimer), for: .touchUpInside)
+
         let topBar = UIView()
         topBar.backgroundColor = UIColor.black.withAlphaComponent(0.45)
         topBar.translatesAutoresizingMaskIntoConstraints = false
         topBar.addSubview(status)
+        topBar.addSubview(aboutButton)
         topBar.addSubview(pickButton)
 
         let pad = buildPad()
@@ -118,7 +127,10 @@ final class GameViewController: UIViewController {
 
             pickButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
             pickButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
-            pickButton.leadingAnchor.constraint(greaterThanOrEqualTo: status.trailingAnchor, constant: 8),
+
+            aboutButton.trailingAnchor.constraint(equalTo: pickButton.leadingAnchor, constant: -12),
+            aboutButton.centerYAnchor.constraint(equalTo: topBar.centerYAnchor),
+            aboutButton.leadingAnchor.constraint(greaterThanOrEqualTo: status.trailingAnchor, constant: 8),
 
             pad.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             pad.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -227,6 +239,25 @@ final class GameViewController: UIViewController {
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types)
         picker.delegate = self
         present(picker, animated: true)
+    }
+
+    /// The same statement as `DISCLAIMER.md` in the repository, kept short
+    /// enough for one alert; the app itself ships no ROM and sells nothing.
+    @objc private func showDisclaimer() {
+        presentAlert(
+            title: "免责声明",
+            message: """
+            本应用是纯个人学习研究项目，不涉及任何商业行为，也不提供或分发任何 ROM / 游戏文件。\
+            你加载的 .nes 文件由你自己提供，请自行确认有权使用。
+
+            仓库、Web UI 与本应用都适用同一份声明，完整内容见仓库中的 DISCLAIMER.md。
+
+            本项目与任天堂（Nintendo）没有任何关联，未获其授权、认可或赞助；Nintendo、NES \
+            以及游戏名称均为各自所有者的商标，此处仅用于说明代码功能。
+
+            代码按 MIT 许可发布，仅供学习，不提供任何担保。
+            """,
+        )
     }
 
     private func load(_ url: URL) {

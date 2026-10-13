@@ -74,7 +74,8 @@ dd {
 
 .app {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* Header, disclaimer strip, then the page proper. */
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 16px;
   height: 100vh;
   height: 100dvh;
@@ -535,6 +536,30 @@ dd {
 .dropzone__hint {
   font-size: 13px;
   color: var(--animal-text-color-secondary);
+}
+
+/* ---------- disclaimer ---------- */
+
+/* One line under every page, wide or phone; the link opens the full text in
+   `DISCLAIMER.md`. It reads as fine print on purpose — the notice has to be
+   visible without competing with the controls. */
+.disclaimer {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--animal-text-color-secondary);
+  text-align: center;
+}
+
+.disclaimer a {
+  margin-left: 6px;
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* The dashboard scrolls to its end, so the notice gets a little air there. */
+.mdash__disclaimer {
+  margin: 18px 0 4px;
 }
 
 /* ---------- responsive ---------- */

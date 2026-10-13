@@ -310,3 +310,10 @@ changes.
   APU, bus, and the cartridge (bank selection, IRQ counters, work RAM, expansion audio…) as
   a byte stream, with PRG-ROM not stored again; the sidebar offers 4 slots in IndexedDB,
   which can be saved to, loaded from, or cleared at any time.
+
+## Disclaimer
+
+This site is a personal, non-commercial study project: it exists to learn, provides no ROM
+or game files, and is not affiliated with Nintendo. The footer repeats the notice, and the
+full statement — covering the repository, this front end, the iOS app, and the rest — is in
+[`../DISCLAIMER.md`](../DISCLAIMER.md).

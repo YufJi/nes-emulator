@@ -12,6 +12,7 @@ import {
   VolumeXIcon,
 } from 'naive-icons';
 import { ClearSaveDialog } from '../components/ClearSaveDialog';
+import { Disclaimer } from '../components/Disclaimer';
 import { LanguageSwitcher } from '../components/LanguageSwitcher';
 import { RomUrlForm } from '../components/RomUrlForm';
 import { SaveStatePanel } from '../components/SaveStatePanel';
@@ -232,6 +233,8 @@ export function ToolsDrawer({
           onLoad={onLoadSlot}
           onClear={onClearSlot}
         />
+
+        <Disclaimer />
       </div>
 
       <ClearSaveDialog

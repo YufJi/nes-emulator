@@ -135,6 +135,9 @@ export const ZH = {
   'tools.title': '工具栏',
   'tools.load': '载入',
 
+  'disclaimer.line': '纯个人学习研究项目 · 无任何商业行为 · 不提供任何 ROM / 游戏文件。',
+  'disclaimer.link': '免责声明',
+
   'notification.failed': '出错了',
   'error.gamesUnavailable': '游戏列表载入失败：{reason}',
   'error.emptyFile': '“{name}” 是空文件。',
@@ -274,6 +277,10 @@ export const EN: Dictionary = {
   'tools.title': 'Toolbar',
   'tools.load': 'Load',
 
+  'disclaimer.line':
+    'A personal study project · non-commercial · no ROMs or game files are provided.',
+  'disclaimer.link': 'Disclaimer',
+
   'notification.failed': 'Something went wrong',
   'error.gamesUnavailable': 'Could not load the game list: {reason}',
   'error.emptyFile': '“{name}” is an empty file.',
@@ -410,6 +417,10 @@ export const JA: Dictionary = {
 
   'tools.title': 'ツールバー',
   'tools.load': '読み込み',
+
+  'disclaimer.line':
+    '個人の学習・研究用プロジェクトです · 商用利用なし · ROM / ゲームファイルは提供していません。',
+  'disclaimer.link': '免責事項',
 
   'notification.failed': 'エラーが発生しました',
   'error.gamesUnavailable': 'ゲーム一覧を読み込めませんでした: {reason}',
