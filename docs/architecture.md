@@ -737,7 +737,7 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 547 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 548 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
 | `tests/ppu.rs` | 85 (3 ignored) | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI |
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |

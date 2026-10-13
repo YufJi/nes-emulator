@@ -676,7 +676,7 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 547 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 548 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
 | `tests/ppu.rs` | 85（3 忽略） | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI |
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
