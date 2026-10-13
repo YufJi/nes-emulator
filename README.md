@@ -205,7 +205,7 @@ mobile page at [`/m`](#web-front-end). More front-end detail is in
 ## Testing
 
 - `cargo test --workspace`: unit tests + integration tests (`ppu`, `apu`, `mappers`,
-  `nestest`) + an end-to-end Super Mario Bros smoke test.
+  `nestest`).
 - Tests that need a ROM are skipped or marked `#[ignore]` when `roms/` is missing.
 - For front-end changes, run `npm run typecheck` and `npm run build`.
 

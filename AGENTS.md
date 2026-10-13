@@ -38,7 +38,7 @@
 
 - Rust `#[test]` functions named `test_<behavior>`; add a regression test with
   every fix. Integration suites live in `crates/nes-core/tests/`
-  (`ppu.rs`, `apu.rs`, `mappers.rs`, `nestest.rs`) and `crates/nes-wasm/tests/smb.rs`.
+  (`ppu.rs`, `apu.rs`, `mappers.rs`, `nestest.rs`).
 - ROM-dependent tests are skipped or marked `#[ignore]` when `roms/` is empty.
 - For emulator changes, verify determinism (rewind/replay produces identical
   frames). For web changes, run `npm run build`.

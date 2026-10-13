@@ -9,7 +9,7 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 735 tests (732 passing / 3 ignored), including 5 real-ROM smoke tests
+- Test suite: 742 tests (739 passing / 3 ignored), including the 3 nestest real-ROM tests
 
 ---
 
@@ -736,12 +736,13 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 529 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 530 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
 | `tests/ppu.rs` | 85 (3 ignored) | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI |
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 48 | Bank switching, IRQ, mirroring, battery RAM |
-| `nes-wasm/tests/smb.rs` | 5 | Real-ROM smoke: boot to the title screen, respond to Start, render 1-1, produce audio, save rollback |
+| `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
+| `crates/nes-uniffi` unit tests | 8 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
 | Doc tests | 1 | `FrameClock` usage example |
 
 Conventions:

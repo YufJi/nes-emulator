@@ -275,14 +275,12 @@ holding the button down doesn't work at all — the flag has already expired bef
 sampling window opens. The game also has a secondary gate (`$07A2`) that periodically masks
 Select off, so even perfect timing can be discarded.
 
-This is the ROM's own logic (pinned in `crates/nes-wasm` by the
-`smb_select_is_sampled_once_per_sixteen_frames` test), not a defect in the emulator or the
-front end. **This project deliberately does no turbo/retry handling**: a button is reported
-to the controller exactly as pressed, preserving the timing of the original hardware. The
-cost is that switching P1 / P2 takes several presses just like on real hardware (or a quick
-tap on the right frame). If input assistance is ever wanted, it only takes a pulse wrapper
-around `setButton` in `src/emulator/NesEmulator.ts`; neither the core nor the rendering
-changes.
+This is the ROM's own logic, not a defect in the emulator or the front end. **This project
+deliberately does no turbo/retry handling**: a button is reported to the controller exactly
+as pressed, preserving the timing of the original hardware. The cost is that switching
+P1 / P2 takes several presses just like on real hardware (or a quick tap on the right
+frame). If input assistance is ever wanted, it only takes a pulse wrapper around
+`setButton` in `src/emulator/NesEmulator.ts`; neither the core nor the rendering changes.
 
 ## Implementation notes
 

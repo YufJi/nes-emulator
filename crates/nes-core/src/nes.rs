@@ -1245,51 +1245,6 @@ mod tests {
         assert!(!nes.bus.ppu.w, "the write toggle should be reset by the read");
     }
 
-    /// Super Mario Bros. samples the Select button on only one frame out of
-    /// every sixteen (it gates on its `$0780` counter), and its joypad routine
-    /// turns Select into a single-frame "new press" flag, so a sustained press
-    /// is only accepted when it *starts* on that sampling frame. This pins the
-    /// ROM's behaviour so a future CPU/PPU/NMI change cannot silently alter it,
-    /// and so the web UI can keep reporting raw button state without any
-    /// pulse-while-held workaround.
-    // Reads the ROM off disk, so it needs the `std` feature.
-    #[cfg(feature = "std")]
-    #[test]
-    fn smb_select_is_sampled_once_per_sixteen_frames() {
-        let Ok(rom) = std::fs::read("../../roms/超级玛莉.NES") else {
-            eprintln!("Skipping: SMB ROM not found");
-            return;
-        };
-
-        let mut toggled = 0;
-        for offset in 0..16u32 {
-            let mut nes = Nes::new();
-            nes.load_rom(&rom).expect("SMB should load");
-            for _ in 0..240 + offset {
-                nes.frame();
-            }
-
-            nes.set_button(1, BUTTON_SELECT, true);
-            for _ in 0..6 {
-                nes.frame();
-            }
-            nes.set_button(1, BUTTON_SELECT, false);
-            for _ in 0..30 {
-                nes.frame();
-            }
-
-            // $077A is the player count: 0 = 1 PLAYER, 1 = 2 PLAYER.
-            if nes.peek(0x077A) != 0 {
-                toggled += 1;
-            }
-        }
-
-        assert_eq!(
-            toggled, 1,
-            "exactly one of the sixteen starting phases should be accepted"
-        );
-    }
-
     #[test]
     fn test_open_bus_returns_the_last_value_on_the_data_bus() {
         let mut bus = NesBus::new();

@@ -8,7 +8,7 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：735 个测试（732 通过 / 3 忽略），含 5 个真实 ROM 冒烟测试
+- 测试规模：742 个测试（739 通过 / 3 忽略），含 3 个基于真实 ROM 的 nestest 测试
 
 ---
 
@@ -675,12 +675,13 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 529 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 530 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
 | `tests/ppu.rs` | 85（3 忽略） | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI |
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 48 | 银行切换、IRQ、镜像、电池 RAM |
-| `nes-wasm/tests/smb.rs` | 5 | 真实 ROM 冒烟：启动到标题画面、响应 Start、渲染 1-1、产出音频、存档回滚 |
+| `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
+| `crates/nes-uniffi` 单元测试 | 8 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
 
 约定：

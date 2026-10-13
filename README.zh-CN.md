@@ -165,8 +165,7 @@ Pages 是纯静态托管，没有服务端 rewrite，所以构建会额外产出
 
 ## 测试
 
-- `cargo test --workspace`：单元测试 + 集成测试（`ppu`、`apu`、`mappers`、
-  `nestest`）+ 端到端 Super Mario Bros 冒烟测试。
+- `cargo test --workspace`：单元测试 + 集成测试（`ppu`、`apu`、`mappers`、`nestest`）。
 - 需要 ROM 的用例在 `roms/` 缺失时跳过或被标记为 `#[ignore]`。
 - 前端改动请运行 `npm run typecheck` 与 `npm run build`。
 
