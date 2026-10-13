@@ -159,8 +159,13 @@ picture tiny, so the mobile version is two separate routes:
   given back with `env(safe-area-inset-*)`: the phone pages pad all four sides (holding a
   notched phone sideways puts the unsafe areas on the *left and right*, which is exactly where
   the pad sits), the sticky search box pins below the status bar instead of under it, the
-  portalled tools drawer keeps its content off the right edge, and the wide-screen shell pads
-  itself too. All insets fall back to 0, so devices without them are unaffected.
+  portalled overlays are inset as well, and the wide-screen shell pads itself too. Overlays
+  are `fixed` against the physical screen, so their *height* matters as much as their padding:
+  the tools drawer is `100dvh` tall — `100vh` is the tall viewport on a phone, so with the URL
+  bar showing its last save slot would sit under the browser chrome — it pads away the notch,
+  the rounded corners and the home indicator, and the dialog `maskStyle` and the notification
+  wrapper (matched by class prefix, since the library exposes no prop for it) do the same. All
+  insets fall back to 0, so devices without them are unaffected.
 - Fullscreen requests the whole page rather than the picture: the drawer, dialogs, and
   notifications are attached to `body`, and element fullscreen would hide them.
 - The touch pad is in `src/mobile/TouchPad.tsx`: one container handles pointer events for

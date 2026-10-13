@@ -901,11 +901,33 @@ body.phone-ui [contenteditable='true'] {
 
 /* ---------- tools drawer ---------- */
 
-/* The panel is portalled to `body`, so it sits outside the safe-area padding the
-   phone pages give their own content; being pinned to the right edge, it is the
-   edge a notch claims when the phone is held sideways. */
+/*
+ * The tools panel is portalled to `body`, so it sits outside the safe-area
+ * padding the phone pages give their own content, and it is pinned to the
+ * physical edges on purpose (a slide-in should reach them).
+ *
+ * Its height therefore has to come from the *visible* viewport: `100vh` is the
+ * tall viewport on a phone, so with the URL bar showing the bottom of the drawer
+ * — the last save slot, say — would sit under the browser chrome. The padding
+ * then keeps the content clear of everything the system claims: the notch (top
+ * in portrait, a side in landscape), the rounded corners, the home indicator.
+ */
 .tools-drawer {
-  padding-right: env(safe-area-inset-right, 0px);
+  height: 100vh;
+  height: 100dvh;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) 0;
+}
+
+/*
+ * Dialogs and notifications are portalled too, and `fixed` against the same
+ * physical screen. The dialog's mask takes inline padding (`ClearSaveDialog`);
+ * the library exposes no prop for the notification wrapper, so it is matched by
+ * its class prefix — that prefix is stable, the hash after it is not.
+ */
+body.phone-ui [class*='animal-position-'] {
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
 }
 
 .mtools {
