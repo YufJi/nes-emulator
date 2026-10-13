@@ -62,11 +62,52 @@ function trimIslandAssets(): Plugin {
   };
 }
 
+/**
+ * Emit the `404.html` that keeps deep links working on GitHub Pages.
+ *
+ * Static hosting has no rewrite rule, so `/m/play?game=…` — the whole point of
+ * the phone routes — is served the site's `404.html` instead of the app. This
+ * one bounces the request back to the app root with the original location in
+ * `?route=`, which `src/router.ts` restores with `history.replaceState` before
+ * the first render. Vite only rewrites `index.html`, so the deploy sub-path has
+ * to be filled in here.
+ */
+function spaFallback(): Plugin {
+  let base = '/';
+
+  return {
+    name: 'spa-404-fallback',
+    apply: 'build',
+    configResolved(config) {
+      base = config.base;
+    },
+    generateBundle() {
+      const source = `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="robots" content="noindex" />
+    <title>NES Emulator</title>
+    <script>
+      // Served for every path that has no file of its own: hand the requested
+      // location to the app, which puts it back into the address bar.
+      var target = location.pathname + location.search + location.hash;
+      location.replace(${JSON.stringify(base)} + '?route=' + encodeURIComponent(target));
+    </script>
+  </head>
+  <body></body>
+</html>
+`;
+      this.emitFile({ type: 'asset', fileName: '404.html', source });
+    },
+  };
+}
+
 // The WASM bindings are generated into `src/wasm` by `npm run build:wasm`.
 // Vite understands the `new URL('nes_wasm_bg.wasm', import.meta.url)` pattern
 // the generated bindings use, so the binary is copied to the output for free.
 export default defineConfig({
-  plugins: [react(), trimIslandAssets()],
+  plugins: [react(), trimIslandAssets(), spaFallback()],
   server: {
     port: 5173,
     host: true,

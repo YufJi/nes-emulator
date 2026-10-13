@@ -61,6 +61,9 @@ npm run build:wasm  # 用 wasm-pack 重新生成 src/wasm/ 下的内核绑定
 
 ```
 src/
+  App.tsx            # 路由表：/m 开头走手机布局，其余是宽屏页面
+  router.ts          # 极简路由（读地址、navigate、页面刷新时的 404 回跳还原）
+  games.ts           # 游戏目录：拉取 games.json、游戏 id 与查找
   emulator/
     NesEmulator.ts   # 帧时钟、画面渲染、输入与音频的总调度
     AudioOutput.ts   # AudioWorklet（回退 ScriptProcessorNode）音频输出
@@ -69,7 +72,10 @@ src/
   hooks/
     useNesEmulator.ts  # 把模拟器接到 React 状态上
     useIntegerScale.ts # 画布整数倍缩放
-  components/          # 画面、工具栏、链接输入、游戏列表弹窗、虚拟手柄、键位表、拖拽覆盖层
+    useGameList.ts     # 游戏目录的加载状态
+    usePagedList.ts    # 滚动分片渲染（弹窗与手机列表共用）
+  components/          # 宽屏页面：画面、工具栏、链接输入、游戏列表弹窗、虚拟手柄、键位表、拖拽覆盖层
+  mobile/              # 手机页面：列表 dashboard、游玩页、触控手柄、工具栏抽屉
 public/
   games.json          # 游戏列表（名称 + 直链），由 npm run build:games 生成
   nes-audio-processor.js  # 运行在音频线程上的 AudioWorklet
@@ -77,6 +83,44 @@ scripts/
   build-game-list.mjs # 从 GitHub 仓库读取文件树，生成 public/games.json
   build-wasm.mjs      # wasm-pack 构建 + 生成物拷贝
 ```
+
+## 手机页面（/m）
+
+宽屏页面在手机上把九个面板挤成一列，游戏画面反而很小，因此手机版是另开的两条路由：
+
+```
+/                      宽屏页面（原样保留）
+/m                     游戏列表 dashboard：搜索、本地 ROM、随机开一个
+/m/play?game=<游戏名>   游玩页：画面在上、触控手柄在下，其余收进右上角工具栏
+```
+
+- `?game=` 取自 `games.json` 里**唯一的游戏名**（列表来自同一个扁平目录，名称不重复），
+  所以在聊天里分享出去仍然是可读的 `/m/play?game=1943`。名字在列表里查不到时，游玩页会
+  提示并给出回到列表的入口。
+- 访问站点根地址时，明显是手机的 UA 会自动进入 `/m`（`src/mobile/entry.ts`，判定在首帧渲染前
+  完成，因此不会闪过宽屏页面；用 `replaceState` 改写地址，不会留下「后退又跳回来」的历史记录）。
+  只匹配确定是手机的平台（`Android…Mobile` / `iPhone` / `iPod` / Windows Phone…），平板与桌面
+  UA 保持宽屏页面。界面上**没有**桌面 / 手机互切的入口：本轮跳转在 `sessionStorage` 里记一次，
+  同一标签页里再次打开 `/`（手动输入地址、旧书签）就不再跳转，这是从手机进入宽屏页面的唯一
+  途径，避免被反复弹回无处可去。
+- 游玩页是 `100dvh` 的网格：顶栏、画面、手柄三行，互不滚动；**暂停、重置、静音、全屏、
+  存档槽、换 ROM、从链接加载**都在右上角按钮打开的 `Drawer` 里（`vite.config.ts` 里关掉了
+  抽屉的背景下沉景深——它会把画布一起缩放，画面会糊）。暂停时点画面即可继续。
+- 横屏（`orientation: landscape` 且高度 ≤ 540px）时手柄改到手柄两侧：方向键与 SELECT 贴左、
+  B/A 与 START 贴右，画面居中，拇指落在握持手机时本来就在的位置。手柄容器本身
+  `pointer-events: none`，只有按键可点，画面中间仍然属于画面（暂停后点画面照常继续）。
+- 全屏请求的是整个页面而不是画面：抽屉、弹窗、通知都挂在 `body` 上，元素全屏会把它们藏起来。
+- 触控手柄见 `src/mobile/TouchPad.tsx`：整个面板由一个容器处理指针事件，每次移动都按坐标
+  重新判断按到了什么，因此十字键是「一根摇杆」而不是四个独立按钮（斜向 = 同时按住两个方向，
+  拇指滑到别的键上会立即切换），多点触控互不干扰，`touch-action: none` 保证滑动不会变成页面滚动，
+  按下时有轻微振动反馈。
+- 画面在手机页面上允许非整数倍缩放：手机上「1× 清晰但只占三分之一屏」不如「铺满屏」。
+  窗口本身就是画面的等比盒，比例取自内核导出的帧尺寸（`MobileStage` 按 `screen` 写成
+  `aspect-ratio`）：竖屏按宽度撑满，横屏由可用高度推导宽度并居中，所以不会出现铺满整屏的
+  黑色边框，也不会把画面拉伸变形。
+- 深链（`/m/play?game=…`）在 GitHub Pages 上没有服务端 rewrite，构建时会额外产出
+  `404.html`：它把原始地址塞进 `?route=` 交回应用，`router.ts` 在首帧渲染前用
+  `history.replaceState` 还原，因此刷新和分享链接都能直接打开对应页面。
 
 ## 载入 ROM
 

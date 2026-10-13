@@ -532,3 +532,340 @@ dd {
     overflow: visible;
   }
 }
+
+/* ---------- phone routes (/m, /m/play) ---------- */
+
+/*
+ * The phone pages are their own layout rather than a breakpoint of the desktop
+ * one: the picture and the controls are the entire interface, and everything
+ * else lives behind the button in the top-right corner. Colours, borders and
+ * shadows are still the library's tokens, so the pages stay on the same
+ * island palette.
+ */
+
+.mdash {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px
+    calc(env(safe-area-inset-bottom, 0px) + 22px);
+}
+
+.mdash__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mdash__quick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+/* Sticky, so swapping games never needs a scroll back to the top. */
+.mdash__search {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 0 10px;
+  background: #fdf3e3;
+}
+
+/* Thumb-sized rows: the button inside the row is what the finger aims at. */
+.mdash__row {
+  padding: 0 12px;
+}
+
+.mplay {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  height: 100vh;
+  height: 100dvh;
+  max-width: 720px;
+  margin: 0 auto;
+  /* Nothing on this page scrolls: a stray swipe must not move the picture. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px
+    calc(env(safe-area-inset-bottom, 0px) + 6px);
+}
+
+.mplay__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mplay__title {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mplay__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--animal-text-color);
+}
+
+/* The state tag keeps its shape whatever the game name next to it does. */
+.mplay__title > *:last-child {
+  white-space: nowrap;
+}
+
+.stage--phone {
+  /* The window is the picture, not the layout: on a tall screen it takes the
+     full width, on a wide one its width comes from the height it can have.
+     Either way the canvas fills it. The shape itself is set inline from the
+     frame size the core reported (`MobileStage`); this is only the fallback for
+     the moment before WASM answers. */
+  width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 15;
+  align-self: center;
+  border-width: 3px;
+  border-radius: 16px;
+}
+
+.stage__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.mplay__controls {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- touch pad ---------- */
+
+/*
+ * One surface for the whole pad. Pointer events are handled here rather than on
+ * each key, which is what makes the d-pad behave as a single stick and lets a
+ * thumb roll from B to A — see `src/mobile/TouchPad.tsx`.
+ */
+.tpad {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-areas:
+    'dpad actions'
+    'system system';
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px 12px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tpad--disabled {
+  opacity: 0.55;
+}
+
+.tpad__dpad {
+  grid-area: dpad;
+  display: grid;
+  grid-template-columns: repeat(3, 46px);
+  grid-template-rows: repeat(3, 46px);
+  grid-template-areas:
+    '. up .'
+    'left hub right'
+    '. down .';
+  gap: 2px;
+}
+
+.tpad__dir {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  /* The library's own button face, so the d-pad matches `Button` exactly. */
+  background: var(--animal-bg-color);
+  border: var(--animal-border-width) solid var(--animal-border-color);
+  box-shadow: var(--animal-shadow-sm);
+  color: var(--animal-text-color);
+  transition: transform var(--animal-motion-duration-fast) var(--animal-motion-ease);
+}
+
+.tpad__dir--up {
+  grid-area: up;
+}
+
+.tpad__dir--left {
+  grid-area: left;
+}
+
+.tpad__dir--right {
+  grid-area: right;
+}
+
+.tpad__dir--down {
+  grid-area: down;
+}
+
+/* The middle cell only carries a dot, to show where a thumb is centred. */
+.tpad__hub {
+  grid-area: hub;
+  display: grid;
+  place-items: center;
+}
+
+.tpad__hub::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e8dcc8;
+}
+
+.tpad__actions {
+  grid-area: actions;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.tpad__system {
+  grid-area: system;
+  display: flex;
+  gap: 10px;
+}
+
+/* Sizes are the only thing these rules change; the faces are the library's. */
+.tpad .tpad__key--ab {
+  width: 68px;
+  height: 68px;
+  padding: 0;
+  font-size: 20px;
+}
+
+.tpad .tpad__key--system {
+  flex: 1;
+  height: 42px;
+}
+
+.tpad .tpad__key[data-pressed='true'],
+.tpad__dir[data-pressed='true'] {
+  background: var(--animal-bg-color-secondary);
+  color: var(--animal-primary-color);
+  box-shadow: none;
+  transform: translateY(2px);
+}
+
+/* ---------- tools drawer ---------- */
+
+.mtools {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  /* The library's drawer body already carries padding; this reclaims most of it
+     so the cards have room on a narrow phone. */
+  margin: 0 -12px;
+}
+
+.mtools__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.mtools__status > * {
+  white-space: nowrap;
+}
+
+.mtools__status > *:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/*
+ * A phone held sideways moves the pad into the bezel beside the picture: the
+ * d-pad (with Select) on the left, the buttons (with Start) on the right, so
+ * both thumbs rest where they would on a handheld and the screen keeps its
+ * height. The pad's own box is click-through — only its controls take touches —
+ * so taps in the middle still belong to the picture.
+ */
+@media (orientation: landscape) and (max-height: 540px) {
+  .mplay {
+    grid-template-rows: auto minmax(0, 1fr);
+    /* No centred column here: the thumbs want the very edges of the screen. */
+    max-width: none;
+    gap: 6px;
+  }
+
+  .stage--phone,
+  .mplay__controls {
+    grid-area: 2 / 1;
+  }
+
+  .mplay__controls {
+    z-index: 1;
+    padding: 4px 6px;
+    pointer-events: none;
+  }
+
+  /* Height first: the window is as wide as the room left between the thumbs. */
+  .stage--phone {
+    width: auto;
+    height: 100%;
+    max-height: none;
+    justify-self: center;
+  }
+
+  .tpad {
+    flex: 1;
+    align-items: center;
+    align-content: center;
+  }
+
+  .tpad__dpad,
+  .tpad__actions,
+  .tpad__system {
+    pointer-events: auto;
+  }
+
+  .tpad__dpad {
+    grid-template-columns: repeat(3, 38px);
+    grid-template-rows: repeat(3, 38px);
+  }
+
+  .tpad__dir {
+    width: 38px;
+    height: 38px;
+  }
+
+  .tpad .tpad__key--ab {
+    width: 58px;
+    height: 58px;
+    font-size: 18px;
+  }
+
+  /* Select and Start take the far ends under each thumb, clear of the picture. */
+  .tpad__system {
+    justify-content: space-between;
+  }
+
+  /* `Button block` is `width: 100%`: right in the stacked layout, far too wide
+     once the row spans the screen. */
+  .tpad .tpad__key--system {
+    flex: 0 1 auto;
+    width: auto;
+    height: 38px;
+    padding: 0 16px;
+  }
+}

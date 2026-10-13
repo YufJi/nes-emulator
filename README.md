@@ -77,6 +77,11 @@ React + Vite + TypeScript；Rust 内核经 `wasm-bindgen` 编译成 WASM，在�
   组件库；`src/styles.css` 只负责布局并读取库暴露的 `--animal-*` 变量，不覆盖组件的
   颜色、圆角与阴影。
 - 窄屏（<940px）自动改为上下布局：画面在上，面板在下。
+- 手机浏览器请用 **`/m`**：游戏列表是独立的一页（dashboard），从列表进入
+  `/m/play?game=<游戏名>` 后画面在上、触控手柄在下，暂停 / 存档 / 换 ROM 等操作收在
+  右上角工具栏里；横屏时手柄分列画面两侧（方向键在左、A/B 在右）。用手机访问根地址会
+  自动进入 `/m`，界面不提供桌面 / 手机互切的入口，详见
+  [`web/README.md`](web/README.md#手机页面m)。
 - 构建时会裁掉库中未使用的字体与场景插画，`dist/` 约 730 KB。详见
   [`web/README.md`](web/README.md)。
 
@@ -138,6 +143,10 @@ PAGES_BASE=/<repo>/ npm run build:pages   # 产物在 web/dist
 部署后的站点从 `raw.githubusercontent.com` 拉取游戏列表里的 ROM（对方允许跨域），
 因此只能联网使用；断网环境请改用本地文件或自建 ROM 直链。
 
+Pages 是纯静态托管，没有服务端 rewrite，所以构建会额外产出一个 `404.html`：访问
+`/m/play?game=…` 这类深链时由它把地址交回应用，`web/src/router.ts` 在首帧前还原，
+刷新与分享链接都不会再落到 404 页面。
+
 ## 操作方式
 
 | 动作 | 按键 |
@@ -149,7 +158,8 @@ PAGES_BASE=/<repo>/ npm run build:pages   # 产物在 web/dist
 | Select | `Shift` |
 | 暂停 / 继续 | `P` |
 
-触屏设备可直接使用右侧的虚拟手柄。更多前端细节见 [`web/README.md`](web/README.md)。
+触屏设备可直接使用右侧的虚拟手柄；手机浏览器建议改用 [`/m`](#网页前端) 的手机页面。
+更多前端细节见 [`web/README.md`](web/README.md)。
 
 ## 测试
 

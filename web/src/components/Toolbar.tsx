@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, Card, Modal, Switch, Title } from 'animal-island-ui';
+import { Button, Card, Switch, Title } from 'animal-island-ui';
 import {
   FolderIcon,
   ListIcon,
@@ -11,6 +11,7 @@ import {
   VolumeIcon,
   VolumeXIcon,
 } from 'naive-icons';
+import { ClearSaveDialog } from './ClearSaveDialog';
 
 interface ToolbarProps {
   state: 'idle' | 'running' | 'paused';
@@ -125,30 +126,11 @@ export function Toolbar({
         </p>
       </Card>
 
-      <Modal
+      <ClearSaveDialog
         open={confirmingClear}
-        title="清空卡带存档？"
-        width={420}
-        typeSpeed={25}
-        onClose={() => setConfirmingClear(false)}
-        footer={
-          <>
-            <Button onClick={() => setConfirmingClear(false)}>取消</Button>
-            <Button
-              type="primary"
-              danger
-              onClick={() => {
-                setConfirmingClear(false);
-                onClearSave();
-              }}
-            >
-              清空并重新开始
-            </Button>
-          </>
-        }
-      >
-        删除该卡带的电池存档并重新开始，此操作无法撤销。
-      </Modal>
+        onCancel={() => setConfirmingClear(false)}
+        onConfirm={onClearSave}
+      />
     </section>
   );
 }

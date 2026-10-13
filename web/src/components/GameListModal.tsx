@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button, Input, Modal, Skeleton, Tag } from 'animal-island-ui';
 import { SearchIcon } from 'naive-icons';
-
-export interface GameEntry {
-  name: string;
-  url: string;
-}
+import { gameId } from '../games';
+import { useGameList } from '../hooks/useGameList';
+import { usePagedList } from '../hooks/usePagedList';
 
 interface GameListModalProps {
   /** While a download is in flight the rows are disabled. */
@@ -17,66 +15,15 @@ interface GameListModalProps {
 }
 
 /**
- * Rows added each time the end of the list scrolls into view. The list holds
- * hundreds of games, so it grows a slice at a time rather than rendering in one
- * go — only the rows reached so far are in the DOM.
- */
-const PAGE_SIZE = 20;
-
-/**
- * How far below the list the next slice starts rendering. Rendering rows is
- * cheap (the data is already in memory), so they are usually in place before
- * they are scrolled into sight.
- */
-const LOAD_MARGIN = '200px 0px';
-
-/**
- * The Modal body is the scroller and cannot be reached through a ref, so the
- * sentinel looks for its own scrolling ancestor.
- */
-function scrollParent(node: HTMLElement): HTMLElement | null {
-  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
-    const { overflowY } = window.getComputedStyle(parent);
-    if (overflowY === 'auto' || overflowY === 'scroll') return parent;
-  }
-  return null;
-}
-
-/**
  * Searchable game list, so a game can be picked without knowing its URL.
  *
- * The list is a static asset beside the page (`games.json`, regenerate it with
- * `npm run build:games`), fetched the first time the dialog is opened. It loads
- * further slices as it is scrolled — there is no pager to click. Escape,
+ * The rows come from the shared catalogue (`src/games.ts`) and are rendered a
+ * slice at a time as the list is scrolled — there is no pager to click. Escape,
  * clicking the mask and the focus trap are the island Modal's own behaviour.
  */
 export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListModalProps) {
-  const [games, setGames] = useState<GameEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { games, error } = useGameList();
   const [query, setQuery] = useState('');
-  const [count, setCount] = useState(PAGE_SIZE);
-  const sentinel = useRef<HTMLLIElement | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    fetch(`${import.meta.env.BASE_URL}games.json`)
-      .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json() as Promise<GameEntry[]>;
-      })
-      .then((list) => {
-        if (!cancelled) setGames(list);
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setError(`游戏列表载入失败：${cause instanceof Error ? cause.message : String(cause)}`);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const results = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -84,33 +31,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
     return (games ?? []).filter((game) => game.name.toLowerCase().includes(needle));
   }, [games, query]);
 
-  const visible = results.slice(0, count);
-  const hasMore = visible.length < results.length;
-
-  // Re-observing after every slice re-runs the callback immediately, so a slice
-  // too short to push the sentinel out of sight keeps the list filling instead
-  // of stalling with room left in the scroller.
-  useEffect(() => {
-    const node = sentinel.current;
-    if (!hasMore || !node) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setCount((loaded) => loaded + PAGE_SIZE);
-        }
-      },
-      { root: scrollParent(node), rootMargin: LOAD_MARGIN },
-    );
-    observer.observe(node);
-
-    return () => observer.disconnect();
-  }, [hasMore, count, results]);
-
-  const search = useCallback((value: string) => {
-    setQuery(value);
-    setCount(PAGE_SIZE);
-  }, []);
+  const { visible, hasMore, sentinelRef } = usePagedList(results);
 
   return (
     <Modal
@@ -128,8 +49,8 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
           shadow
           allowClear
           value={query}
-          onChange={(event) => search(event.target.value)}
-          onClear={() => search('')}
+          onChange={(event) => setQuery(event.target.value)}
+          onClear={() => setQuery('')}
           placeholder="搜索游戏名…"
           aria-label="搜索游戏"
           spellCheck={false}
@@ -156,7 +77,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
       {visible.length > 0 && (
         <ul className="rom-list">
           {visible.map((game) => (
-            <li key={game.url}>
+            <li key={gameId(game)}>
               <Button
                 type="text"
                 block
@@ -176,7 +97,7 @@ export function GameListModal({ busy, currentUrl, onSelect, onClose }: GameListM
               </Button>
             </li>
           ))}
-          {hasMore && <li ref={sentinel} className="rom-list__more" aria-hidden />}
+          {hasMore && <li ref={sentinelRef} className="rom-list__more" aria-hidden />}
         </ul>
       )}
 
