@@ -543,12 +543,42 @@ dd {
  * island palette.
  */
 
+/*
+ * Nothing on the phone pages is meant to be selected: a long press on a row, a
+ * key or a picture should not drag out the selection magnifier or raise iOS's
+ * callout menu. The class sits on `body` (set from `src/App.tsx`), so the
+ * portalled drawer and dialogs are covered too; the wide-screen page keeps
+ * selection as it always had it.
+ *
+ * Text fields are left selectable: a URL that cannot be selected or have its
+ * caret moved would be worse than the occasional accidental selection.
+ */
+body.phone-ui,
+body.phone-ui * {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+body.phone-ui input,
+body.phone-ui textarea,
+body.phone-ui [contenteditable='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
 .mdash {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 640px;
   margin: 0 auto;
+  /* Keeps the double-tap-zoom heuristics out of the way of picking a game;
+     scrolling and pinch-zoom are untouched. */
+  touch-action: manipulation;
+  /* Inherited, so the library's buttons on this page get it too. */
+  -webkit-tap-highlight-color: transparent;
   padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px
     calc(env(safe-area-inset-bottom, 0px) + 22px);
 }
@@ -592,6 +622,7 @@ dd {
   overflow: hidden;
   overscroll-behavior: none;
   touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px
     calc(env(safe-area-inset-bottom, 0px) + 6px);
 }
@@ -665,9 +696,6 @@ dd {
   justify-content: space-between;
   gap: 10px 12px;
   touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
 

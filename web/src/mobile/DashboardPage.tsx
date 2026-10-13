@@ -6,8 +6,23 @@ import { useGameList } from '../hooks/useGameList';
 import { usePagedList } from '../hooks/usePagedList';
 import { navigate } from '../router';
 import { setPendingRom } from './romHandoff';
+import { useTap } from './useTap';
 
 const ROM_ACCEPT = '.nes,.fds,.unf,.unif,application/octet-stream';
+
+/** One game in the list; its own component so each row owns its tap state. */
+function GameRow({ game, onPlay }: { game: GameEntry; onPlay: (game: GameEntry) => void }) {
+  const tap = useTap(useCallback(() => onPlay(game), [game, onPlay]));
+
+  return (
+    <Button type="text" block className="rom-list__row mdash__row" {...tap}>
+      <span className="rom-list__inner">
+        <span className="ellipsis rom-list__name">{game.name}</span>
+        <ChevronRightIcon size={18} color="#c4b89e" aria-hidden />
+      </span>
+    </Button>
+  );
+}
 
 /**
  * Home of the phone layout (`/m`): the whole catalogue as a dashboard.
@@ -47,6 +62,11 @@ export function DashboardPage() {
     play(games[Math.floor(Math.random() * games.length)]);
   }, [games, play]);
 
+  // A row is picked while the list is still coasting after a flick, so the
+  // action hangs off the tap rather than off the click (see `useTap`).
+  const pickLocal = useTap(useCallback(() => fileInputRef.current?.click(), []));
+  const pickRandom = useTap(playRandom);
+
   return (
     <Background type="sprinkles" className="app-shell">
       <div className="mdash">
@@ -70,7 +90,7 @@ export function DashboardPage() {
             size="large"
             block
             icon={<FolderIcon size={18} color="currentColor" aria-hidden />}
-            onClick={() => fileInputRef.current?.click()}
+            {...pickLocal}
           >
             本地 ROM
           </Button>
@@ -78,7 +98,7 @@ export function DashboardPage() {
             size="large"
             block
             icon={<StarIcon size={18} color="currentColor" aria-hidden />}
-            onClick={playRandom}
+            {...pickRandom}
             disabled={!games || games.length === 0}
           >
             随便玩一个
@@ -121,17 +141,7 @@ export function DashboardPage() {
           <ul className="rom-list">
             {visible.map((game) => (
               <li key={gameId(game)}>
-                <Button
-                  type="text"
-                  block
-                  className="rom-list__row mdash__row"
-                  onClick={() => play(game)}
-                >
-                  <span className="rom-list__inner">
-                    <span className="ellipsis rom-list__name">{game.name}</span>
-                    <ChevronRightIcon size={18} color="#c4b89e" aria-hidden />
-                  </span>
-                </Button>
+                <GameRow game={game} onPlay={play} />
               </li>
             ))}
             {hasMore && <li ref={sentinelRef} className="rom-list__more" aria-hidden />}

@@ -1,7 +1,15 @@
+import { useEffect } from 'react';
 import { useRoute } from './router';
 import { DesktopApp } from './components/DesktopApp';
 import { PlayPage } from './mobile/PlayPage';
 import { DashboardPage } from './mobile/DashboardPage';
+
+/** Marks the phone pages on `body`; see `body.phone-ui` in `styles.css`. */
+const PHONE_UI = 'phone-ui';
+
+function isPhonePath(path: string): boolean {
+  return path === '/m' || path.startsWith('/m/');
+}
 
 /**
  * Route table.
@@ -12,9 +20,16 @@ import { DashboardPage } from './mobile/DashboardPage';
  */
 export default function App() {
   const { path, query } = useRoute();
+  const phone = isPhonePath(path);
+
+  // On `body` rather than on a wrapper: the island Drawer and Modal render into
+  // portals, so styling that stops at the page subtree would miss them.
+  useEffect(() => {
+    document.body.classList.toggle(PHONE_UI, phone);
+  }, [phone]);
 
   if (path === '/m' || path === '/m/') return <DashboardPage />;
   if (path === '/m/play') return <PlayPage query={query} />;
-  if (path.startsWith('/m/')) return <DashboardPage />;
+  if (phone) return <DashboardPage />;
   return <DesktopApp />;
 }

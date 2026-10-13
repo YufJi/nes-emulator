@@ -10,6 +10,7 @@ import { MobileStage } from './MobileStage';
 import { takePendingRom } from './romHandoff';
 import { ToolsDrawer } from './ToolsDrawer';
 import { TouchPad } from './TouchPad';
+import { useTap } from './useTap';
 
 const ROM_ACCEPT = '.nes,.fds,.unf,.unif,application/octet-stream';
 
@@ -91,6 +92,15 @@ export function PlayPage({ query }: PlayPageProps) {
     navigate('/m');
   }, []);
 
+  // Same reason as the game rows: a tap is what gets through while the previous
+  // page is still coasting.
+  const back = useTap(openGames);
+  const openTools = useTap(
+    useCallback(() => {
+      setToolsOpen(true);
+    }, []),
+  );
+
   const loadFromInput = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
@@ -121,7 +131,7 @@ export function PlayPage({ query }: PlayPageProps) {
             type="text"
             icon={<ChevronLeftIcon size={18} color="currentColor" aria-hidden />}
             aria-label="返回游戏列表"
-            onClick={openGames}
+            {...back}
           />
 
           <div className="mplay__title">
@@ -134,7 +144,7 @@ export function PlayPage({ query }: PlayPageProps) {
           <Button
             icon={<SlidersIcon size={18} color="currentColor" aria-hidden />}
             aria-label="打开工具栏"
-            onClick={() => setToolsOpen(true)}
+            {...openTools}
           />
         </header>
 
