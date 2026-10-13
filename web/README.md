@@ -301,19 +301,21 @@ way to tell a pad that is not being read from a button that was never bound.
 | Action | Controller |
 | --- | --- |
 | D-pad | D-pad or left stick (analog, dead zone 0.5) |
-| A | bottom or right face button (Cross / Circle, or A / B on an Xbox pad) |
-| B | left or top face button (Square / Triangle, or X / Y) |
-| Turbo B / Turbo A | left shoulder or trigger (L1 / L2), right shoulder or trigger (R1 / R2) |
+| A | bottom face button (Cross, or A on an Xbox pad) |
+| B | right face button (Circle, or B) |
+| Turbo B / Turbo A | the two opposite them (left: Square / X; top: Triangle / Y), and either shoulder or trigger on the same side (L1 / L2, R1 / R2) |
 | Start | Start / Options |
 | Select | Select / Share |
 
 ### Turbo
 
 Two controls auto-fire their button while they are held: `I` fires B and `O` fires A, each
-sitting right above the key it repeats; on a controller the left shoulder and trigger fire B
-and the right pair fire A, and both on-screen pads carry a switch above B/A for each. They
-are separate controls rather than a mode, which is the point — an ordinary press of B or A is
-still reported exactly as pressed, so a game that wants a button held down keeps working.
+sitting right above the key it repeats, and both on-screen pads carry a switch above B/A for
+each. A controller follows the turbo pads of the era — a NES Advantage or a 小霸王 pad has a
+plain pair and an auto-fire pair side by side — so Square and Triangle are the turbo switches
+for the buttons opposite them, with the shoulders and triggers as a second way to hold one.
+They are separate controls rather than a mode, which is the point: an ordinary press of B or A
+is still reported exactly as pressed, so a game that wants a button held down keeps working.
 
 The pulse is counted in emulated frames — two frames down, two up, about 15 shots a second,
 the rate a NES Advantage fires at — and it starts on the press, so the first shot lands on

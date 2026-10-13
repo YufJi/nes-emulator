@@ -12,24 +12,26 @@ import type { PadInput } from './constants';
  */
 
 /**
- * NES button for each index of the standard layout.
+ * NES input for each index of the standard layout.
  *
- * The face buttons are mapped by side rather than by label. The bottom and
- * right ones (Cross / Circle, or A / B on an Xbox pad) are the primary button
- * and the left and top ones (Square / Triangle, or X / Y) the secondary one:
- * the NES's own A sits on the right, so "the right-hand button jumps" stays
- * true on any pad, and either hand's instinctive press works.
+ * The four face buttons are a plain pair and a turbo pair, which is how the
+ * turbo pads of the era were built — a NES Advantage or a 小霸王 pad puts its
+ * auto-fire buttons beside the ordinary ones, not on the shoulders. The two a
+ * thumb rests on are the plain pair (bottom is A, right is B), and each turbo
+ * switch sits opposite the button it fires: left fires B, top fires A. On an
+ * Xbox pad the printed letters then land where they say they do — A is A, B is
+ * B — and X and Y are the turbo switches for the buttons across from them.
+ *
+ * The shoulders and triggers are turbo as well (the left pair fires B, the
+ * right pair A), so a turbo can be held without the thumb leaving the plain
+ * buttons. Browsers do not agree on which of the two comes first when a pad
+ * does not map itself onto the standard layout, so both are taken.
  */
 const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, input: PadInput]> = [
   [0, 'A'],
-  [1, 'A'],
-  [2, 'B'],
-  [3, 'B'],
-  // The shoulder buttons stand in for the turbo switches: on the left for the
-  // left-hand button, on the right for the right-hand one, like the face pair.
-  // Each side takes its trigger as well, because browsers do not agree on which
-  // of the two comes first when a pad does not map cleanly onto the standard
-  // layout — and either is a comfortable thing to hold down.
+  [1, 'B'],
+  [2, 'TURBO_B'],
+  [3, 'TURBO_A'],
   [4, 'TURBO_B'],
   [5, 'TURBO_A'],
   [6, 'TURBO_B'],

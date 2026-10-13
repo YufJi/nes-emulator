@@ -87,7 +87,7 @@ export const ZH = {
   'gamepad.title': '蓝牙手柄',
   'gamepad.none': '未连接',
   'gamepad.note':
-    '有线 / 蓝牙手柄都能直接开玩：先配对（iPad 在「设置 → 蓝牙」里），再按一下手柄上的任意键，它就会出现在这里。十字键与左摇杆 = 方向，下方或右侧面键 = A，左侧或上方面键 = B，左侧的 L1 / L2 = 连发 B、右侧的 R1 / R2 = 连发 A，+ / − = Start / Select。按住的键会实时显示在手柄名旁边——某个键没反应时，先看这里有没有亮；显示成 #编号 的，是前端没有对应按键的输入。',
+    '有线 / 蓝牙手柄都能直接开玩：先配对（iPad 在「设置 → 蓝牙」里），再按一下手柄上的任意键，它就会出现在这里。十字键与左摇杆 = 方向。四个面键按小霸王手柄的排法分成一对单发、一对连发：下方 = A、右侧 = B，对面两个就是它们的连发（左 = 连发 B、上 = 连发 A）。肩键 / 扳机也是连发（左 = 连发 B、右 = 连发 A），这样按住连发时拇指还能留在 A / B 上；+ / − = Start / Select。按住的键会实时显示在手柄名旁边——某个键没反应时，先看这里有没有亮；显示成 #编号 的，是前端没有对应按键的输入。',
   'gamepad.unsupported':
     '当前浏览器未开放 Gamepad 接口，读不到手柄，请改用键盘或虚拟手柄。',
 
@@ -240,7 +240,7 @@ export const EN: Dictionary = {
   'gamepad.title': 'Bluetooth gamepad',
   'gamepad.none': 'Not connected',
   'gamepad.note':
-    'Wired and Bluetooth controllers play as they are: pair the pad first (on an iPad, in Settings → Bluetooth), then press any of its buttons and it shows up here. D-pad and left stick steer; the bottom or right face button is A, the left or top one is B; L1 / L2 on the left turbo B and R1 / R2 on the right turbo A; + / − are Start and Select. Whatever the pad holds appears beside its name as you press it — the place to look when a button seems to do nothing. Anything shown as #n is a button this front end has no use for.',
+    'Wired and Bluetooth controllers play as they are: pair the pad first (on an iPad, in Settings → Bluetooth), then press any of its buttons and it shows up here. D-pad and left stick steer. The four face buttons are a plain pair and a turbo pair, the way a turbo pad of the era was built: bottom is A, right is B, and the two opposite them are their turbo switches — left turbos B, top turbos A. The shoulders and triggers turbo too (left fires B, right fires A), so a turbo can be held with the thumb still on A / B; + / − are Start and Select. Whatever the pad holds appears beside its name as you press it — the place to look when a button seems to do nothing. Anything shown as #n is a button this front end has no use for.',
   'gamepad.unsupported':
     'This browser does not expose the Gamepad API, so it cannot see a controller; use the keyboard or the virtual pad instead.',
 
@@ -393,7 +393,7 @@ export const JA: Dictionary = {
   'gamepad.title': 'Bluetooth コントローラー',
   'gamepad.none': '未接続',
   'gamepad.note':
-    '有線・Bluetooth どちらのコントローラーもそのまま使えます。先にペアリングし（iPad なら「設定 → Bluetooth」）、どれかのボタンを押すとここに表示されます。十字キーと左スティック＝方向、下または右の面ボタン＝A、左または上の面ボタン＝B、左の L1 / L2＝連射 B、右の R1 / R2＝連射 A、＋ / − が Start / Select です。押しているボタンは名前の横にそのまま出るので、反応しないときはここを見てください。#番号 はこのフロントエンドに対応するボタンがない入力です。',
+    '有線・Bluetooth どちらのコントローラーもそのまま使えます。先にペアリングし（iPad なら「設定 → Bluetooth」）、どれかのボタンを押すとここに表示されます。十字キーと左スティック＝方向。4 つの面ボタンは当時の連射パッドと同じく「通常の 1 対＋連射の 1 対」です：下＝A、右＝B、その向かい側が連射（左＝連射 B、上＝連射 A）。肩ボタン／トリガーも連射（左＝連射 B、右＝連射 A）なので、親指を A / B に置いたまま連射できます。＋ / − が Start / Select です。押しているボタンは名前の横にそのまま出るので、反応しないときはここを見てください。#番号 はこのフロントエンドに対応するボタンがない入力です。',
   'gamepad.unsupported':
     'このブラウザは Gamepad API を公開しておらず、コントローラーを認識できません。キーボードか仮想パッドをお使いください。',
 
