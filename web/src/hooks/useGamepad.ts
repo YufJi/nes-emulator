@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { PAD_INPUTS, type PadInput } from '../emulator/constants';
-import { gamepadButtons, gamepadLabel } from '../emulator/gamepad';
+import { gamepadButtons, gamepadLabel, unmappedButtons } from '../emulator/gamepad';
 
 export interface GamepadStatus {
   /** Whether this browser has the Gamepad API at all. */
@@ -15,6 +15,11 @@ export interface GamepadStatus {
    * is not one this front end knows".
    */
   inputs: PadInput[];
+  /**
+   * Presses the pads are making that this front end has no button for, by
+   * index. A pad is only useful to the extent its buttons land somewhere.
+   */
+  unmapped: number[];
 }
 
 /**
@@ -41,6 +46,7 @@ export function useGamepad(
     supported,
     names: [],
     inputs: [],
+    unmapped: [],
   }));
   const press = useRef(onButton);
 
@@ -70,8 +76,10 @@ export function useGamepad(
       for (const pad of navigator.getGamepads()) if (pad) pads.push(pad);
 
       const now = new Set<PadInput>();
+      const unmapped: number[] = [];
       for (const pad of pads) {
         for (const input of gamepadButtons(pad)) now.add(input);
+        unmapped.push(...unmappedButtons(pad));
       }
 
       for (const input of PAD_INPUTS) {
@@ -85,10 +93,10 @@ export function useGamepad(
       // pad connects, so React is woken when that happened and not every frame.
       const names = pads.map((pad) => gamepadLabel(pad.id));
       const down = PAD_INPUTS.filter((input) => now.has(input));
-      const key = `${pads.map((pad) => `${pad.index}:${pad.id}`).join('|')}#${down.join(',')}`;
+      const key = `${pads.map((pad) => `${pad.index}:${pad.id}`).join('|')}#${down.join(',')}|${unmapped.join(',')}`;
       if (key !== lastKey) {
         lastKey = key;
-        setReported({ supported, names, inputs: down });
+        setReported({ supported, names, inputs: down, unmapped });
       }
     };
 

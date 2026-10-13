@@ -21,7 +21,7 @@ const INPUT_WORDS: Partial<Record<PadInput, MessageKey>> = {
 
 export function KeyGuide({ gamepad }: KeyGuideProps) {
   const { t } = useI18n();
-  const { names, inputs, supported } = gamepad;
+  const { names, inputs, unmapped, supported } = gamepad;
 
   // A, B, Start and Select are printed on the console's own buttons; the rows
   // that are not a button of the console have a word of their own to translate.
@@ -76,6 +76,13 @@ export function KeyGuide({ gamepad }: KeyGuideProps) {
                   {inputs.map((input) => (
                     <Tag key={input} size="small" color="app-orange">
                       {INPUT_WORDS[input] ? t(INPUT_WORDS[input]) : input}
+                    </Tag>
+                  ))}
+                  {/* A press with no NES button to go to, shown as the index it
+                      arrived on: the one thing that can be said about it. */}
+                  {unmapped.map((index) => (
+                    <Tag key={`index-${index}`} size="small" variant="outlined" color="default">
+                      #{index}
                     </Tag>
                   ))}
                 </>

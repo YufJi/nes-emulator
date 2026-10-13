@@ -47,6 +47,25 @@ const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, input: PadInput]>
 /** Stick deflection, in the API's [-1, 1], past which a direction counts. */
 const AXIS_THRESHOLD = 0.5;
 
+/** The button indices this mapping covers. */
+const MAPPED_INDICES = new Set(STANDARD_BUTTONS.map(([index]) => index));
+
+/**
+ * Indices of the buttons a pad is holding that have no NES button here.
+ *
+ * Pads keep arriving with their buttons in an order of their own, and a press
+ * that lands nowhere is indistinguishable from a pad that is not being read —
+ * so the interface is told about it and can show it as it is: an index, with no
+ * name to give it.
+ */
+export function unmappedButtons(pad: Gamepad): number[] {
+  const found: number[] = [];
+  pad.buttons.forEach((button, index) => {
+    if (button.pressed && !MAPPED_INDICES.has(index)) found.push(index);
+  });
+  return found;
+}
+
 /**
  * The NES buttons a pad is holding right now.
  *
