@@ -80,7 +80,10 @@ dd {
   height: 100dvh;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 18px;
+  /* Same reason as the phone pages: `viewport-fit=cover` means the page owns the
+     whole screen, notch and home indicator included. */
+  padding: calc(env(safe-area-inset-top, 0px) + 18px) calc(env(safe-area-inset-right, 0px) + 18px)
+    calc(env(safe-area-inset-bottom, 0px) + 18px) calc(env(safe-area-inset-left, 0px) + 18px);
 }
 
 /* ---------- topbar ---------- */
@@ -579,8 +582,11 @@ body.phone-ui [contenteditable='true'] {
   touch-action: manipulation;
   /* Inherited, so the library's buttons on this page get it too. */
   -webkit-tap-highlight-color: transparent;
-  padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px
-    calc(env(safe-area-inset-bottom, 0px) + 22px);
+  /* `viewport-fit=cover` hands the whole screen to the page, so every edge the
+     system claims — the notch, the rounded corners, the home indicator — has to
+     be given back here. Sideways, the first two are on the left and right. */
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) calc(env(safe-area-inset-right, 0px) + 14px)
+    calc(env(safe-area-inset-bottom, 0px) + 22px) calc(env(safe-area-inset-left, 0px) + 14px);
 }
 
 .mdash__head {
@@ -599,7 +605,9 @@ body.phone-ui [contenteditable='true'] {
 /* Sticky, so swapping games never needs a scroll back to the top. */
 .mdash__search {
   position: sticky;
-  top: 0;
+  /* Pinned below the status bar rather than under it: sticky is measured from
+     the viewport, which `viewport-fit=cover` lets the notch overlap. */
+  top: env(safe-area-inset-top, 0px);
   z-index: 2;
   padding: 6px 0 10px;
   background: #fdf3e3;
@@ -623,8 +631,8 @@ body.phone-ui [contenteditable='true'] {
   overscroll-behavior: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
-  padding: calc(env(safe-area-inset-top, 0px) + 8px) 10px
-    calc(env(safe-area-inset-bottom, 0px) + 6px);
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) calc(env(safe-area-inset-right, 0px) + 10px)
+    calc(env(safe-area-inset-bottom, 0px) + 6px) calc(env(safe-area-inset-left, 0px) + 10px);
 }
 
 .mplay__head {
@@ -705,59 +713,84 @@ body.phone-ui [contenteditable='true'] {
 
 .tpad__dpad {
   grid-area: dpad;
+  /* One continuous thumb pad instead of four keys: aiming at a small circle was
+     the whole complaint, so the pad *is* the target and the arrows are only
+     printed on it (see `resolveDirection` in TouchPad.tsx). This box is also a
+     little larger than the face below, which is what keeps the corners — where
+     a thumb goes for a diagonal — inside the target. */
+  position: relative;
+  width: 168px;
+  height: 168px;
+}
+
+.tpad__face {
+  position: absolute;
+  inset: 8px;
   display: grid;
-  grid-template-columns: repeat(3, 46px);
-  grid-template-rows: repeat(3, 46px);
-  grid-template-areas:
-    '. up .'
-    'left hub right'
-    '. down .';
-  gap: 2px;
+  place-items: center;
+  border-radius: 50%;
+  /* The library's own button face, so the pad matches `Button` exactly. */
+  background: var(--animal-bg-color);
+  border: var(--animal-border-width) solid var(--animal-border-color);
+  box-shadow:
+    var(--animal-shadow-sm),
+    inset 0 -3px 0 rgba(61, 52, 40, 0.07);
 }
 
 .tpad__dir {
+  position: absolute;
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  /* The library's own button face, so the d-pad matches `Button` exactly. */
-  background: var(--animal-bg-color);
-  border: var(--animal-border-width) solid var(--animal-border-color);
-  box-shadow: var(--animal-shadow-sm);
-  color: var(--animal-text-color);
-  transition: transform var(--animal-motion-duration-fast) var(--animal-motion-ease);
+  width: 34px;
+  height: 34px;
+  color: #c4b89e;
+  transition: color var(--animal-motion-duration-fast) var(--animal-motion-ease);
 }
 
 .tpad__dir--up {
-  grid-area: up;
-}
-
-.tpad__dir--left {
-  grid-area: left;
-}
-
-.tpad__dir--right {
-  grid-area: right;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .tpad__dir--down {
-  grid-area: down;
+  bottom: 4px;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
-/* The middle cell only carries a dot, to show where a thumb is centred. */
-.tpad__hub {
-  grid-area: hub;
-  display: grid;
-  place-items: center;
+.tpad__dir--left {
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
-.tpad__hub::after {
-  content: '';
-  width: 8px;
-  height: 8px;
+.tpad__dir--right {
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.tpad__dir[data-pressed='true'] {
+  color: var(--animal-primary-color);
+}
+
+/* The head of the stick: it leans the way the thumb pushes, so the direction
+   the console is receiving is visible without looking for a lit key. */
+.tpad__stick {
+  width: 62px;
+  height: 62px;
   border-radius: 50%;
-  background: #e8dcc8;
+  background: #fffdf7;
+  border: var(--animal-border-width) solid var(--animal-border-color);
+  box-shadow: var(--animal-shadow-sm);
+  transition: transform var(--animal-motion-duration-fast) var(--animal-motion-ease);
+  will-change: transform;
+}
+
+.tpad__stick[data-pressed='true'] {
+  background: var(--animal-bg-color-secondary);
+  border-color: var(--animal-primary-color);
 }
 
 .tpad__actions {
@@ -786,8 +819,9 @@ body.phone-ui [contenteditable='true'] {
   height: 42px;
 }
 
-.tpad .tpad__key[data-pressed='true'],
-.tpad__dir[data-pressed='true'] {
+/* The keys press in; the arrows only change colour, because their `transform`
+   is what positions them on the pad. */
+.tpad .tpad__key[data-pressed='true'] {
   background: var(--animal-bg-color-secondary);
   color: var(--animal-primary-color);
   box-shadow: none;
@@ -795,6 +829,13 @@ body.phone-ui [contenteditable='true'] {
 }
 
 /* ---------- tools drawer ---------- */
+
+/* The panel is portalled to `body`, so it sits outside the safe-area padding the
+   phone pages give their own content; being pinned to the right edge, it is the
+   edge a notch claims when the phone is held sideways. */
+.tools-drawer {
+  padding-right: env(safe-area-inset-right, 0px);
+}
 
 .mtools {
   display: flex;
@@ -868,13 +909,22 @@ body.phone-ui [contenteditable='true'] {
   }
 
   .tpad__dpad {
-    grid-template-columns: repeat(3, 38px);
-    grid-template-rows: repeat(3, 38px);
+    width: 138px;
+    height: 138px;
+  }
+
+  .tpad__face {
+    inset: 7px;
   }
 
   .tpad__dir {
-    width: 38px;
-    height: 38px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .tpad__stick {
+    width: 50px;
+    height: 50px;
   }
 
   .tpad .tpad__key--ab {

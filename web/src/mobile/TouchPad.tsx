@@ -14,6 +14,9 @@ interface TouchPadProps {
  */
 const DEAD_ZONE = 0.24;
 
+/** How far the stick head leans at full deflection, in CSS pixels. */
+const STICK_THROW_PX = 16;
+
 /** `navigator.vibrate` does not exist on iOS; a missing buzz is not an error. */
 function buzz(ms: number): void {
   navigator.vibrate?.(ms);
@@ -136,6 +139,18 @@ export function TouchPad({ disabled, onButton }: TouchPadProps) {
   // stay reachable because the wrapper holds the capture until the finger lifts.
   const direction = (button: ButtonName) => active.has(button);
 
+  // Direction the stick head leans in. One axis shows a short throw, two (a
+  // diagonal) a shorter one each, so the head travels the same distance either
+  // way instead of overshooting into the rim.
+  const vertical = direction('UP') || direction('DOWN');
+  const horizontal = direction('LEFT') || direction('RIGHT');
+  const diagonal = vertical && horizontal;
+  const throwPx = diagonal ? STICK_THROW_PX * 0.7 : STICK_THROW_PX;
+  const stickOffset = {
+    x: ((direction('RIGHT') ? 1 : 0) - (direction('LEFT') ? 1 : 0)) * throwPx,
+    y: ((direction('DOWN') ? 1 : 0) - (direction('UP') ? 1 : 0)) * throwPx,
+  };
+
   return (
     <div
       ref={rootRef}
@@ -150,19 +165,30 @@ export function TouchPad({ disabled, onButton }: TouchPadProps) {
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="tpad__dpad" data-control="dpad">
-        <span className="tpad__dir tpad__dir--up" data-pressed={direction('UP')} aria-hidden>
-          <ArrowUpIcon size={26} color="currentColor" aria-hidden />
-        </span>
-        <span className="tpad__dir tpad__dir--left" data-pressed={direction('LEFT')} aria-hidden>
-          <ArrowLeftIcon size={26} color="currentColor" aria-hidden />
-        </span>
-        <span className="tpad__hub" aria-hidden />
-        <span className="tpad__dir tpad__dir--right" data-pressed={direction('RIGHT')} aria-hidden>
-          <ArrowRightIcon size={26} color="currentColor" aria-hidden />
-        </span>
-        <span className="tpad__dir tpad__dir--down" data-pressed={direction('DOWN')} aria-hidden>
-          <ArrowDownIcon size={26} color="currentColor" aria-hidden />
-        </span>
+        {/* Drawn as one continuous pad, not four keys: the whole circle is the
+            target, so a thumb never has to find a small button — the direction
+            just comes from where it landed. The element itself is a slightly
+            larger square than the face it paints, so the corners a thumb
+            reaches for a diagonal still count. */}
+        <div className="tpad__face" aria-hidden>
+          <span className="tpad__dir tpad__dir--up" data-pressed={direction('UP')}>
+            <ArrowUpIcon size={26} color="currentColor" aria-hidden />
+          </span>
+          <span className="tpad__dir tpad__dir--left" data-pressed={direction('LEFT')}>
+            <ArrowLeftIcon size={26} color="currentColor" aria-hidden />
+          </span>
+          <span className="tpad__dir tpad__dir--right" data-pressed={direction('RIGHT')}>
+            <ArrowRightIcon size={26} color="currentColor" aria-hidden />
+          </span>
+          <span className="tpad__dir tpad__dir--down" data-pressed={direction('DOWN')}>
+            <ArrowDownIcon size={26} color="currentColor" aria-hidden />
+          </span>
+          <span
+            className="tpad__stick"
+            data-pressed={vertical || horizontal}
+            style={{ transform: `translate(${stickOffset.x}px, ${stickOffset.y}px)` }}
+          />
+        </div>
       </div>
 
       <div className="tpad__system">

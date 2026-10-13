@@ -133,6 +133,12 @@ picture tiny, so the mobile version is two separate routes:
   picture is centered, so the thumbs land where they already are when holding a phone. The
   pad container itself is `pointer-events: none`, and only buttons are tappable, so the
   middle of the picture still belongs to the picture (tapping it resumes after a pause).
+- `viewport-fit=cover` hands the whole screen to the page, so every edge the system claims is
+  given back with `env(safe-area-inset-*)`: the phone pages pad all four sides (holding a
+  notched phone sideways puts the unsafe areas on the *left and right*, which is exactly where
+  the pad sits), the sticky search box pins below the status bar instead of under it, the
+  portalled tools drawer keeps its content off the right edge, and the wide-screen shell pads
+  itself too. All insets fall back to 0, so devices without them are unaffected.
 - Fullscreen requests the whole page rather than the picture: the drawer, dialogs, and
   notifications are attached to `body`, and element fullscreen would hide them.
 - The touch pad is in `src/mobile/TouchPad.tsx`: one container handles pointer events for
@@ -141,6 +147,13 @@ picture tiny, so the mobile version is two separate routes:
   held at once, sliding a thumb onto another button switches immediately), multi-touch
   doesn't interfere with itself, `touch-action: none` keeps a slide from becoming a page
   scroll, and pressing gives slight haptic feedback.
+- The direction area is therefore drawn as one continuous pad rather than four keys: the
+  whole circle is the target (the element keeps 8 px of invisible margin around the face it
+  paints, so a thumb reaching for a corner still gets its diagonal), the arrows are only
+  printed hints, and the stick head leans the way the thumb pushes while the matching arrows
+  light up. Nothing has to be aimed at; the direction comes from where the thumb landed.
+  A/B/SELECT/START stay discrete buttons — the NES reads eight digital directions and has no
+  analogue value to offer a real stick.
 - Row selection in the list listens for a **tap** rather than `click`
   (`src/mobile/useTap.ts`): when a list is still coasting (or has just stopped), WebKit uses
   the first tap to brake and dispatches no `click`, which turns into "you have to tap twice

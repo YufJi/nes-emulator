@@ -57,6 +57,10 @@ interface ToolsDrawerProps {
  * which is why `RomUrlForm` and `SaveStatePanel` are reused as they are.
  * Pushing the background is turned off: that effect scales the page down, and a
  * scaled canvas is a blurry canvas.
+ *
+ * The class on the panel exists because the drawer lives in a portal, outside
+ * the page's own safe-area padding, and it is pinned to the right edge — the
+ * unsafe one when a phone with a notch is held sideways.
  */
 export function ToolsDrawer({
   open,
@@ -88,6 +92,7 @@ export function ToolsDrawer({
     <Drawer
       open={open}
       title="工具栏"
+      className="tools-drawer"
       placement="right"
       width="min(88vw, 350px)"
       pushBackground={false}
