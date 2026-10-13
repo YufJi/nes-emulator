@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PAD_INPUTS, type PadInput } from '../emulator/constants';
 import { gamepadButtons, gamepadLabel } from '../emulator/gamepad';
 
@@ -7,6 +7,14 @@ export interface GamepadStatus {
   supported: boolean;
   /** Names of the controllers it currently reports, in the browser's order. */
   names: string[];
+  /**
+   * What the controllers are holding right now, by the names the emulator uses.
+   *
+   * Reported so the interface can show a press arriving at all — the difference
+   * between "the pad is not being read" and "it is being read, but that button
+   * is not one this front end knows".
+   */
+  inputs: PadInput[];
 }
 
 /**
@@ -25,9 +33,16 @@ export interface GamepadStatus {
 export function useGamepad(
   onButton: (input: PadInput, pressed: boolean) => void,
 ): GamepadStatus {
-  const [names, setNames] = useState<string[]>([]);
-  const press = useRef(onButton);
   const supported = typeof navigator.getGamepads === 'function';
+  // The object handed to React is the one the poll builds, so a page that
+  // re-renders for any other reason keeps the identity the emulator hook's
+  // `useMemo` depends on.
+  const [reported, setReported] = useState<GamepadStatus>(() => ({
+    supported,
+    names: [],
+    inputs: [],
+  }));
+  const press = useRef(onButton);
 
   useEffect(() => {
     press.current = onButton;
@@ -40,7 +55,7 @@ export function useGamepad(
     // What the pads held last frame: the emulator only needs the changes, plus
     // a release for everything still down when the pads go away.
     let held = new Set<PadInput>();
-    let reported = '';
+    let lastKey = '';
 
     const release = () => {
       if (held.size === 0) return;
@@ -66,12 +81,14 @@ export function useGamepad(
       }
       held = now;
 
-      // The list only changes when a pad connects or goes, so React is woken
-      // when it actually did rather than on every frame.
-      const key = pads.map((pad) => `${pad.index}:${pad.id}`).join('|');
-      if (key !== reported) {
-        reported = key;
-        setNames(pads.map((pad) => gamepadLabel(pad.id)));
+      // The pads and what they hold only change when something is pressed or a
+      // pad connects, so React is woken when that happened and not every frame.
+      const names = pads.map((pad) => gamepadLabel(pad.id));
+      const down = PAD_INPUTS.filter((input) => now.has(input));
+      const key = `${pads.map((pad) => `${pad.index}:${pad.id}`).join('|')}#${down.join(',')}`;
+      if (key !== lastKey) {
+        lastKey = key;
+        setReported({ supported, names, inputs: down });
       }
     };
 
@@ -93,7 +110,5 @@ export function useGamepad(
     };
   }, [supported]);
 
-  // A fresh object every render would invalidate the emulator hook's own
-  // `useMemo`, so the identity here only changes when the pads really do.
-  return useMemo(() => ({ supported, names }), [supported, names]);
+  return reported;
 }

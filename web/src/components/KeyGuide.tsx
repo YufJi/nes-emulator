@@ -1,16 +1,27 @@
 import { Card, Collapse, Divider, Tag, Title } from 'animal-island-ui';
 import { KEY_GUIDE } from '../emulator/constants';
+import type { PadInput } from '../emulator/constants';
+import type { GamepadStatus } from '../hooks/useGamepad';
 import { useI18n, type MessageKey } from '../i18n';
 
 interface KeyGuideProps {
-  /** Names of the controllers the browser currently reports. */
-  gamepads: readonly string[];
-  /** False in a browser without the Gamepad API, which cannot see a pad. */
-  gamepadsSupported: boolean;
+  /** The controllers the browser reports, and what they are holding. */
+  gamepad: GamepadStatus;
 }
 
-export function KeyGuide({ gamepads, gamepadsSupported }: KeyGuideProps) {
+/** Inputs whose printed name is a word rather than a letter on a key cap. */
+const INPUT_WORDS: Partial<Record<PadInput, MessageKey>> = {
+  TURBO_A: 'pad.turboA',
+  TURBO_B: 'pad.turboB',
+  UP: 'pad.up',
+  DOWN: 'pad.down',
+  LEFT: 'pad.left',
+  RIGHT: 'pad.right',
+};
+
+export function KeyGuide({ gamepad }: KeyGuideProps) {
   const { t } = useI18n();
+  const { names, inputs, supported } = gamepad;
 
   // A, B, Start and Select are printed on the console's own buttons; the rows
   // that are not a button of the console have a word of their own to translate.
@@ -49,16 +60,25 @@ export function KeyGuide({ gamepads, gamepadsSupported }: KeyGuideProps) {
           <div className="keyguide__row">
             <dt>{t('gamepad.title')}</dt>
             <dd className="keyguide__keys">
-              {gamepads.length === 0 ? (
+              {names.length === 0 ? (
                 <Tag size="small" variant="outlined" color="default">
                   {t('gamepad.none')}
                 </Tag>
               ) : (
-                gamepads.map((name) => (
-                  <Tag key={name} size="small" color="app-green">
-                    {name}
-                  </Tag>
-                ))
+                <>
+                  {names.map((name) => (
+                    <Tag key={name} size="small" color="app-green">
+                      {name}
+                    </Tag>
+                  ))}
+                  {/* What the pad is holding, as it is pressed: the pad's name
+                      alone cannot say whether a button ever arrived. */}
+                  {inputs.map((input) => (
+                    <Tag key={input} size="small" color="app-orange">
+                      {INPUT_WORDS[input] ? t(INPUT_WORDS[input]) : input}
+                    </Tag>
+                  ))}
+                </>
               )}
             </dd>
           </div>
@@ -67,7 +87,7 @@ export function KeyGuide({ gamepads, gamepadsSupported }: KeyGuideProps) {
         <Divider type="squiggle" />
 
         <p className="panel__note">
-          {gamepadsSupported ? t('gamepad.note') : t('gamepad.unsupported')}
+          {supported ? t('gamepad.note') : t('gamepad.unsupported')}
         </p>
 
         <p className="panel__note">{t('keyGuide.note')}</p>

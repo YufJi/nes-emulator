@@ -27,8 +27,13 @@ const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, input: PadInput]>
   [3, 'B'],
   // The shoulder buttons stand in for the turbo switches: on the left for the
   // left-hand button, on the right for the right-hand one, like the face pair.
+  // Each side takes its trigger as well, because browsers do not agree on which
+  // of the two comes first when a pad does not map cleanly onto the standard
+  // layout — and either is a comfortable thing to hold down.
   [4, 'TURBO_B'],
   [5, 'TURBO_A'],
+  [6, 'TURBO_B'],
+  [7, 'TURBO_A'],
   // 8 is Select/Back/Share and 9 is Start/Options on every pad; the NES's two
   // centre buttons are the same pair under older names.
   [8, 'SELECT'],

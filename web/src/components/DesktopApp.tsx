@@ -226,7 +226,7 @@ export function DesktopApp() {
                 onClear={clearSlot}
               />
               <VirtualPad disabled={!hasRom} onButton={setButton} />
-              <KeyGuide gamepads={gamepad.names} gamepadsSupported={gamepad.supported} />
+              <KeyGuide gamepad={gamepad} />
               <Footer text="NES Emulator · Rust + WebAssembly" />
             </aside>
           </main>
