@@ -14,13 +14,18 @@ import type { PadInput } from './constants';
 /**
  * NES input for each index of the standard layout.
  *
- * The four face buttons are a plain pair and a turbo pair, which is how the
- * turbo pads of the era were built — a NES Advantage or a 小霸王 pad puts its
- * auto-fire buttons beside the ordinary ones, not on the shoulders. The two a
- * thumb rests on are the plain pair (bottom is A, right is B), and each turbo
- * switch sits opposite the button it fires: left fires B, top fires A. On an
- * Xbox pad the printed letters then land where they say they do — A is A, B is
- * B — and X and Y are the turbo switches for the buttons across from them.
+ * The four face buttons are a plain pair and a turbo pair, the way a clone pad
+ * (小霸王) or a NES Advantage arranged them: each button has its auto-fire
+ * switch right beside it. A diamond is that 2×2 grid rotated, so "beside it" is
+ * read across a row —
+ *
+ *     □  B            △  连发 B
+ *     ✕  A            ○  连发 A
+ *
+ * A on the bottom button with its turbo on the right, B on the left button with
+ * its turbo on the top. The turbo of the button under the thumb is therefore
+ * one short move away, and an ordinary A or B press is never turned into fire
+ * on its own.
  *
  * The shoulders and triggers are turbo as well (the left pair fires B, the
  * right pair A), so a turbo can be held without the thumb leaving the plain
@@ -28,10 +33,10 @@ import type { PadInput } from './constants';
  * does not map itself onto the standard layout, so both are taken.
  */
 const STANDARD_BUTTONS: ReadonlyArray<readonly [index: number, input: PadInput]> = [
-  [0, 'A'], // bottom — Cross on a DualSense, A on an Xbox pad
-  [1, 'B'], // right — Circle, or B
-  [2, 'TURBO_B'], // left — opposite B, so it fires B
-  [3, 'TURBO_A'], // top — opposite A, so it fires A
+  [0, 'A'], // bottom — Cross
+  [1, 'TURBO_A'], // right — Circle, the turbo beside A
+  [2, 'B'], // left — Square
+  [3, 'TURBO_B'], // top — Triangle, the turbo beside B
   [4, 'TURBO_B'],
   [5, 'TURBO_A'],
   [6, 'TURBO_B'],

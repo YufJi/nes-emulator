@@ -75,9 +75,10 @@ driven frame by frame in the browser.
 - **Keyboard**: see [Key bindings](#key-bindings) below.
 - **Virtual pad**: available on touch screens; pressing holds the button down until you
   lift your finger.
-- **Turbo**: hold `I` or `O` (on a controller, a face key opposite the button or a shoulder:
-  left fires B, right/top fires A; the on-screen pads carry a switch above B/A) and that
-  button auto-fires at about 15 shots a second, leaving an ordinary press untouched.
+- **Turbo**: hold `I` or `O` (on a controller, the face key beside the button — Circle for A,
+  Triangle for B — or a shoulder, left for B and right for A; the on-screen pads carry a
+  switch above B/A) and that button auto-fires at about 15 shots a second, leaving an
+  ordinary press untouched.
 - **Gamepad**: wired and Bluetooth controllers (DualSense, Xbox, Switch Pro…) work with no
   setup beyond pairing — the Gamepad API is polled, so on an iPad the pad is picked up as
   soon as one of its buttons is pressed.
@@ -208,9 +209,10 @@ and shared links never land on a 404 page.
 | Action | Gamepad |
 | --- | --- |
 | D-pad | D-pad or left stick |
-| A | bottom face button (Cross, or A on an Xbox pad) |
-| B | right face button (Circle, or B) |
-| Turbo B / Turbo A | the face key opposite (left: Square / X; top: Triangle / Y), and either shoulder or trigger on the same side (L1 / L2, R1 / R2) |
+| A | Cross — the bottom face button |
+| B | Square — the left face button |
+| Turbo A / Turbo B | Circle and Triangle — the right and top face buttons, one step from A and B |
+| Turbo B / Turbo A (held) | left shoulder or trigger (L1 / L2), right shoulder or trigger (R1 / R2) |
 | Start | Start / Options |
 | Select | Select / Share |
 
