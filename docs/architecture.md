@@ -293,7 +293,7 @@ for the startup process.
 | Pacing | `FrameClock` (timestamps → frame count), FPS | Forward | Provide `frame_rate()` |
 | Picture | Upload to Canvas / texture | Forward the buffer pointer | Render + frame buffer |
 | Sound | AudioWorklet playback | Forward `fill_audio` | Resample + bounded queue |
-| Input | Keyboard / virtual pad mapping | Forward `set_button` | Controller shift register |
+| Input | Keyboard / virtual pad / gamepad mapping | Forward `set_button` | Controller shift register |
 | Persistence | localStorage / IndexedDB | — | Snapshot byte stream |
 
 ---

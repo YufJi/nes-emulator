@@ -2,7 +2,14 @@ import { Card, Collapse, Divider, Tag, Title } from 'animal-island-ui';
 import { KEY_GUIDE } from '../emulator/constants';
 import { useI18n } from '../i18n';
 
-export function KeyGuide() {
+interface KeyGuideProps {
+  /** Names of the controllers the browser currently reports. */
+  gamepads: readonly string[];
+  /** False in a browser without the Gamepad API, which cannot see a pad. */
+  gamepadsSupported: boolean;
+}
+
+export function KeyGuide({ gamepads, gamepadsSupported }: KeyGuideProps) {
   const { t } = useI18n();
   // A, B, Start and Select are printed on the console's own buttons, so only
   // the D-pad row has a word to translate.
@@ -28,9 +35,32 @@ export function KeyGuide() {
               </dd>
             </div>
           ))}
+
+          {/* A pad is not a key, but it answers the same question the rows
+              above do, and the tag doubles as the connect indicator. */}
+          <div className="keyguide__row">
+            <dt>{t('gamepad.title')}</dt>
+            <dd className="keyguide__keys">
+              {gamepads.length === 0 ? (
+                <Tag size="small" variant="outlined" color="default">
+                  {t('gamepad.none')}
+                </Tag>
+              ) : (
+                gamepads.map((name) => (
+                  <Tag key={name} size="small" color="app-green">
+                    {name}
+                  </Tag>
+                ))
+              )}
+            </dd>
+          </div>
         </dl>
 
         <Divider type="squiggle" />
+
+        <p className="panel__note">
+          {gamepadsSupported ? t('gamepad.note') : t('gamepad.unsupported')}
+        </p>
 
         <p className="panel__note">{t('keyGuide.note')}</p>
 

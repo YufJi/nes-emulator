@@ -92,6 +92,7 @@ src/
     useIntegerScale.ts # 画布整数倍缩放
     useGameList.ts     # 游戏目录的加载状态
     usePagedList.ts    # 滚动分片渲染（弹窗与手机列表共用）
+    useGamepad.ts      # 轮询 Gamepad 接口，转成按键的按下与抬起
   components/          # 宽屏页面：画面、工具栏、链接输入、游戏列表弹窗、虚拟手柄、键位表、拖拽覆盖层
   mobile/              # 手机页面：列表 dashboard、游玩页、触控手柄、工具栏抽屉
 public/
@@ -226,6 +227,22 @@ GITHUB_TOKEN=… npm run build:games       # 提高 GitHub API 额度（未认�
 
 触屏设备可直接使用右侧的虚拟手柄。
 
+### 蓝牙手柄
+
+有线 / 蓝牙手柄（DualSense、Xbox、Switch Pro 等）配对后即可在所有页面直接开玩，不需要
+额外设置。这里没有事件可听：iPad 上已配对的手柄不产生任何 DOM 事件，因此
+`src/hooks/useGamepad.ts` 每帧轮询一次 Gamepad 接口，只把发生变化的部分转发给键盘与
+虚拟手柄共用的那个 `setButton`。浏览器只会在手柄**被按过一次之后**才报告它，所以轮询
+在任何手柄接入之前就已经开始；识别到手柄后，它的名字会出现在「键位」面板里。
+
+| 动作 | 手柄 |
+| --- | --- |
+| 方向 | 十字键或左摇杆（模拟量，死区 0.5） |
+| A | 下方或右侧的面键（Cross / Circle，Xbox 手柄上的 A / B） |
+| B | 左侧或上方的面键（Square / Triangle，Xbox 手柄上的 X / Y） |
+| Start | Start / Options |
+| Select | Select / Share |
+
 ### 关于 Select
 
 《超级马里奥兄弟》的标题画面只在**每 16 帧中的 1 帧**上采样 Select（游戏内部用一个
@@ -250,6 +267,9 @@ GITHUB_TOKEN=… npm run build:games       # 提高 GitHub API 额度（未认�
   播放；不支持 AudioWorklet 的浏览器自动回退到 `ScriptProcessorNode`。
 - **ROM 校验**：无论是本地文件还是链接下载，交给内核前都先检查 iNES 文件头与 Mapper
   是否已被内核实现，给出可读的错误提示；加载失败时保留当前正在运行的游戏。
+- **手柄**：Gamepad 接口没有按下 / 抬起事件，只有快照，因此 `useGamepad` 每帧读取一次
+  快照、与上一帧求差，只按下或抬起真正变化的那几个键——无论输入设备是什么，模拟器侧的
+  手柄始终是一组「正在按住」的按键。
 - **电池存档**：带电池的卡带其存档按 ROM 文件名写入 `localStorage`，再次拖入同一
   ROM 时自动恢复；工具栏的「清空存档」在二次确认后删除该存档并重置卡带，方便重开。
 - **游戏列表**：`scripts/build-game-list.mjs` 生成静态的 `public/games.json`，前端在

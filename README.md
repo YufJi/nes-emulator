@@ -75,6 +75,9 @@ driven frame by frame in the browser.
 - **Keyboard**: see [Key bindings](#key-bindings) below.
 - **Virtual pad**: available on touch screens; pressing holds the button down until you
   lift your finger.
+- **Gamepad**: wired and Bluetooth controllers (DualSense, Xbox, Switch Pro…) work with no
+  setup beyond pairing — the Gamepad API is polled, so on an iPad the pad is picked up as
+  soon as one of its buttons is pressed.
 - **Pause / resume**: the toolbar button or the `P` key. **Fullscreen**: the
   "全屏" toolbar button, which fills the screen with the picture.
 
@@ -197,6 +200,14 @@ and shared links never land on a 404 page.
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
 | Pause / resume | `P` |
+
+| Action | Gamepad |
+| --- | --- |
+| D-pad | D-pad or left stick |
+| A | bottom or right face button (Cross / Circle, or A / B on an Xbox pad) |
+| B | left or top face button (Square / Triangle, or X / Y) |
+| Start | Start / Options |
+| Select | Select / Share |
 
 On touch devices you can use the virtual pad on the right; on a phone browser prefer the
 mobile page at [`/m`](#web-front-end). More front-end detail is in

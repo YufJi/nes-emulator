@@ -43,6 +43,7 @@ export function DesktopApp() {
     toggleMute,
     clearError,
     setButton,
+    gamepad,
     wakeAudio,
   } = useNesEmulator();
 
@@ -225,7 +226,7 @@ export function DesktopApp() {
                 onClear={clearSlot}
               />
               <VirtualPad disabled={!hasRom} onButton={setButton} />
-              <KeyGuide />
+              <KeyGuide gamepads={gamepad.names} gamepadsSupported={gamepad.supported} />
               <Footer text="NES Emulator · Rust + WebAssembly" />
             </aside>
           </main>

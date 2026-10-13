@@ -55,6 +55,8 @@ React + Vite + TypeScript；Rust 内核经 `wasm-bindgen` 编译成 WASM，在�
 
 - **键盘**：见下方[操作方式](#操作方式)。
 - **虚拟手柄**：触屏可用，按下即持续按住，直到抬手。
+- **蓝牙手柄**：有线 / 蓝牙手柄（DualSense、Xbox、Switch Pro 等）配对后即可直接开玩；
+  前端轮询 Gamepad 接口，因此在 iPad 上按一下手柄的任意键就会被识别。
 - **暂停 / 继续**：工具栏按钮或 `P` 键。**全屏**：工具栏「全屏」，画面铺满屏幕。
 
 ### 画面与声音
@@ -159,6 +161,14 @@ Pages 是纯静态托管，没有服务端 rewrite，所以构建会额外产出
 | Start | `Enter` / `Space` |
 | Select | `Shift` |
 | 暂停 / 继续 | `P` |
+
+| 动作 | 手柄 |
+| --- | --- |
+| 方向 | 十字键或左摇杆 |
+| A | 下方或右侧的面键（Cross / Circle，Xbox 手柄上的 A / B） |
+| B | 左侧或上方的面键（Square / Triangle，Xbox 手柄上的 X / Y） |
+| Start | Start / Options |
+| Select | Select / Share |
 
 触屏设备可直接使用右侧的虚拟手柄；手机浏览器建议改用 [`/m`](#网页前端) 的手机页面。
 更多前端细节见 [`web/README.zh-CN.md`](web/README.zh-CN.md)。

@@ -275,7 +275,7 @@ sequenceDiagram
 | 节奏 | `FrameClock`（时间戳 → 帧数）、FPS | 转发 | 提供 `frame_rate()` |
 | 画面 | 上传 Canvas / 纹理 | 转发缓冲区指针 | 渲染 + 帧缓冲 |
 | 声音 | AudioWorklet 播放 | 转发 `fill_audio` | 重采样 + 有界队列 |
-| 输入 | 键盘 / 虚拟手柄映射 | 转发 `set_button` | 手柄移位寄存器 |
+| 输入 | 键盘 / 虚拟手柄 / 蓝牙手柄映射 | 转发 `set_button` | 手柄移位寄存器 |
 | 持久化 | localStorage / IndexedDB | — | 快照字节流 |
 
 ---

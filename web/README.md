@@ -109,6 +109,7 @@ src/
     useIntegerScale.ts # integer-multiple canvas scaling
     useGameList.ts     # loading state for the game catalog
     usePagedList.ts    # incremental rendering while scrolling (shared by the dialog and the mobile list)
+    useGamepad.ts      # polls the Gamepad API and turns it into button presses
   components/          # wide page: picture, toolbar, URL input, game-list dialog, virtual pad, key table, drag overlay
   mobile/              # mobile page: list dashboard, play page, touch pad, toolbar drawer
 public/
@@ -285,6 +286,23 @@ pages when rate-limited (no quota limit).
 
 On touch devices you can use the virtual pad on the right.
 
+### Bluetooth gamepads
+
+Wired and Bluetooth controllers (DualSense, Xbox, Switch Pro…) play on every page with no
+setup beyond pairing. There is nothing to listen to: on an iPad a paired pad produces no
+DOM events at all, so `src/hooks/useGamepad.ts` polls the Gamepad API once per frame and
+forwards only what changed to the same `setButton` the keyboard and the virtual pad use. A
+pad is reported by the browser only *after* one of its buttons has been pressed, which is
+why the poll runs before anything is connected; its name then shows up in the "Keys" panel.
+
+| Action | Controller |
+| --- | --- |
+| D-pad | D-pad or left stick (analog, dead zone 0.5) |
+| A | bottom or right face button (Cross / Circle, or A / B on an Xbox pad) |
+| B | left or top face button (Square / Triangle, or X / Y) |
+| Start | Start / Options |
+| Select | Select / Share |
+
 ### About Select
 
 The title screen of *Super Mario Bros.* only samples Select on **1 frame out of every 16**
@@ -317,6 +335,10 @@ frame). If input assistance is ever wanted, it only takes a pulse wrapper around
 - **ROM validation**: whether a local file or a downloaded URL, the iNES header and mapper
   support are checked before anything reaches the core, producing readable errors; a failed
   load keeps the game currently running.
+- **Gamepads**: the Gamepad API has no press/release events, only a snapshot, so
+  `useGamepad` reads it every frame, diffs it against the previous frame, and presses or
+  releases exactly the buttons that changed — the emulated controller stays a set of held
+  buttons, whatever the input device.
 - **Battery saves**: a cartridge with a battery writes its save to `localStorage` under the
   ROM file name and restores it automatically when the same ROM is dropped in again; "clear
   save" in the toolbar deletes that save and resets the cartridge after a confirmation,

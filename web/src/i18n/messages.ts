@@ -81,6 +81,13 @@ export const ZH = {
   'keyGuide.selectAnswer':
     'Select 未做任何连发处理，完全按原机时序：初代标题画面每 16 帧才采样一次 Select，单次轻点常被游戏丢弃，来回切换 P1 / P2 需要多点几次。',
 
+  'gamepad.title': '蓝牙手柄',
+  'gamepad.none': '未连接',
+  'gamepad.note':
+    '有线 / 蓝牙手柄都能直接开玩：先配对（iPad 在「设置 → 蓝牙」里），再按一下手柄上的任意键，它就会出现在这里。十字键与左摇杆 = 方向，下方或右侧面键 = A，左侧或上方面键 = B，+ / − = Start / Select。',
+  'gamepad.unsupported':
+    '当前浏览器未开放 Gamepad 接口，读不到手柄，请改用键盘或虚拟手柄。',
+
   'romUrl.title': '从链接加载',
   'romUrl.label': 'ROM 链接',
   'romUrl.submit': '加载',
@@ -222,6 +229,13 @@ export const EN: Dictionary = {
   'keyGuide.selectAnswer':
     "Select is never repeated or re-tried: the console's own timing is kept. The title screen samples Select once every 16 frames, so a quick tap is usually dropped — switching between 1P and 2P takes a few taps.",
 
+  'gamepad.title': 'Bluetooth gamepad',
+  'gamepad.none': 'Not connected',
+  'gamepad.note':
+    'Wired and Bluetooth controllers play as they are: pair the pad first (on an iPad, in Settings → Bluetooth), then press any of its buttons and it shows up here. D-pad and left stick steer; the bottom or right face button is A, the left or top one is B, and + / − are Start and Select.',
+  'gamepad.unsupported':
+    'This browser does not expose the Gamepad API, so it cannot see a controller; use the keyboard or the virtual pad instead.',
+
   'romUrl.title': 'Load from a link',
   'romUrl.label': 'ROM URL',
   'romUrl.submit': 'Load',
@@ -362,6 +376,13 @@ export const JA: Dictionary = {
   'keyGuide.selectQuestion': 'Select はなぜ何度も押す必要がある？',
   'keyGuide.selectAnswer':
     'Select は連打も再試行もせず、実機どおりのタイミングを保っています。タイトル画面は 16 フレームに 1 回しか Select を読まないため、軽いタップは捨てられがちで、1P / 2P の切り替えには数回押す必要があります。',
+
+  'gamepad.title': 'Bluetooth コントローラー',
+  'gamepad.none': '未接続',
+  'gamepad.note':
+    '有線・Bluetooth どちらのコントローラーもそのまま使えます。先にペアリングし（iPad なら「設定 → Bluetooth」）、どれかのボタンを押すとここに表示されます。十字キーと左スティック＝方向、下または右の面ボタン＝A、左または上の面ボタン＝B、＋ / − が Start / Select です。',
+  'gamepad.unsupported':
+    'このブラウザは Gamepad API を公開しておらず、コントローラーを認識できません。キーボードか仮想パッドをお使いください。',
 
   'romUrl.title': 'リンクから読み込む',
   'romUrl.label': 'ROM の URL',

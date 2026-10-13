@@ -19,6 +19,7 @@ import {
   slotsFilled,
   writeState,
 } from '../emulator/saveState';
+import { useGamepad, type GamepadStatus } from './useGamepad';
 
 export interface UseNesEmulatorResult {
   canvasRef: RefObject<HTMLCanvasElement>;
@@ -48,6 +49,8 @@ export interface UseNesEmulatorResult {
   toggleMute: () => void;
   clearError: () => void;
   setButton: (button: ButtonName, pressed: boolean) => void;
+  /** Physical controllers the browser reports, for the key guide. */
+  gamepad: GamepadStatus;
   wakeAudio: () => void;
 }
 
@@ -295,6 +298,10 @@ export function useNesEmulator(): UseNesEmulatorResult {
     emulator?.setButton(button, pressed);
   }, []);
 
+  // Bluetooth and wired controllers drive the same emulated pad as the keyboard
+  // and the touch controls do; the pages only read this for the status line.
+  const gamepad = useGamepad(setButton);
+
   const wakeAudio = useCallback(() => {
     emulatorRef.current?.wakeAudio();
   }, []);
@@ -323,6 +330,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
       toggleMute,
       clearError,
       setButton,
+      gamepad,
       wakeAudio,
     }),
     [
@@ -347,6 +355,7 @@ export function useNesEmulator(): UseNesEmulatorResult {
       toggleMute,
       clearError,
       setButton,
+      gamepad,
       wakeAudio,
     ],
   );
