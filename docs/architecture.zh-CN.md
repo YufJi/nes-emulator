@@ -8,7 +8,7 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：806 个测试（全部通过），含 nestest、blargg、AccuracyCoin
+- 测试规模：810 个测试（全部通过），含 nestest、blargg、AccuracyCoin
   真实 ROM 套件（`roms/` 为空时自动跳过）
 
 ---
@@ -330,7 +330,7 @@ flowchart LR
 | 组件 | 关键结构 | 说明 |
 | --- | --- | --- |
 | `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` / `render_v` | 寄存器与内部锁存器 |
-| `BackgroundRenderer` | `BgRenderState` | 逐 dot 推进的移位寄存器渲染；镜像模式可运行时切换 |
+| `BackgroundRenderer` | `BgRenderState` | 整行渲染：在一个 dot 上从左到右取完瓦片（由 §3.2 的时机设置决定是哪个 dot），因此没有移位寄存器流水线；镜像模式可运行时切换 |
 | `SpriteEvaluator` | `SecondaryOam` | 逐行求值（含 8 精灵溢出 bug 行为） |
 | `FrameBuffer` | `pixels: Vec<u32>`、`width`、`height` | 对外暴露的画面，尺寸由 `WIDTH`/`HEIGHT` 常量派生 |
 
@@ -711,13 +711,13 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 564 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 567 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
-| `tests/ppu.rs` | 85（3 忽略） | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI |
+| `tests/ppu.rs` | 83 | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI、卡带命名表 |
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 68 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
-| `tests/rom_tests.rs` | 11 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
+| `tests/rom_tests.rs` | 14 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
 | `crates/nes-uniffi` 单元测试 | 8 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
 
@@ -825,7 +825,7 @@ flowchart LR
 - **MMC5 的 ExRAM 已接通，分屏还没有**：`$5105` 的命名表映射现在通过
   `nametable_read`/`nametable_write` 抵达渲染器，因此 ExRAM 命名表与 fill 模式可用。
   仍缺：扩展属性模式自己的字节布局，以及硬件竖向分屏（需要渲染器按扫描线从卡带取
-  "命名表 + 滚动"，与 §15.6 渲染方向的改动是同一类）。
+  "命名表 + 滚动"，与 §15.7 中渲染相关工作属于同一类）。
 - **光栅效果目前是"兼容开关"而不是"修好"**：因为整行一次画完（§3.2），第 *N* 行期间的写入
   要么影响第 *N* 行、要么影响第 *N+1* 行，由 `RenderTiming` 决定。这是给"分屏高/低一行"
   的游戏准备的旋钮；要让这个选择变得不必要，就得改成按 dot 渲染，那与 §6 的管线改造是
@@ -883,14 +883,30 @@ flowchart LR
 - 无 NTSC 滤镜、扫描线、可配置调色板；当前只用固定的 64 色 ARGB 调色板。
 - 无画面录制/截图导出（前端可基于 `frame_buffer()` 自行实现）。
 - 存档槽固定 4 个（前端约定，内核不关心）。
+- `RenderTiming` 已由内核与两个绑定导出，但还没有前端把它做成 UI 开关：
+  它是一个等待设置页的按游戏兼容选项。
 
-### 15.6 建议的推进顺序
+### 15.6 明确不做的事
+
+有两件事评估后决定不做。它们不是"欠账"，所以写在这里，避免以后反复讨论：
+
+- **NES 2.0 文件头**：解析器只处理经典 iNES（§4.2）。NES 2.0 的 submapper 字节正是告诉
+  mapper 116/176 这类卡带"模拟哪种 ASIC"的信息，所以支持这些板卡**必须**先有它——但它
+  带来的大部分信息（PRG-RAM 大小、submapper 提示）在有 CRC 表时可以从 mapper 推断，而猜错
+  比不猜更糟。代价是错误文件头的 dump 会加载异常。
+- **作弊码**：Game Genie/PAR 属于前端能力：内核已经对外暴露内存读取与确定性运行，宿主可以
+  自己改 ROM 字节。内核唯一必须承担的部分——在 mapper 完成分 bank **之后**打补丁——为一个
+  学习项目引入这样一层接口并不划算。
+
+### 15.7 建议的推进顺序
 
 1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **PAL 时序与 A12 精确化**（高风险高收益，需要 PAL 测试语料）。
+5. **测试 ROM 已经点名的精度欠账**：dot 级精确的 A12 与 NMI 时序（§13.1 里 `ppu_vbl_nmi`
+   与 MMC3 的那几项）、MMC5 的扩展属性与竖向分屏、§8 里说明延后的 5 个 Mapper、
+   sprite 0 命中时序、PAL 的 dot 比例——以及一个在需要时能暴露 `RenderTiming` 的前端。
 
 ---
 

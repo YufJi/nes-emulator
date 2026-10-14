@@ -9,7 +9,7 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 806 tests (all passing), including the nestest, blargg and
+- Test suite: 810 tests (all passing), including the nestest, blargg and
   AccuracyCoin real-ROM suites (which skip without ROMs in `roms/`)
 
 ---
@@ -351,7 +351,7 @@ flowchart LR
 | Component | Key structures | Notes |
 | --- | --- | --- |
 | `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` / `render_v` | Registers and internal latches |
-| `BackgroundRenderer` | `BgRenderState` | Dot-by-dot shift-register rendering; the mirroring mode can be switched at runtime |
+| `BackgroundRenderer` | `BgRenderState` | Whole-scanline rendering: tiles are fetched left to right at one dot (§3.2 picks which), so there is no shift-register pipeline; the mirroring mode can be switched at runtime |
 | `SpriteEvaluator` | `SecondaryOam` | Per-line evaluation (including the 8-sprite overflow bug behavior) |
 | `FrameBuffer` | `pixels: Vec<u32>`, `width`, `height` | The externally visible picture; its size derives from the `WIDTH`/`HEIGHT` constants |
 
@@ -776,13 +776,13 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 564 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 567 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
-| `tests/ppu.rs` | 85 (3 ignored) | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI |
+| `tests/ppu.rs` | 83 | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI, cartridge nametables |
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 68 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
-| `tests/rom_tests.rs` | 11 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
+| `tests/rom_tests.rs` | 14 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
 | `crates/nes-uniffi` unit tests | 8 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
 | Doc tests | 1 | `FrameClock` usage example |
 
@@ -905,7 +905,7 @@ clone needs `npm run build:wasm` before building the front end.
   renderer through `nametable_read`/`nametable_write`, so ExRAM nametables and fill mode
   work. Still missing: extended-attribute mode's own byte layout, and the hardware
   vertical-split view (which needs the renderer to take a per-scanline nametable *and*
-  scroll from the cartridge — the same shape of change section 15.6's rendering work has).
+  scroll from the cartridge — the same shape of change the render-timing item in section 15.7 describes).
 - **Raster effects get a compatibility switch, not a fix**: because a whole scanline is
   drawn at once (§3.2), a write made during line *N* either does or does not affect line *N*,
   and `RenderTiming` chooses which. That is a knob for games whose splits sit a line high or
@@ -982,8 +982,25 @@ clone needs `npm run build:wasm` before building the front end.
   palette.
 - No screen recording/screenshot export (a front end can build it on `frame_buffer()`).
 - Save slots are fixed at 4 (a front-end convention; the core doesn't care).
+- `RenderTiming` is exported by the core and both bindings, but no front end exposes it in
+  its UI yet: it is a per-game compatibility switch waiting for a settings screen.
 
-### 15.6 Suggested order of work
+### 15.6 What is deliberately out of scope
+
+Two things were considered and turned down; both decisions live in the code rather than in a
+backlog, so they are written down here to stop them being re-litigated:
+
+- **NES 2.0 headers.** The parser handles classic iNES only (§4.2). NES 2.0's submapper
+  byte is what tells a cartridge like mapper 116 or 176 which ASIC it simulates, so
+  supporting those boards *needs* it — but most of what it adds (PRG-RAM sizes, submapper
+  hints) can be guessed from the mapper plus a CRC table if a dump misbehaves, and a wrong
+  guess is worse than no guess. Mis-headered dumps are the practical cost.
+- **Cheat codes.** Game Genie/PAR handling is a front-end feature: the core exposes
+  `Nes::peek`/`peek`-style access and deterministic runs, so a host can patch ROM bytes
+  itself. The one thing the core would have to own — patching *after* the mapper has banked
+  the ROM — is not worth the interface for a study project.
+
+### 15.7 Suggested order of work
 
 1. **Add a fingerprint to save states** (low cost, fixes the correctness problem with
    cross-device sync).
@@ -991,7 +1008,10 @@ clone needs `npm run build:wasm` before building the front end.
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **PAL timing and A12 accuracy** (high risk, high reward; needs PAL test material).
+5. **The accuracy backlog the test ROMs now name**: dot-exact A12 and NMI timing (the five
+   `ppu_vbl_nmi` and MMC3 cases in §13.1), MMC5's extended attributes and vertical split,
+   the five mappers §8 defers, sprite 0 hit timing, and the PAL dot ratio — plus a front end
+   that exposes `RenderTiming` when a game needs it.
 
 ---
 
