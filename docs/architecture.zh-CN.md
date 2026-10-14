@@ -723,7 +723,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | 套件 | 结果 |
 | --- | --- |
 | `instr_test-v5` | 15/16（只差 `07-abs_xy`，即 `SHX`/`SHY` 跨页取址/取值的破坏行为） |
-| `instr_timing` | 0/2（`1-instr_timing`：跨页的变址读多算了 1 个周期） |
+| `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 0/5 |
 | `ppu_vbl_nmi` | 1/10（只有 `01-vbl_basics`） |

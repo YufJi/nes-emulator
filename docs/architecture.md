@@ -788,7 +788,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | Suite | Result |
 | --- | --- |
 | `instr_test-v5` | 15/16 (only `07-abs_xy`, i.e. `SHX`/`SHY` page-cross corruption) |
-| `instr_timing` | 0/2 (`1-instr_timing`: page-crossed indexed reads cost one cycle too many) |
+| `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 0/5 |
 | `ppu_vbl_nmi` | 1/10 (only `01-vbl_basics`) |

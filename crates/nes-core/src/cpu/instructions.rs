@@ -224,11 +224,16 @@ impl Cpu {
 
         // Execute the instruction handler
         let handler_cycles = (op.handler)(self, bus, addr, extra_cycles);
-        
-        // Total cycles = base cycles + extra cycles from addressing + handler cycles
-        let total_cycles = op.base_cycles + extra_cycles + handler_cycles;
+
+        // The addressing mode reports the page-crossing penalty as
+        // `extra_cycles`, and it is the *handler* that decides whether this
+        // opcode pays it: the read handlers return it, while stores and
+        // read-modify-writes (which always take their full cycle count) return
+        // zero. Adding it here as well charged every page-crossed indexed read
+        // one cycle too many.
+        let total_cycles = op.base_cycles + handler_cycles;
         self.cycles += total_cycles as u64;
-        
+
         total_cycles
     }
 
@@ -2436,6 +2441,48 @@ mod tests {
         cpu.reset(&mut bus);
         assert!(!cpu.is_halted());
         assert_eq!(cpu.pc(), 0x8000);
+    }
+
+    /// A page-crossed indexed read pays its extra cycle exactly once.
+    ///
+    /// The addressing mode reports the crossing and the handler charges for it;
+    /// adding the reported penalty again in `execute_instruction` made every
+    /// cross-page `LDA abs,X` cost six cycles instead of five (blargg's
+    /// `instr_timing` catches this).
+    #[test]
+    fn test_page_cross_penalty_is_charged_once() {
+        /// Runs one instruction from $0600 with the given X.
+        fn cycles_of(program: &[u8], x: u8) -> u8 {
+            let mut cpu = Cpu::new();
+            let mut bus = MockBus::new();
+            bus.load_program(0x0600, program);
+            cpu.pc = 0x0600;
+            cpu.x = x;
+            cpu.execute_instruction(&mut bus, program[0])
+        }
+
+        // LDA $12F0,X with X = $20 lands in $1310: 4 cycles + the crossing.
+        assert_eq!(cycles_of(&[0xBD, 0xF0, 0x12], 0x20), 5);
+        // The same read inside one page takes four.
+        assert_eq!(cycles_of(&[0xBD, 0xF0, 0x12], 0x00), 4);
+        // A read-modify-write never pays it: ASL abs,X is 7 either way.
+        assert_eq!(cycles_of(&[0x1E, 0xF0, 0x12], 0x20), 7);
+        assert_eq!(cycles_of(&[0x1E, 0xF0, 0x12], 0x00), 7);
+        // Nor does a store: STA abs,X is 5 either way.
+        assert_eq!(cycles_of(&[0x9D, 0xF0, 0x12], 0x20), 5);
+
+        // (ind),Y reads are the other place it applies: the pointer at $10
+        // holds $12F0, so Y = $20 lands in $1310.
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0xB1, 0x10]);
+        bus.write_mem(0x0010, 0xF0);
+        bus.write_mem(0x0011, 0x12);
+        bus.write_mem(0x1310, 0x42);
+        cpu.pc = 0x0600;
+        cpu.y = 0x20;
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xB1), 6);
+        assert_eq!(cpu.a, 0x42);
     }
 
     /// $0C is the undocumented 3-byte NOP; it used to be "invalid".

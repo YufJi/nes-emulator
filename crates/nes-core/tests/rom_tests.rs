@@ -35,12 +35,7 @@ fn blargg_instr_test_v5() {
 
 #[test]
 fn blargg_instr_timing() {
-    common::check_blargg_directory(
-        "blargg/instr_timing/rom_singles",
-        BLARGG_SLOW_FRAMES,
-        // Page-crossed indexed reads cost one cycle too many.
-        &["1-instr_timing.nes"],
-    );
+    common::check_blargg_directory("blargg/instr_timing/rom_singles", BLARGG_SLOW_FRAMES, &[]);
 }
 
 #[test]
