@@ -340,6 +340,28 @@ green with it.
 - **`7-dmc_basics`, `8-dmc_rates`, `4-jitter`, `6-irq_flag_timing`**: DMC fetch timing and the
   frame counter's exact phase relative to CPU cycles — which is also where `4-irq_and_dma`'s
   remaining offset lives.
+
+  **The frame counter's phase, measured and not landed.** A `$4017` write restarts the
+  counter, and *when* the restart lands is what everything else hangs off. Three pieces were
+  built and measured together:
+  - the restart is delayed: the write's mode and IRQ inhibit apply at once, but the counter
+    passes its boundaries three CPU cycles later - four when the write falls on the other
+    half of the APU clock, which is the free-running divide-by-two `4-jitter` measures both
+    ways;
+  - the IRQ flag is set three cycles after the step that asks for it, and the sequence asks
+    again on its last two ticks - the "set three times in a row" of `6-irq_flag_timing`; and
+  - `$4015` reads are placed like the PPU's (two dots into their own cycle) rather than at
+    the instruction's start, which the same test's `sync_apu` needs to see the phase at all.
+
+  Measured, that turns `4-jitter` and `6-irq_flag_timing` green ("Frame irq is set too
+  soon" → Passed, "Flag first set too soon" → Passed) and keeps `5-len_timing` - but
+  AccuracyCoin loses three: `Frame Counter 4-step`/`Frame Counter 5-step`
+  (`$0468`/`$0469`) fail again, and `$0460`/`$0461`'s error codes move (0x06 → 0x0A and
+  0x22 → 0x06). Two cases for three is a regression by this plan's rule, so it is reverted,
+  not landed. The APU-side read placement on its own is innocent (AccuracyCoin stays at
+  82/46 with it), so the disagreement is in the counter's phase - one of the two suites is
+  reading a different event than the other, and finding out which is the first thing this
+  item needs.
 - **sprite 0 hit to the dot**: the renderer draws a whole scanline at once; the hit is
   detected at the render point, not at the pixel. Fixing it means per-dot rendering, which is
   the same machinery the MMC5 split was declined for — so it should be decided explicitly.
