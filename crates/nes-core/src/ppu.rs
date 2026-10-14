@@ -531,7 +531,14 @@ impl Ppu {
                 },
             }
         } else if addr < 0x3F00 {
-            // Nametables ($2000-$2FFF): mirroring is chosen by the mapper.
+            // Nametables ($2000-$2FFF): a cartridge can point a window at its
+            // own RAM (MMC5's ExRAM), and answers first when it does.
+            if let PpuMemory::System { chr: Some(mapper), .. } = memory {
+                if let Some(byte) = mapper.nametable_read(addr) {
+                    return byte;
+                }
+            }
+            // Otherwise mirroring is chosen by the mapper.
             let mirrored = match memory {
                 PpuMemory::Internal => addr,
                 PpuMemory::System { mirroring, .. } => mirroring.mirror_vram_addr(addr),
@@ -559,7 +566,13 @@ impl Ppu {
                 }
             }
         } else if addr < 0x3F00 {
-            // Nametables ($2000-$2FFF), mirrored to a physical nametable.
+            // Nametables ($2000-$2FFF): a cartridge that maps a window to its
+            // own RAM takes the write instead.
+            if let PpuMemory::System { chr: Some(mapper), .. } = memory {
+                if mapper.nametable_write(addr, value) {
+                    return;
+                }
+            }
             let mirrored = match memory {
                 PpuMemory::Internal => addr,
                 PpuMemory::System { mirroring, .. } => mirroring.mirror_vram_addr(addr),

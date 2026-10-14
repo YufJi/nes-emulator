@@ -888,9 +888,19 @@ clone needs `npm run build:wasm` before building the front end.
   deviation from real hardware timing. Fixing it properly would require a fractional dot
   accumulator, which touches scanline timing and mapper IRQ and is therefore a high-risk
   change.
-- **Scanline-level IRQ approximation**: MMC3/MMC5 and friends approximate A12 edges with
-  `on_scanline()`, not dot-exact. This is the mainstream trade-off, but a few games that
-  depend on exact A12 timing will differ.
+- **A12 timing is derived, not fetched**: `Mapper::on_ppu_bus` hands the cartridge the
+  address the PPU would drive on every dot, reconstructed from the dot clock because the
+  renderer draws whole scanlines. MMC3's IRQ counter now follows the hardware rule (a rise
+  counts only after A12 has been low for three CPU cycles, and the reload flag comes from
+  `$C001`), which is enough for four of blargg's six MMC3 tests. What is still approximate:
+  the exact dot the first rise of a frame lands on (`4-scanline_timing`), the "alternate"
+  NEC IRQ revision that needs mapper-4 submapper 4 (`6-MMC3_alt`), and the fine detail of
+  which sprite fetch raises A12 with 8x16 sprites.
+- **MMC5's ExRAM is wired, its split is not**: `$5105` nametable mapping now reaches the
+  renderer through `nametable_read`/`nametable_write`, so ExRAM nametables and fill mode
+  work. Still missing: extended-attribute mode's own byte layout, and the hardware
+  vertical-split view (which needs the renderer to take a per-scanline nametable *and*
+  scroll from the cartridge — the same shape of change section 15.6's rendering work has).
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside

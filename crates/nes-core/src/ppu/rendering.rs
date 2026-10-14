@@ -22,6 +22,15 @@ use crate::mapper::Mapper;
 pub trait ChrSource {
     /// Read a byte from the pattern tables ($0000-$1FFF).
     fn read_pattern(&mut self, ppu: &Ppu, addr: u16) -> u8;
+
+    /// Byte the cartridge supplies for a nametable address, if it overrides
+    /// the PPU's own memory.
+    ///
+    /// MMC5 maps nametable windows onto its ExRAM or onto a fill tile, so the
+    /// fetch has to ask the cartridge before falling back to VRAM.
+    fn read_nametable(&mut self, _ppu: &Ppu, _addr: u16) -> Option<u8> {
+        None
+    }
 }
 
 /// Reads pattern data straight out of the PPU's VRAM.
@@ -42,6 +51,10 @@ pub struct MapperChr<'a>(pub &'a mut dyn Mapper);
 impl ChrSource for MapperChr<'_> {
     fn read_pattern(&mut self, _ppu: &Ppu, addr: u16) -> u8 {
         self.0.read(addr & 0x1FFF)
+    }
+
+    fn read_nametable(&mut self, _ppu: &Ppu, addr: u16) -> Option<u8> {
+        self.0.nametable_read(addr)
     }
 }
 
@@ -598,6 +611,7 @@ impl BackgroundRenderer {
     pub fn fetch_nametable_byte(
         &self,
         ppu: &Ppu,
+        chr: &mut dyn ChrSource,
         nametable_addr: u16,
         tile_x: u8,
         tile_y: u8,
@@ -605,6 +619,11 @@ impl BackgroundRenderer {
         // Nametable entry offset: tile_y * 32 + tile_x
         let offset = (tile_y as u16 * 32) + tile_x as u16;
         let addr = nametable_addr + offset;
+        // A cartridge that maps this window to its own RAM or to a fill tile
+        // answers first; everything else is the PPU's nametable RAM.
+        if let Some(byte) = chr.read_nametable(ppu, addr) {
+            return byte;
+        }
         self.read_vram_mirrored(ppu, addr)
     }
 
@@ -625,6 +644,7 @@ impl BackgroundRenderer {
     pub fn fetch_attribute_byte(
         &self,
         ppu: &Ppu,
+        chr: &mut dyn ChrSource,
         nametable_addr: u16,
         tile_x: u8,
         tile_y: u8,
@@ -636,6 +656,9 @@ impl BackgroundRenderer {
         let attr_offset = (attr_y * 8) + attr_x;
         let addr = nametable_addr + 0x3C0 + attr_offset as u16;
 
+        if let Some(byte) = chr.read_nametable(ppu, addr) {
+            return byte;
+        }
         self.read_vram_mirrored(ppu, addr)
     }
 
@@ -819,10 +842,11 @@ impl BackgroundRenderer {
             let nt_addr = self.mirroring.get_nametable_address(effective_nametable);
 
             // Fetch tile index from nametable
-            let tile_index = self.fetch_nametable_byte(ppu, nt_addr, effective_tile_x, tile_y);
+            let tile_index =
+                self.fetch_nametable_byte(ppu, chr, nt_addr, effective_tile_x, tile_y);
 
             // Fetch attribute byte
-            let attr_byte = self.fetch_attribute_byte(ppu, nt_addr, effective_tile_x, tile_y);
+            let attr_byte = self.fetch_attribute_byte(ppu, chr, nt_addr, effective_tile_x, tile_y);
 
             // Extract palette index for this specific tile
             let palette_idx = Self::extract_palette_index(
@@ -1352,7 +1376,7 @@ mod tests {
         // Set up a tile in the nametable
         ppu.vram[0x2000] = 0x42;
 
-        let tile_index = renderer.fetch_nametable_byte(&ppu, 0x2000, 0, 0);
+        let tile_index = renderer.fetch_nametable_byte(&ppu, &mut VramChr, 0x2000, 0, 0);
         assert_eq!(tile_index, 0x42);
     }
 
@@ -1364,7 +1388,7 @@ mod tests {
         // Set up an attribute byte at $23C0 (start of attribute table)
         ppu.vram[0x23C0] = 0xAA;
 
-        let attr = renderer.fetch_attribute_byte(&ppu, 0x2000, 0, 0);
+        let attr = renderer.fetch_attribute_byte(&ppu, &mut VramChr, 0x2000, 0, 0);
         assert_eq!(attr, 0xAA);
     }
 

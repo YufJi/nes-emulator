@@ -545,7 +545,7 @@ fn test_fetch_nametable_byte() {
     // Set up nametable data
     ppu.vram[0x2000] = 0x42;
 
-    let tile_index = renderer.fetch_nametable_byte(&ppu, 0x2000, 0, 0);
+    let tile_index = renderer.fetch_nametable_byte(&ppu, &mut VramChr, 0x2000, 0, 0);
     assert_eq!(tile_index, 0x42);
 }
 
@@ -557,7 +557,7 @@ fn test_fetch_attribute_byte() {
     // Set up attribute table data at $23C0
     ppu.vram[0x23C0] = 0xAA;
 
-    let attr = renderer.fetch_attribute_byte(&ppu, 0x2000, 0, 0);
+    let attr = renderer.fetch_attribute_byte(&ppu, &mut VramChr, 0x2000, 0, 0);
     assert_eq!(attr, 0xAA);
 }
 
@@ -1709,3 +1709,50 @@ fn test_grayscale_mode() {
 //   cargo test ppu -- --nocapture
 //
 // Real PPU test ROMs are driven from tests/rom_tests.rs, not from here.
+
+// ============================================================================
+// Cartridge-mapped nametables (MMC5 ExRAM through $2006/$2007)
+// ============================================================================
+
+#[test]
+fn test_cartridge_nametable_answers_ppudata() {
+    use nes_core::mapper::mapper5::Mapper5;
+    use nes_core::mapper::Mapper;
+    use nes_core::ppu::PpuMemory;
+
+    let mut mapper = Mapper5::new(vec![0u8; 0x20000], vec![0u8; 0x20000]);
+    mapper.write(0x5105, 0xAA); // every nametable window on ExRAM
+    mapper.write(0x5104, 0x00);
+
+    let mut ppu = Ppu::new();
+    ppu.v = 0x2000;
+    ppu.write_register_with(
+        0x2007,
+        0x42,
+        PpuMemory::System {
+            chr: Some(&mut mapper),
+            mirroring: Mirroring::Horizontal,
+            open_bus: 0,
+        },
+    );
+
+    // Reading $2007 is buffered, so the first read hands back the old buffer.
+    ppu.v = 0x2000;
+    ppu.read_register_with(
+        0x2007,
+        PpuMemory::System {
+            chr: Some(&mut mapper),
+            mirroring: Mirroring::Horizontal,
+            open_bus: 0,
+        },
+    );
+    let value = ppu.read_register_with(
+        0x2007,
+        PpuMemory::System {
+            chr: Some(&mut mapper),
+            mirroring: Mirroring::Horizontal,
+            open_bus: 0,
+        },
+    );
+    assert_eq!(value, 0x42, "the write went to the cartridge, and came back");
+}

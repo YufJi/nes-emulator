@@ -542,6 +542,73 @@ impl Mapper for Mapper5 {
         self.irq_pending = false;
     }
 
+    /// One entry per 1 KB nametable window: CIRAM page 0/1, ExRAM, or fill mode.
+    ///
+    /// This is what register `$5105` is for, and it is what makes ExRAM usable
+    /// as a nametable at all: the mapping tells the PPU which windows the
+    /// cartridge answers for.
+    fn nametable_read(&mut self, addr: u16) -> Option<u8> {
+        let window = ((addr >> 10) & 0x03) as usize;
+        let offset = (addr as usize) & 0x3FF;
+        match self.nt_mapping[window] & 0x03 {
+            2 => Some(match self.exram_mode {
+                // ExRAM is a nametable in the two RAM modes, and reads back as
+                // zeros in the attribute modes.
+                0 | 1 => self.exram[offset],
+                _ => 0,
+            }),
+            3 => Some(if offset < 0x3C0 || self.exram_mode == 1 {
+                self.fill_tile
+            } else {
+                // The two palette bits fill all four attribute quadrants.
+                self.fill_attr * 0x55
+            }),
+            // CIRAM page 0 or 1: the PPU's own memory has the answer.
+            _ => None,
+        }
+    }
+
+    fn nametable_write(&mut self, addr: u16, value: u8) -> bool {
+        let window = ((addr >> 10) & 0x03) as usize;
+        let offset = (addr as usize) & 0x3FF;
+        match self.nt_mapping[window] & 0x03 {
+            2 => {
+                if self.exram_mode <= 1 {
+                    self.exram[offset] = value;
+                }
+                true
+            }
+            3 => true, // fill-mode windows are read-only
+            _ => false,
+        }
+    }
+
+    /// The CIRAM arrangement the `$5105` mapping produces, when it only names
+    /// CIRAM pages.
+    ///
+    /// A mapping that uses ExRAM or fill mode is served window by window by the
+    /// nametable hooks above, so the mirroring mode only has to be right for
+    /// the arrangements that are pure CIRAM.
+    fn mirroring(&self) -> Option<crate::ppu::rendering::Mirroring> {
+        use crate::ppu::rendering::Mirroring;
+        let pages = [
+            self.nt_mapping[0] & 0x03,
+            self.nt_mapping[1] & 0x03,
+            self.nt_mapping[2] & 0x03,
+            self.nt_mapping[3] & 0x03,
+        ];
+        if pages.iter().any(|page| *page >= 2) {
+            return None;
+        }
+        Some(match pages {
+            [0, 0, 1, 1] => Mirroring::Horizontal,
+            [0, 1, 0, 1] => Mirroring::Vertical,
+            [0, 0, 0, 0] => Mirroring::SingleScreen,
+            [1, 1, 1, 1] => Mirroring::SingleScreenUpper,
+            _ => return None,
+        })
+    }
+
     /// MMC5 counts scanlines: the counter restarts on the pre-render line and
     /// increments once per visible scanline, raising an IRQ when it reaches
     /// the value written to $5203.
@@ -776,6 +843,41 @@ mod tests {
         assert_eq!(mapper.mult_b, 0x34);
         assert_eq!(mapper.read(0x5205), 0xA8); // Low byte
         assert_eq!(mapper.read(0x5206), 0x03); // High byte
+    }
+
+    #[test]
+    fn test_5105_maps_nametable_windows() {
+        use crate::ppu::rendering::Mirroring;
+        let mut mapper = Mapper5::new(vec![0u8; 0x20000], vec![0u8; 0x20000]);
+
+        // Single-screen ExRAM: every window is the cartridge's.
+        mapper.write(0x5105, 0xAA);
+        mapper.write(0x5104, 0x00);
+        assert!(mapper.nametable_write(0x2000, 0x42));
+        assert_eq!(mapper.nametable_read(0x2000), Some(0x42));
+        assert_eq!(mapper.nametable_read(0x2400), Some(0x42), "all four windows share it");
+        assert_eq!(mapper.mirroring(), None, "ExRAM windows are the hooks' business");
+
+        // Single-screen fill mode substitutes one tile everywhere.
+        mapper.write(0x5105, 0xFF);
+        mapper.write(0x5106, 0x77);
+        mapper.write(0x5107, 0x02);
+        assert_eq!(mapper.nametable_read(0x2000), Some(0x77), "the fill tile");
+        assert_eq!(
+            mapper.nametable_read(0x23C0),
+            Some(0x02 * 0x55),
+            "the fill attribute is copied into all four quadrants"
+        );
+        assert!(mapper.nametable_write(0x2000, 0x11), "fill windows swallow writes");
+
+        // A pure CIRAM mapping is a plain mirroring mode again.
+        mapper.write(0x5105, 0x50); // 0, 0, 1, 1
+        assert_eq!(mapper.mirroring(), Some(Mirroring::Horizontal));
+        assert_eq!(mapper.nametable_read(0x2000), None, "the PPU's own memory answers");
+        mapper.write(0x5105, 0x44); // 0, 1, 0, 1
+        assert_eq!(mapper.mirroring(), Some(Mirroring::Vertical));
+        mapper.write(0x5105, 0x00);
+        assert_eq!(mapper.mirroring(), Some(Mirroring::SingleScreen));
     }
 
     #[test]
