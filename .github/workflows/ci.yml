@@ -1,0 +1,91 @@
+name: CI
+
+# Gate changes before they reach `main`: the format, lint and test commands
+# AGENTS.md asks for, plus the front-end build the Pages deploy depends on.
+# Every Rust step runs on the toolchain pinned in `rust-toolchain.toml`, so a
+# green run here means the same `rustc`, `rustfmt` and `clippy` the repository
+# is developed against — no drifting formatter, no warning that only shows up
+# on someone else's machine.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here publishes anything, so the token only needs to read the checkout.
+permissions:
+  contents: read
+
+# Unlike the Pages deploy, a superseded run is worth cancelling: it cannot
+# publish a half-finished build, it just holds a runner.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # `rustup show` installs the toolchain, its components and its targets
+      # from `rust-toolchain.toml` — the same one-liner the deploy workflow uses.
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The Cargo workspace (and its `target/`) lives at the repository root.
+          workspaces: .
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # The tree is clippy-clean, so a new warning is a regression rather than
+      # background noise; deny them to keep it that way.
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The ROM suites (`tests/rom_tests.rs`) skip themselves on a checkout
+      # without `roms/`, which is exactly what CI has: the blargg and
+      # AccuracyCoin baseline stays a local accuracy check.
+      - name: Test
+        run: cargo test --workspace
+
+  web:
+    name: Web (WASM, typecheck, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - uses: taiki-e/install-action@v2
+        with:
+          # Pinned like in `deploy-pages.yml`: the wasm-pack version decides the
+          # generated bindings, so the gate must use the same one as the deploy.
+          tool: wasm-pack@0.14.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install front-end dependencies
+        working-directory: web
+        run: npm ci
+
+      # `web/src/wasm` is generated and not committed, so the bindings have to
+      # be built before TypeScript can resolve the imports.
+      - name: Build the WASM core
+        working-directory: web
+        run: npm run build:wasm
+
+      # Type-checks first, then builds with Vite.
+      - name: Typecheck and build the site
+        working-directory: web
+        run: npm run build
