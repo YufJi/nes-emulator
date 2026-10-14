@@ -10,6 +10,34 @@ pub mod instructions;
 
 pub use addressing::AddressingResult;
 
+/// Which interrupt the CPU is in the middle of taking.
+///
+/// The sequence itself is the same seven cycles for both; the source only
+/// decides which vector the last two cycles fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum InterruptSource {
+    /// The maskable IRQ line, through the vector at $FFFE.
+    #[default]
+    Irq,
+    /// The non-maskable NMI, through the vector at $FFFA.
+    Nmi,
+}
+
+impl crate::state::StateField for InterruptSource {
+    fn write(&self, w: &mut crate::state::StateWriter) {
+        w.u8(match self {
+            InterruptSource::Irq => 0,
+            InterruptSource::Nmi => 1,
+        });
+    }
+    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
+        *self = match r.u8() {
+            1 => InterruptSource::Nmi,
+            _ => InterruptSource::Irq,
+        };
+    }
+}
+
 /// 6502 CPU state
 #[derive(Debug)]
 pub struct Cpu {
@@ -57,6 +85,13 @@ pub struct Cpu {
     /// and a branch's last cycle is not one: the instruction after the branch
     /// gets to run first.
     skip_interrupt_poll: bool,
+    /// The interrupt sequence being taken, if any, and how many of its seven
+    /// cycles have run.
+    interrupt_source: Option<InterruptSource>,
+    interrupt_step: u8,
+    /// Low half of the vector, fetched on the sequence's sixth cycle and used
+    /// on the seventh.
+    vector_low: u8,
 }
 
 bitflags::bitflags! {
@@ -101,7 +136,10 @@ crate::state::state_fields!(Cpu {
     cycles,
     halted,
     irq_inhibit,
-    skip_interrupt_poll
+    skip_interrupt_poll,
+    interrupt_source,
+    interrupt_step,
+    vector_low
 });
 
 impl Default for Cpu {
@@ -128,6 +166,9 @@ impl Cpu {
             addr_base: 0,
             irq_inhibit: true,
             skip_interrupt_poll: false,
+            interrupt_source: None,
+            interrupt_step: 0,
+            vector_low: 0,
         }
     }
 

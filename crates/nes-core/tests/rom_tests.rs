@@ -151,7 +151,7 @@ fn blargg_apu() {
 #[test]
 fn accuracy_coin_matches_its_baseline() {
     /// Tests AccuracyCoin reports as failing on this checkout.
-    const BASELINE_FAILURES: usize = 50;
+    const BASELINE_FAILURES: usize = 49;
     /// The ROM runs its suite one test per frame; this is the floor that says
     /// it really got going (the counter itself is reset whenever the results
     /// screen redraws, so its final value is timing-dependent).

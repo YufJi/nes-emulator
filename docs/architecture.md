@@ -837,7 +837,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
 | `apu_test` | 3/8 |
-| AccuracyCoin | 78 passed, 0 skipped, 50 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
+| AccuracyCoin | 79 passed, 0 skipped, 49 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2` needs the A12/PPU-bus hook, the
 `ppu_vbl_nmi` and `cpu_interrupts` suites need the VBlank/NMI subtleties and the odd-frame
@@ -916,13 +916,14 @@ clone needs `npm run build:wasm` before building the front end.
   implemented — blargg's `ppu_vbl_nmi` went from 1/10 to 4/10 on them. Still missing: the
   one-instruction delay before the CPU services that immediate NMI, the dot-exact
   suppression windows, and the exact dot the odd-frame skip is decided on.
-- **Interrupt timing is instruction-exact, not cycle-exact**: CLI/SEI/PLP delay what
-  interrupts are allowed by one instruction (RTI does not), a taken branch that stays in its
-  page skips the poll on its last cycle, and an NMI raised by a mid-frame `$2000` write is
-  seen one instruction later. `1-cli_latency` and `04-nmi_control` pinned those down. What
-  the remaining `cpu_interrupts_v2` cases (`2`/`3`/`4`/`5`) ask for is different in kind:
-  they read the CPU cycle the handler starts on, so they need the interrupt sequence itself
-  to be cycle-stepped - the same cycle-accuracy step the MMC3 A12 and NMI windows want.
+- **The interrupt sequence runs cycle by cycle**: the lines are sampled on the penultimate
+  cycle of each instruction, and the seven cycles that follow (two discarded reads, three
+  pushes, two halves of the vector) are driven one cycle at a time, with the PPU and APU
+  interleaved around them. CLI/SEI/PLP delay what interrupts are allowed by one instruction
+  (RTI does not), and a taken branch that stays in its page skips that poll. Where a write
+  lands *within* its CPU cycle still is not modelled, so a register write's exact PPU dot is
+  up to two dots off, and the remaining `cpu_interrupts_v2`/`ppu_vbl_nmi` cases still differ
+  by one or two instructions - the tests measure to one PPU clock.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside

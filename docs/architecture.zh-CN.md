@@ -767,7 +767,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
 | `apu_test` | 3/8 |
-| AccuracyCoin | 78 通过、0 跳过、50 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
+| AccuracyCoin | 79 通过、0 跳过、49 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 需要 A12/PPU 总线钩子，
 `ppu_vbl_nmi` 与 `cpu_interrupts` 需要 VBlank/NMI 细节与奇数帧跳点，
@@ -832,12 +832,11 @@ flowchart LR
   同时抹掉该帧的标志与 NMI）、以及"VBlank 期间写 $2000 打开 NMI 立即触发"都已实现——
   blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 4/10。仍缺：立即触发时 CPU 要**延后一条指令**
   才响应 NMI、抑制窗口的 dot 级精度、以及奇数帧跳点判定所依据的确切 dot。
-- **中断时序是"指令级精确"，不是 cycle 级**：CLI/SEI/PLP 对中断使能的影响要延后一条指令
-  （RTI 不延后）、未跨页的已跳转分支会跳过自己最后一个周期的轮询、帧中写 `$2000` 打开的
-  NMI 要再过一条指令才被看到——这三条已由 `1-cli_latency` 与 `04-nmi_control` 钉住。剩下的
-  `cpu_interrupts_v2`（`2`/`3`/`4`/`5`）性质不同：它们读的是"处理程序开始执行时的 CPU
-  周期数"，因此需要把中断序列本身也按 cycle 步进——与 MMC3 A12、NMI 窗口想要的是同一个
-  cycle 精度台阶。
+- **中断向量过程按 cycle 执行**：中断线在每条指令的倒数第二个 cycle 采样，随后的七个 cycle
+  （两次丢弃读、三次压栈、两次取向量）逐个 cycle 推进，PPU 与 APU 交错在其间。CLI/SEI/PLP
+  对中断使能的影响延后一条指令（RTI 不延后），未跨页的已跳转分支跳过那一次采样。**写入落在
+  CPU cycle 内的哪个 dot** 仍未建模，因此寄存器写入的 PPU dot 最多差两个；剩下的
+  `cpu_interrupts_v2`/`ppu_vbl_nmi` 各项仍差一到两条指令——这些测试的精度是一 PPU clock。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，

@@ -31,7 +31,7 @@ pub const BUTTON_RIGHT: u8 = 7;
 /// Magic prefix identifying a [`Nes::save_state`] blob.
 const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// Save-state format version, bumped whenever the encoding changes.
-const STATE_VERSION: u8 = 2;
+const STATE_VERSION: u8 = 3;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
@@ -215,14 +215,17 @@ struct NesBus {
     /// NMI pending flag (from PPU)
     nmi_pending: bool,
     /// Instructions an NMI raised by a mid-frame `$2000` write still has to
-    /// wait, counted down once per instruction.
+    /// wait for the end of the instruction that raised it.
     ///
     /// Enabling NMI while the flag is already set raises the line during the
     /// instruction that wrote `$2000` — after that instruction's own interrupt
     /// poll. The CPU therefore does not see it until one more instruction has
     /// run, which is what blargg's `04-nmi_control` checks ("immediate
     /// occurrence should be after NEXT instruction").
-    nmi_pending_late: u8,
+    ///
+    /// A stand-in for placing the write on its real cycle, which is the next
+    /// step: the sequence's cycle-accurate work makes that possible.
+    nmi_raised_late: bool,
     /// IRQ pending flag (from APU or mapper)
     irq_pending: bool,
     /// Interleaved stereo audio waiting for the host to pull it
@@ -266,7 +269,7 @@ crate::state::state_fields!(NesBus {
     controllers,
     controller_strobe,
     nmi_pending,
-    nmi_pending_late,
+    nmi_raised_late,
     irq_pending,
     audio_accumulator,
     cpu_cycles,
@@ -297,7 +300,7 @@ impl NesBus {
             controllers: [ControllerState::new(), ControllerState::new()],
             controller_strobe: false,
             nmi_pending: false,
-            nmi_pending_late: 0,
+            nmi_raised_late: false,
             irq_pending: false,
             audio_buffer: VecDeque::with_capacity(audio_capacity_floats(
                 DEFAULT_SAMPLE_RATE,
@@ -468,8 +471,35 @@ impl NesBus {
             mapper.on_cpu_cycles(cycles);
         }
 
-        // Update PPU and APU based on cycles consumed
-        self.on_cpu_cycle(cycles);
+        // A mid-frame $2000 write raises the NMI line during this instruction,
+        // i.e. after its own poll: the CPU sees it once this instruction has
+        // finished.
+        if self.ppu.nmi_pending() {
+            self.ppu.clear_nmi();
+            self.nmi_raised_late = true;
+        }
+
+        // The instruction's cycles, one at a time, sampling the interrupt lines
+        // on the penultimate one - the cycle the chip decides on.
+        let poll_at = cycles.saturating_sub(1);
+        for cycle in 1..=cycles {
+            self.advance_one_cpu_cycle();
+            if cycle == poll_at {
+                cpu.poll_interrupts(self);
+            }
+        }
+
+        // The late NMI waited out the whole instruction, this poll included.
+        self.late_nmi();
+
+        // Then the interrupt sequence itself, one cycle at a time, so its
+        // pushes and vector fetch land on the cycles the chip puts them on.
+        let mut sequence_cycles = 0;
+        while cpu.in_interrupt_sequence() {
+            self.advance_one_cpu_cycle();
+            cpu.interrupt_cycle(self);
+            sequence_cycles += 1;
+        }
 
         // The CPU is halted while OAM or DMC DMA runs; the rest of the
         // machine keeps ticking.
@@ -479,7 +509,18 @@ impl NesBus {
             self.advance_cycles(stall);
         }
 
-        cycles
+        cycles + sequence_cycles
+    }
+
+    /// Let an NMI raised by a mid-frame `$2000` write reach the CPU.
+    ///
+    /// It waited for the end of the instruction that wrote the register, so the
+    /// next instruction's poll is the first one to see it.
+    fn late_nmi(&mut self) {
+        if self.nmi_raised_late {
+            self.nmi_raised_late = false;
+            self.nmi_pending = true;
+        }
     }
 
     /// Get the current frame buffer
@@ -822,19 +863,9 @@ impl Bus for NesBus {
     }
 
     fn on_cpu_cycle(&mut self, cycles: u8) {
-        // A mid-frame $2000 write raises the NMI line after this instruction's
-        // own poll, so it waits for one more instruction to run.
-        if self.ppu.nmi_pending() {
-            self.ppu.clear_nmi();
-            self.nmi_pending_late = 2;
-        }
-        if self.nmi_pending_late > 0 {
-            self.nmi_pending_late -= 1;
-            if self.nmi_pending_late == 0 {
-                self.nmi_pending = true;
-            }
-        }
-
+        // The trait's "the CPU consumed these cycles" hook. The core's own
+        // execution path ticks per cycle instead (`advance_one_cpu_cycle`), so
+        // that interrupt polls, bus accesses and the two chips stay in step.
         self.advance_cycles(cycles as u16);
     }
 
