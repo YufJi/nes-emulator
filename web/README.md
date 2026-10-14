@@ -308,6 +308,12 @@ way to tell a pad that is not being read from a button that was never bound.
 | Start | Start / Options |
 | Select | Select / Share |
 
+A paired pad is also what frees the layout: with the tablet propped up and the controller in
+hand, nothing about it needs a desk. The photo below is the whole setup running Super Mario
+Bros. on an iPad with a Bluetooth DualSense.
+
+![An iPad resting on a couch running Super Mario Bros., with a paired Bluetooth DualSense controller in front of it](../docs/img/bluetooth-gamepad.jpg)
+
 ### Turbo
 
 Two controls auto-fire their button while they are held: `I` fires B and `O` fires A, each

@@ -248,6 +248,11 @@ GITHUB_TOKEN=… npm run build:games       # 提高 GitHub API 额度（未认�
 | Start | Start / Options |
 | Select | Select / Share |
 
+手柄配好之后，玩游戏的姿势也就自由了：平板一支、手柄一握，不需要桌面。下图就是全部的
+装备——iPad 上跑着《超级玛莉》，前方是一支蓝牙 DualSense。
+
+![一台 iPad 靠在沙发上运行《超级玛莉》，前方是一支已配对的蓝牙 DualSense 手柄](../docs/img/bluetooth-gamepad.jpg)
+
 ### 连发
 
 两个连发控制按住即自动连打对应的按键：`I` 连打 B、`O` 连打 A，都紧挨在各自要连打的那个键

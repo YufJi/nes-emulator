@@ -85,6 +85,12 @@ driven frame by frame in the browser.
 - **Pause / resume**: the toolbar button or the `P` key. **Fullscreen**: the
   "全屏" toolbar button, which fills the screen with the picture.
 
+Pairing a pad is also what gets the keyboard out of the way: prop the tablet up, hold the
+controller, and the couch becomes the whole setup. That is everything in the photo below —
+an iPad running Super Mario Bros., a Bluetooth DualSense, and nothing else plugged in.
+
+![An iPad resting on a couch running Super Mario Bros., with a paired Bluetooth DualSense controller in front of it](docs/img/bluetooth-gamepad.jpg)
+
 ### Picture and sound
 
 - The canvas back buffer is fixed at 256×240, and the CSS size is scaled by **integer
