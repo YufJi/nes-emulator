@@ -931,73 +931,87 @@ impl NesBus {
     /// CPU instructions. Used for normal instruction timing and for the cycles
     /// stolen by OAM/DMC DMA.
     fn advance_cycles(&mut self, cycles: u16) {
+        for _ in 0..cycles {
+            self.advance_one_cpu_cycle();
+        }
+    }
+
+    /// One CPU cycle of the machine around the CPU: three PPU dots, an APU
+    /// tick, and the cartridge's view of the PPU bus.
+    ///
+    /// The two chips are interleaved here rather than advanced in separate
+    /// lumps, so neither is ever ahead of the other. That is what the ROM
+    /// suites measure when they line a frame-counter IRQ up against a PPU flag,
+    /// and it is the tick the cycle-accurate interrupt work hangs off.
+    fn advance_one_cpu_cycle(&mut self) {
+        // Three PPU dots per CPU cycle.
+        for _ in 0..3 {
+            self.advance_one_ppu_dot();
+        }
+
+        // The APU runs one tick per CPU cycle.
+        self.tick_apu_cycle();
+
+        self.cpu_cycles += 1;
+    }
+
+    /// One PPU dot: the dot counter, everything a dot triggers, and the address
+    /// the cartridge sees on the bus.
+    fn advance_one_ppu_dot(&mut self) {
         // Update PPU (3 PPU cycles per CPU cycle)
-        let ppu_cycles = cycles * 3;
+        self.ppu.cycle += 1;
 
-        for _ in 0..ppu_cycles {
-            // Advance PPU cycle
-            self.ppu.cycle += 1;
+        // While anything is being rendered, the pre-render line is one dot
+        // short on odd frames: the picture runs at 60.0985 Hz instead of an
+        // even 60.1, and blargg's even/odd-frame tests measure exactly this
+        // dot.
+        let rendering = self
+            .ppu
+            .mask
+            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+        let skip_odd_frame_dot = self.ppu.scanline == self.region.last_scanline()
+            && self.ppu.cycle == 340
+            && rendering
+            && self.ppu.frame & 1 == 1;
 
-            // While anything is being rendered, the pre-render line is one dot
-            // short on odd frames: the picture runs at 60.0985 Hz instead of an
-            // even 60.1, and blargg's even/odd-frame tests measure exactly this
-            // dot.
+        if self.ppu.cycle > 340 || skip_odd_frame_dot {
+            self.ppu.cycle = 0;
+            self.ppu.scanline += 1;
+
+            if self.ppu.scanline > self.region.last_scanline() {
+                self.ppu.scanline = 0;
+                self.ppu.frame += 1;
+                self.frame_ready = true;
+
+                // Show the finished frame by exchanging buffers with the
+                // renderer: the host keeps reading a complete frame while
+                // the next one is drawn, and no pixels are copied.
+                self.frame_buffer
+                    .swap_pixels(self.bg_renderer.frame_buffer_mut());
+            }
+
+            // Let mappers with a scanline counter tick here.
+            let scanline = self.ppu.scanline;
             let rendering = self
                 .ppu
                 .mask
                 .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
-            let skip_odd_frame_dot = self.ppu.scanline == self.region.last_scanline()
-                && self.ppu.cycle == 340
-                && rendering
-                && self.ppu.frame & 1 == 1;
+            if let Some(ref mut mapper) = self.mapper {
+                mapper.on_scanline(scanline, rendering);
 
-            if self.ppu.cycle > 340 || skip_odd_frame_dot {
-                self.ppu.cycle = 0;
-                self.ppu.scanline += 1;
-
-                if self.ppu.scanline > self.region.last_scanline() {
-                    self.ppu.scanline = 0;
-                    self.ppu.frame += 1;
-                    self.frame_ready = true;
-
-                    // Show the finished frame by exchanging buffers with the
-                    // renderer: the host keeps reading a complete frame while
-                    // the next one is drawn, and no pixels are copied.
-                    self.frame_buffer
-                        .swap_pixels(self.bg_renderer.frame_buffer_mut());
-                }
-
-                // Let mappers with a scanline counter tick here.
-                let scanline = self.ppu.scanline;
-                let rendering = self
-                    .ppu
-                    .mask
-                    .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
-                if let Some(ref mut mapper) = self.mapper {
-                    mapper.on_scanline(scanline, rendering);
-
-                    // Mappers such as MMC1 and MMC3 can switch nametable
-                    // mirroring while the game runs; follow whatever they
-                    // report so rendering and PPUDATA stay in sync.
-                    if let Some(mode) = mapper.mirroring() {
-                        if mode != self.mirroring {
-                            self.mirroring = mode;
-                            self.bg_renderer.set_mirroring(mode);
-                        }
+                // Mappers such as MMC1 and MMC3 can switch nametable
+                // mirroring while the game runs; follow whatever they
+                // report so rendering and PPUDATA stay in sync.
+                if let Some(mode) = mapper.mirroring() {
+                    if mode != self.mirroring {
+                        self.mirroring = mode;
+                        self.bg_renderer.set_mirroring(mode);
                     }
                 }
             }
-            self.ppu_step();
-            self.feed_ppu_bus();
         }
-
-        // The APU runs one tick per CPU cycle.
-        for _ in 0..cycles {
-            self.tick_apu_cycle();
-        }
-
-        // Update CPU cycle counter
-        self.cpu_cycles += cycles as u64;
+        self.ppu_step();
+        self.feed_ppu_bus();
     }
 }
 
