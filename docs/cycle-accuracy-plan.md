@@ -228,6 +228,17 @@ last cycles the way a register write did in step 1, which is the same "an instru
 atomic" work step 4 is about. The readme's expected rows are `27 36 00` / `26 36 00` /
 `26 36 00` / `36 00 00` ×5 / `27 36 00` ×2.
 
+*3b, landed without evidence.* BRK now leaves its vector provisional for the rest of the
+instruction (`Cpu::brk_vector_pending`, cleared at the start of the next one) and an NMI
+asserted before the instruction ends takes it over - one frame, B set - instead of the
+machine stacking a second one; a unit test pins the frame count, the B flag and the handler.
+On the ROMs it is **invisible**: `2-nmi_and_brk`'s trace and AccuracyCoin's `$0462` are
+byte-identical with and without it, so no suite asserts an NMI inside BRK's own cycles. It
+stays because it is what the hardware does in that corner and nothing regressed, but
+`2-nmi_and_brk` still needs its own investigation: our trace (`02 36 00 …`) does not differ
+from the readme's (`27 36 00 …`) by a constant, so that test measures something this window
+is not - most likely its own synchronisation to the PPU.
+
 **Step 4: reads with side effects.** `$2002` reads clear the VBlank flag and `$2007` reads
 move the VRAM address; both are still performed at the instruction's start. `02-vbl_set_time`
 passes today by luck of the current granularity — `06-suppression` and `05-nmi_timing` do

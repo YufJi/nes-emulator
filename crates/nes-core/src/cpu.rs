@@ -96,6 +96,14 @@ pub struct Cpu {
     /// changes. Written and read inside one sequence, so it stays out of save
     /// states.
     nmi_hijack: bool,
+    /// Set by BRK while the vector it read is still provisional.
+    ///
+    /// BRK reads the IRQ vector as part of the instruction, but that is not
+    /// settled until the instruction's last cycles: an NMI asserted before then
+    /// takes the vector over, with the frame BRK pushed (B set) left as it is.
+    /// Cleared at the start of every instruction, so it never outlives the one
+    /// that set it.
+    brk_vector_pending: bool,
     /// Low half of the vector, fetched on the sequence's sixth cycle and used
     /// on the seventh.
     vector_low: u8,
@@ -176,6 +184,7 @@ impl Cpu {
             interrupt_source: None,
             interrupt_step: 0,
             nmi_hijack: false,
+            brk_vector_pending: false,
             vector_low: 0,
         }
     }

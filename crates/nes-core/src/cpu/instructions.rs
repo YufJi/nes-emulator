@@ -82,6 +82,10 @@ impl Cpu {
         // touch it.
         let i_before = self.status.contains(StatusFlags::I);
 
+        // A BRK's vector is only provisional for the instruction that read it;
+        // whatever runs next starts from a clean slate.
+        self.brk_vector_pending = false;
+
         let op = &OPCODE_TABLE[opcode as usize];
 
         // Fetch operands based on addressing mode
@@ -729,7 +733,20 @@ impl Cpu {
 
         if bus.nmi_pending() {
             bus.clear_nmi();
-            self.start_interrupt(InterruptSource::Nmi);
+            if self.brk_vector_pending {
+                // BRK has pushed its frame and read the IRQ vector, but its
+                // vector is the instruction's last business: an NMI arriving
+                // now takes it over instead of stacking a second frame. The
+                // frame already pushed keeps B set, which is what blargg's
+                // `2-nmi_and_brk` reads back.
+                self.brk_vector_pending = false;
+                let vector = Self::interrupt_vector(InterruptSource::Nmi);
+                let low = bus.read(vector) as u16;
+                let high = bus.read(vector.wrapping_add(1)) as u16;
+                self.pc = (high << 8) | low;
+            } else {
+                self.start_interrupt(InterruptSource::Nmi);
+            }
         } else if bus.irq_pending() && !self.irq_inhibit {
             self.start_interrupt(InterruptSource::Irq);
         }
@@ -979,6 +996,10 @@ impl Cpu {
         let lo = bus.read(0xFFFE) as u16;
         let hi = bus.read(0xFFFF) as u16;
         self.pc = (hi << 8) | lo;
+
+        // That vector is provisional until the instruction ends: an NMI
+        // asserted before its last cycles takes it over (`poll_interrupts`).
+        self.brk_vector_pending = true;
 
         0
     }
@@ -3878,6 +3899,44 @@ mod tests {
 
         assert_eq!(cpu.pc(), 0x9000, "the sequence finished in the IRQ vector");
         assert!(bus.nmi_pending(), "the NMI is still waiting for a poll");
+    }
+
+    /// An NMI asserted while BRK is still running takes BRK's vector over: one
+    /// frame goes on the stack - with B set, as BRK pushes it - and the handler
+    /// is the NMI's. BRK reads the IRQ vector first and the override happens on
+    /// the instruction's penultimate cycle, the way the machine polls.
+    #[test]
+    fn test_nmi_takes_brks_vector_over() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x00]); // BRK
+        bus.write_mem(0xFFFE, 0x00); // IRQ -> $9000
+        bus.write_mem(0xFFFF, 0x90);
+        bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
+        bus.write_mem(0xFFFB, 0x80);
+        cpu.set_pc(0x0600);
+
+        let cycles = cpu.execute_instruction(&mut bus, 0x00);
+        bus.set_nmi(true);
+        let poll_at = cycles.saturating_sub(1);
+        for cycle in 1..=cycles {
+            if cycle == poll_at {
+                cpu.poll_interrupts(&mut bus);
+            }
+        }
+
+        assert_eq!(cpu.pc(), 0x8000, "the NMI took BRK's vector over");
+        assert!(!bus.nmi_pending(), "taking it over acknowledges the line");
+        assert!(
+            !cpu.in_interrupt_sequence(),
+            "no second frame: BRK's own is the one on the stack"
+        );
+        assert_eq!(cpu.sp(), 0xFA, "three bytes pushed, not six");
+        assert_eq!(
+            bus.read(0x01FB) & StatusFlags::B.bits(),
+            StatusFlags::B.bits(),
+            "BRK's frame keeps B set"
+        );
     }
 
     /// Run one instruction the way the machine does: sample the interrupt lines
