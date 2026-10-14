@@ -913,17 +913,22 @@ clone needs `npm run build:wasm` before building the front end.
 - **The VBlank flag's neighbours are close but not exact**: the odd-frame dot skip, the
   `$2002` read race (a read on the flag's own dot suppresses the flag *and* the NMI for that
   frame) and the NMI that appears the moment NMI is enabled while the flag is set are all
-  implemented — blargg's `ppu_vbl_nmi` went from 1/10 to 4/10 on them. Still missing: the
-  one-instruction delay before the CPU services that immediate NMI, the dot-exact
-  suppression windows, and the exact dot the odd-frame skip is decided on.
+  implemented — blargg's `ppu_vbl_nmi` went from 1/10 to 4/10 on them. The register write
+  that enables NMI lands on the cycle the chip drives it, so the one-instruction delay
+  before the CPU answers that NMI falls out of the cycle order rather than needing a
+  stand-in. Still missing: the dot-exact suppression windows, and the exact dot the
+  odd-frame skip is decided on.
 - **The interrupt sequence runs cycle by cycle**: the lines are sampled on the penultimate
   cycle of each instruction, and the seven cycles that follow (two discarded reads, three
   pushes, two halves of the vector) are driven one cycle at a time, with the PPU and APU
   interleaved around them. CLI/SEI/PLP delay what interrupts are allowed by one instruction
-  (RTI does not), and a taken branch that stays in its page skips that poll. Where a write
-  lands *within* its CPU cycle still is not modelled, so a register write's exact PPU dot is
-  up to two dots off, and the remaining `cpu_interrupts_v2`/`ppu_vbl_nmi` cases still differ
-  by one or two instructions - the tests measure to one PPU clock.
+  (RTI does not), and a taken branch that stays in its page skips that poll. A write to
+  `$2000-$401F` now lands on its own cycle - the last cycle of a store, the one before it
+  for a read-modify-write's discarded write - instead of at the instruction's start. Where
+  *inside* that cycle it takes effect is still not modelled, so a register's effective time
+  can still be a cycle out of place in dot terms, and the remaining
+  `cpu_interrupts_v2`/`ppu_vbl_nmi` cases still differ by one or two instructions - the
+  tests measure to one PPU clock.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
@@ -1024,8 +1029,9 @@ backlog, so they are written down here to stop them being re-litigated:
 5. **The accuracy backlog the test ROMs now name**: the sixteen remaining cases in §13.1 —
    `cpu_interrupts_v2`'s four, `apu_test`'s five, `ppu_vbl_nmi`'s five, `mmc3_test_2`'s two —
    plus MMC5's extended attributes, sprite 0 hit timing, the five mappers §8 defers, and the
-   PAL dot ratio. Almost all of them come down to one thing: stepping the CPU and its
-   interrupt sequence by cycle instead of by instruction.
+   PAL dot ratio. Almost all of them come down to one thing: knowing *which PPU dot* a CPU
+   action lands on, which means moving the rest of the CPU's bus accesses (reads with side
+   effects, DMA, the renderer) onto the cycles they really happen on.
 
 The cycle-granularity work has its own plan, with the measurements each phase produced:
 [`cycle-accuracy-plan.md`](./cycle-accuracy-plan.md). It is the document to pick up when this

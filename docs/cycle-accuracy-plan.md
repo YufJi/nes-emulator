@@ -17,18 +17,21 @@ which *CPU cycle*.
 
 ## 2. Where the emulator stands
 
-Two phases are done, each a commit of its own, both with zero regressions:
+Two phases are committed and the third sits in the working tree; none of the three regressed
+the baselines:
 
 | Phase | Commit | What it did | Measured effect |
 | --- | --- | --- | --- |
 | L1 | `4018bba` | The machine advances one CPU cycle at a time: three PPU dots, an APU tick, the cartridge's view of the bus — interleaved, instead of batched per instruction | No ROM change at all (57 pass / 17 known, identical); frame cost 1.075 → 1.046 ms (release, 600 frames of nestest) |
 | L2 | `49d9d29` | Interrupt lines sampled on the penultimate cycle of each instruction; the seven-cycle vector sequence (two discarded reads, three pushes, two vector halves) driven cycle by cycle | Baselines unchanged in count, four failing tests' timing traces moved toward the expected patterns; AccuracyCoin 78 → 79 passing |
+| L3 step 1 | (this change) | Writes to `$2000-$401F` land on the cycle the chip drives them — the last cycle of a store, the cycle before it for a read-modify-write's discarded write — and the NMI a `$2000` write raises is taken up on that cycle | No ROM count change (57 pass / 17 known and AccuracyCoin 79/49 identical); `4-irq_and_dma`'s trace moved from the wrong shape to the documented one with the L3a offset (`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`, CRC `5FA88FED` → `218E154C`); `3-nmi_and_irq`'s CRC moved `90BC9498` → `7E5D001A`; two AccuracyCoin error codes changed (`$0468`/`$0469` 0x06 → 0x0A, still failing); frame cost unchanged (1.033 → 1.034 ms, release, 600 frames of nestest) |
 
-Current state: `cargo test --workspace` 814 green, ROM baseline **57 pass / 17 known**,
-AccuracyCoin **79 passed / 49 failing**, `STATE_VERSION` 3.
+Current state: `cargo test --workspace` 818 green, ROM baseline **57 pass / 17 known**,
+AccuracyCoin **79 passed / 49 failing**, `STATE_VERSION` 4.
 
 Two experiments were implemented, measured and **reverted**; their evidence is the starting
-point for what follows (§4).
+point for what follows (§4). L3a's bus-side parking has since come back as L3 step 1, with
+the dependents its revert was about moved along with it.
 
 ## 3. What is left
 
@@ -45,7 +48,7 @@ Sixteen cases remain. They are not all the same kind of problem:
 | `apu_test` | `4-jitter`, `5-len_timing`, `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates` | Frame-counter and DMC timing; `5-len_timing` is a length-counter bug, the rest are cycle/DMA work |
 
 `4-irq_and_dma` is the closest to green and the most useful yardstick: the plan's first
-step moved its trace to the documented shape with a constant offset (§4.2).
+step - implemented - moved its trace to the documented shape with a constant offset (§4.2).
 
 Two cases are **not** cycle problems at all and should be filed separately:
 
@@ -105,19 +108,34 @@ time moved), plus `apu_test/2-len_table` and `oam_stress`; AccuracyCoin 79 → 7
 The lesson, and the shape of the remaining work: **a register write cannot move alone.** Its
 dependents have to move with it.
 
+Step 1 below is that lesson applied: L3a's parking stays, and the two dependents it broke -
+the immediate-NMI detection and, later, the mask's dot phase - move with it. Measured, the
+parking alone (step 1) reproduces L3a's `4-irq_and_dma` trace **and** keeps all four lines
+L3a had broken: baseline identical, 57 pass / 17 known, AccuracyCoin 79/49.
+
 ### 4.2 L3 — put register writes on their cycle, and take their dependents along
 
-**Step 1: writes land on their cycle, and the immediate NMI is detected there.**
+**Step 1 (done): writes land on their cycle, and the immediate NMI is detected there.**
 
 - Keep L3a's bus-side parking (writes to `$2000-$401F`, last cycle for a store, the cycle
   before for a read-modify-write's discarded write, and only for writes the CPU makes inside
-  an instruction — a host poke stays immediate).
+  an instruction — a host poke stays immediate). *Done: `NesBus::write` parks them, and
+  `NesBus::replay_deferred_writes` drains the queue from the end as the machine ticks the
+  instruction's cycles; two slots cover every opcode, since only a read-modify-write writes
+  twice.*
 - Move the "did this instruction enable NMI while VBlank is set?" detection from before the
   instruction's cycles to *the cycle the write lands on*, and re-express `nmi_raised_late`
   in terms of that cycle. `ppu_vbl_nmi/04-nmi_control` is the test that decides whether this
-  is right.
-- Verify: `04-nmi_control` stays green; `4-irq_and_dma`'s trace keeps its shape; nothing else
-  moves.
+  is right. *Done: the flag is gone. The PPU's staged NMI is taken up when the write lands
+  (`NesBus::latch_nmi_line`), and because a store's write is its last cycle - one after the
+  poll - the one-instruction delay falls out of the cycle order instead of being imposed.*
+- Verified: `04-nmi_control` stays green; `4-irq_and_dma`'s trace took the documented shape
+  (`0 0 0 0 1 1 2 2 4 …`, CRC `218E154C`, exactly L3a's); `3-nmi_and_irq`'s trace moved
+  (`90BC9498` → `7E5D001A`); nothing else moved - `3-A12_clocking`, `2-len_table` and
+  `oam_stress`, all of which L3a had broken, stayed green.
+- What is left over from this step: a read-modify-write's discarded write lands on the poll
+  cycle itself. It writes the *old* value, so today it cannot raise an NMI either way; step
+  2's dot offset is where that stops being a coincidence.
 
 **Step 2: the mask's per-dot phase.**
 
@@ -157,7 +175,9 @@ it to the instructions that can touch `$2000-$3FFF` and `$4015-$4017` first.
 
 ### 4.4 Ordering, and what each step is expected to buy
 
-1. L3 step 1 — keeps `04-nmi_control`; shrinks the `4-irq_and_dma` offset. No ROM count change expected.
+1. L3 step 1 — **done**: kept `04-nmi_control`, moved `4-irq_and_dma` to the documented
+   shape. No ROM count change, as expected. The one-cycle offset L3a left is unchanged by
+   this step; the DMA-side poll (§4.3, L4) is the next suspect for it.
 2. L3 step 2 — `3-A12_clocking` (already green today) must survive, `10-even_odd_timing` and
    `4-scanline_timing` are the ones that should move.
 3. L3 step 3 — `2-nmi_and_brk`, `3-nmi_and_irq`.

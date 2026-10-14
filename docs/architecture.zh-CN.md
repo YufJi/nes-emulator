@@ -830,13 +830,16 @@ flowchart LR
   同一件事，目前还不在清单里。
 - **VBlank 标志周边已经接近但不精确**：奇数帧跳点、`$2002` 读竞争（在标志置位那一 dot 读取会
   同时抹掉该帧的标志与 NMI）、以及"VBlank 期间写 $2000 打开 NMI 立即触发"都已实现——
-  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 4/10。仍缺：立即触发时 CPU 要**延后一条指令**
-  才响应 NMI、抑制窗口的 dot 级精度、以及奇数帧跳点判定所依据的确切 dot。
+  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 4/10。打开 NMI 的那次寄存器写入现在落在芯片
+  真正驱动的那个 cycle 上，所以"CPU 延后一条指令才响应"是 cycle 顺序自然的结果，不再需要
+  专门的代偿标记。仍缺：抑制窗口的 dot 级精度、以及奇数帧跳点判定所依据的确切 dot。
 - **中断向量过程按 cycle 执行**：中断线在每条指令的倒数第二个 cycle 采样，随后的七个 cycle
   （两次丢弃读、三次压栈、两次取向量）逐个 cycle 推进，PPU 与 APU 交错在其间。CLI/SEI/PLP
-  对中断使能的影响延后一条指令（RTI 不延后），未跨页的已跳转分支跳过那一次采样。**写入落在
-  CPU cycle 内的哪个 dot** 仍未建模，因此寄存器写入的 PPU dot 最多差两个；剩下的
-  `cpu_interrupts_v2`/`ppu_vbl_nmi` 各项仍差一到两条指令——这些测试的精度是一 PPU clock。
+  对中断使能的影响延后一条指令（RTI 不延后），未跨页的已跳转分支跳过那一次采样。对
+  `$2000-$401F` 的写入现在落在它自己的 cycle 上（store 是最后一个 cycle，读改写的丢弃写
+  提前一个 cycle），而不是指令开头。**写入落在该 cycle 内的哪个 dot** 仍未建模，因此寄存器
+  生效时刻在 dot 尺度上仍可能差一个 cycle；剩下的 `cpu_interrupts_v2`/`ppu_vbl_nmi` 各项
+  仍差一到两条指令——这些测试的精度是一 PPU clock。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，
@@ -914,7 +917,8 @@ flowchart LR
 5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 16 项——`cpu_interrupts_v2` 的 4 项、
    `apu_test` 的 5 项、`ppu_vbl_nmi` 的 5 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展属性、
    sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。它们几乎都归结为同一件
-   事：让 CPU 与中断序列按 cycle 步进，而不是按指令步进。
+   事：要知道某个 CPU 动作落在**哪个 PPU dot** 上——也就是把 CPU 其余的总线访问（带副作用的
+   读、DMA、渲染器）也搬到它们真实发生的 cycle 上。
 
 cycle 精度这件事另有一份带各阶段实测数据的方案文档：
 [`cycle-accuracy-plan.zh-CN.md`](./cycle-accuracy-plan.zh-CN.md)。下次动手时从它开始；

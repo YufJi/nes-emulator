@@ -15,17 +15,19 @@ one PPU clock"（`ppu_vbl_nmi/readme.txt`）。`docs/architecture.md` §13.1 里
 
 ## 2. 目前进度
 
-两个阶段已完成，各自一个提交，且都没有回退：
+两个阶段已提交、第三个停在工作区里，三者都没有让基线回退：
 
 | 阶段 | 提交 | 做了什么 | 实测效果 |
 | --- | --- | --- | --- |
 | L1 | `4018bba` | 机器改为逐 CPU cycle 推进：3 个 PPU dot、1 个 APU tick、卡带看到的地址，交错进行而非按指令批量补 | ROM 结果零变化（57 pass / 17 known 逐条一致）；帧耗时 1.075 → 1.046 ms（release，nestest 连续 600 帧） |
 | L2 | `49d9d29` | 中断线在每条指令的倒数第二个 cycle 采样；7 cycle 的向量过程（2 次丢弃读、3 次压栈、2 次取向量）逐 cycle 执行 | 基线数量不变，但四个失败项的时序轨迹向期望值移动；AccuracyCoin 78 → 79 通过 |
+| L3 第 1 步 | （本次改动） | 对 `$2000-$401F` 的写入落在芯片真正驱动的那个 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个 cycle），`$2000` 写入抬起的 NMI 也在该 cycle 被接收 | ROM 数量零变化（57 pass / 17 known 与 AccuracyCoin 79/49 逐条一致）；`4-irq_and_dma` 的轨迹从错误形状变成 L3a 那份"与文档期望一致、只差常量偏移"的形状（`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`，CRC `5FA88FED` → `218E154C`）；`3-nmi_and_irq` 的 CRC 从 `90BC9498` 变为 `7E5D001A`；AccuracyCoin 两项错误码变化（`$0468`/`$0469` 由 0x06 变 0x0A，仍为失败）；帧耗时不变（1.033 → 1.034 ms，release，nestest 连续 600 帧） |
 
-当前状态：`cargo test --workspace` 814 全绿、ROM 基线 **57 pass / 17 known**、
-AccuracyCoin **79 通过 / 49 失败**、`STATE_VERSION` 为 3。
+当前状态：`cargo test --workspace` 818 全绿、ROM 基线 **57 pass / 17 known**、
+AccuracyCoin **79 通过 / 49 失败**、`STATE_VERSION` 为 4。
 
 另有两个实验已经实现、量过、并**整体撤回**；它们的证据正是后文的起点（§4）。
+L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当初逼它撤回的依赖者一起搬了过去。
 
 ## 3. 还剩什么
 
@@ -41,8 +43,8 @@ AccuracyCoin **79 通过 / 49 失败**、`STATE_VERSION` 为 3。
 | `ppu_open_bus` | 整个 ROM | PPU 数据总线衰减，**独立特性**，与 cycle 无关 |
 | `apu_test` | `4-jitter`、`5-len_timing`、`6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates` | 帧计数器与 DMC 时序；`5-len_timing` 是长度计数器 bug，其余属 cycle/DMA 工作 |
 
-`4-irq_and_dma` 离通过最近，也是最有用的尺子：§4.2 的第一步已经把它的轨迹推到"与文档期望
-形状一致、只差一个常量偏移"。
+`4-irq_and_dma` 离通过最近，也是最有用的尺子：§4.2 的第一步（已实现）已经把它的轨迹推到
+"与文档期望形状一致、只差一个常量偏移"。
 
 另有两项**根本不是 cycle 问题**，建议单独立项：
 
@@ -95,16 +97,31 @@ mask 的生效时间点也跟着移动了），以及 `apu_test/2-len_table`、`
 
 教训，也正是后续工作的形状：**寄存器写入不能单独搬**，它的依赖者必须一起搬。
 
+下面的第 1 步就是把这条教训用上：保留 L3a 的停放，同时把它当初打断的两个依赖者一起搬
+——立即 NMI 的检测，以及后面的 mask 逐 dot 相位。实测：只做停放（第 1 步）既能复现 L3a 的
+`4-irq_and_dma` 轨迹，**又**保住了 L3a 当初打断的四条线——基线逐条一致：57 pass /
+17 known，AccuracyCoin 79/49。
+
 ### 4.2 L3——把寄存器写入放到它的 cycle 上，并带上依赖者
 
-**第 1 步：写入落在自己的 cycle，立即 NMI 在该 cycle 检测。**
+**第 1 步（已完成）：写入落在自己的 cycle，立即 NMI 在该 cycle 检测。**
 
 - 保留 L3a 的总线侧停放（`$2000-$401F` 的写入；store 落在最后一个 cycle，读改写的丢弃写
   落在前一个 cycle；只针对指令自己发出的写入，宿主外部 poke 仍然立即生效）。
+  *已完成：`NesBus::write` 负责停放，`NesBus::replay_deferred_writes` 在机器推进指令各
+  cycle 时从队尾往前逐个落地；两个槽位足够覆盖全部 opcode，因为只有读改写会写两次。*
 - 把"这条指令是否在 VBlank 已置位时打开了 NMI"的检测，从指令的 cycle 之前搬到**写入落地的
   那个 cycle**，并用这个 cycle 重新表达 `nmi_raised_late`。判据就是
   `ppu_vbl_nmi/04-nmi_control`。
-- 验证：`04-nmi_control` 保持全绿；`4-irq_and_dma` 的轨迹保持形状；其余不动。
+  *已完成：那个标记已经删掉。写入落地时接收 PPU 暂存的 NMI（`NesBus::latch_nmi_line`），
+  而 store 的写入就是它的最后一个 cycle——比采样点晚一个 cycle——所以"延后一条指令"是 cycle
+  顺序自然的结果，不再是人造约束。*
+- 验证结果：`04-nmi_control` 保持全绿；`4-irq_and_dma` 的轨迹变成文档期望的形状
+  （`0 0 0 0 1 1 2 2 4 …`，CRC `218E154C`，与 L3a 那份逐字一致）；`3-nmi_and_irq` 的轨迹
+  移动（`90BC9498` → `7E5D001A`）；其余不动——L3a 当初打断的 `3-A12_clocking`、
+  `2-len_table`、`oam_stress` 全部保持全绿。
+- 本步留下的尾巴：读改写的丢弃写正落在采样点那个 cycle 上。它写的是**旧值**，所以目前无论
+  如何都不会抬起 NMI；到第 2 步给出 dot 偏移，这一点才不再是巧合。
 
 **第 2 步：mask 的逐 dot 相位。**
 
@@ -139,7 +156,9 @@ mask 的生效时间点也跟着移动了），以及 `apu_test/2-len_table`、`
 
 ### 4.4 顺序与每步的预期收益
 
-1. L3 第 1 步——保住 `04-nmi_control`、缩小 `4-irq_and_dma` 的偏移；预计 ROM 数量不变。
+1. L3 第 1 步——**已完成**：保住了 `04-nmi_control`，并把 `4-irq_and_dma` 推到文档期望的
+   形状；ROM 数量如预期不变。L3a 留下的那个常量偏移本步没有改变；下一步的怀疑对象是 §4.3
+   （L4）里 DMA 侧的采样。
 2. L3 第 2 步——`3-A12_clocking`（现已全绿）必须存活，应当移动的是 `10-even_odd_timing`
    与 `4-scanline_timing`。
 3. L3 第 3 步——`2-nmi_and_brk`、`3-nmi_and_irq`。

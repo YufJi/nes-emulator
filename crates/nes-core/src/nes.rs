@@ -31,7 +31,11 @@ pub const BUTTON_RIGHT: u8 = 7;
 /// Magic prefix identifying a [`Nes::save_state`] blob.
 const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// Save-state format version, bumped whenever the encoding changes.
-const STATE_VERSION: u8 = 3;
+///
+/// 4: the mid-frame NMI no longer carries its own flag - the deferred register
+/// write that raises it is replayed on the write's own cycle, so it needs no
+/// save-state field.
+const STATE_VERSION: u8 = 4;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
@@ -214,18 +218,26 @@ struct NesBus {
     controller_strobe: bool,
     /// NMI pending flag (from PPU)
     nmi_pending: bool,
-    /// Instructions an NMI raised by a mid-frame `$2000` write still has to
-    /// wait for the end of the instruction that raised it.
+    /// Register writes the CPU parked while executing an instruction, oldest
+    /// first.
     ///
-    /// Enabling NMI while the flag is already set raises the line during the
-    /// instruction that wrote `$2000` — after that instruction's own interrupt
-    /// poll. The CPU therefore does not see it until one more instruction has
-    /// run, which is what blargg's `04-nmi_control` checks ("immediate
-    /// occurrence should be after NEXT instruction").
+    /// A write to `$2000-$401F` reaches its register on the cycle the chip
+    /// drives it — the last cycle of a store, and for a read-modify-write the
+    /// discarded write of the old value one cycle before that — not at the
+    /// start of the instruction. The CPU executes an instruction in one go, so
+    /// [`NesBus::write`] parks those writes and the machine replays them as it
+    /// ticks the instruction's cycles.
     ///
-    /// A stand-in for placing the write on its real cycle, which is the next
-    /// step: the sequence's cycle-accurate work makes that possible.
-    nmi_raised_late: bool,
+    /// Two slots cover every opcode: only a read-modify-write writes twice.
+    /// Written and emptied inside a single instruction, so it stays out of
+    /// save states.
+    deferred_writes: [Option<(u16, u8)>; 2],
+    /// How many of [`NesBus::deferred_writes`] are live.
+    deferred_count: u8,
+    /// Set while the CPU executes an instruction, so only the writes that
+    /// instruction makes are parked; a write from anywhere else - a host poke -
+    /// still lands at once.
+    defer_writes: bool,
     /// IRQ pending flag (from APU or mapper)
     irq_pending: bool,
     /// Interleaved stereo audio waiting for the host to pull it
@@ -269,7 +281,6 @@ crate::state::state_fields!(NesBus {
     controllers,
     controller_strobe,
     nmi_pending,
-    nmi_raised_late,
     irq_pending,
     audio_accumulator,
     cpu_cycles,
@@ -300,7 +311,9 @@ impl NesBus {
             controllers: [ControllerState::new(), ControllerState::new()],
             controller_strobe: false,
             nmi_pending: false,
-            nmi_raised_late: false,
+            deferred_writes: [None; 2],
+            deferred_count: 0,
+            defer_writes: false,
             irq_pending: false,
             audio_buffer: VecDeque::with_capacity(audio_capacity_floats(
                 DEFAULT_SAMPLE_RATE,
@@ -462,35 +475,34 @@ impl NesBus {
     /// This is the smallest unit of emulation; `frame_ready` is left alone so a
     /// debugger can single-step across a frame boundary and still see it.
     fn step_instruction(&mut self, cpu: &mut Cpu) -> u8 {
-        // Fetch and execute one instruction
+        // Fetch and execute one instruction. Register writes it makes are
+        // parked rather than applied where the CPU asked for them; they land on
+        // the cycles the chip really drives them, in the loop below.
         let opcode = self.read(cpu.pc());
+        self.defer_writes = true;
         let cycles = cpu.execute_instruction(self, opcode);
+        self.defer_writes = false;
 
         // Mappers whose IRQ counter runs at the CPU clock rate.
         if let Some(ref mut mapper) = self.mapper {
             mapper.on_cpu_cycles(cycles);
         }
 
-        // A mid-frame $2000 write raises the NMI line during this instruction,
-        // i.e. after its own poll: the CPU sees it once this instruction has
-        // finished.
-        if self.ppu.nmi_pending() {
-            self.ppu.clear_nmi();
-            self.nmi_raised_late = true;
-        }
-
         // The instruction's cycles, one at a time, sampling the interrupt lines
-        // on the penultimate one - the cycle the chip decides on.
+        // on the penultimate one - the cycle the chip decides on - and landing
+        // any parked register write on the cycle it belongs to.
         let poll_at = cycles.saturating_sub(1);
         for cycle in 1..=cycles {
             self.advance_one_cpu_cycle();
+            self.replay_deferred_writes(cycles - cycle);
             if cycle == poll_at {
                 cpu.poll_interrupts(self);
             }
         }
-
-        // The late NMI waited out the whole instruction, this poll included.
-        self.late_nmi();
+        debug_assert_eq!(
+            self.deferred_count, 0,
+            "every parked write lands inside the instruction's own cycles"
+        );
 
         // Then the interrupt sequence itself, one cycle at a time, so its
         // pushes and vector fetch land on the cycles the chip puts them on.
@@ -512,14 +524,29 @@ impl NesBus {
         cycles + sequence_cycles
     }
 
-    /// Let an NMI raised by a mid-frame `$2000` write reach the CPU.
+    /// Land the parked register write that belongs on the instruction's
+    /// `cycles - remaining`-th cycle.
     ///
-    /// It waited for the end of the instruction that wrote the register, so the
-    /// next instruction's poll is the first one to see it.
-    fn late_nmi(&mut self) {
-        if self.nmi_raised_late {
-            self.nmi_raised_late = false;
-            self.nmi_pending = true;
+    /// The writes are drained from the end: the last one is the instruction's
+    /// last cycle - a store's only write is there - and a read-modify-write's
+    /// discarded write of the old value lands one cycle earlier, which is where
+    /// the chip puts it.
+    ///
+    /// `remaining` is how many of the instruction's cycles still have to run, so
+    /// write `i` of `count` lands with `count - 1 - i` cycles left.
+    fn replay_deferred_writes(&mut self, remaining: u8) {
+        let count = self.deferred_count;
+        if count == 0 || remaining >= count {
+            return;
+        }
+
+        let index = (count - 1 - remaining) as usize;
+        // The last cycle takes the last write, so nothing is left to replay.
+        if remaining == 0 {
+            self.deferred_count = 0;
+        }
+        if let Some((addr, value)) = self.deferred_writes[index].take() {
+            self.write_now(addr, value);
         }
     }
 
@@ -838,28 +865,20 @@ impl Bus for NesBus {
     }
 
     fn write(&mut self, addr: u16, value: u8) {
-        self.open_bus = value;
-
-        match addr {
-            // CPU internal RAM
-            0x0000..=0x1FFF => {
-                self.cpu_ram[(addr & 0x07FF) as usize] = value;
-            }
-            // PPU registers
-            0x2000..=0x3FFF => {
-                self.write_ppu_register(addr, value);
-            }
-            // APU and I/O registers
-            0x4000..=0x401F => {
-                self.write_apu_register(addr, value);
-            }
-            // Cartridge space
-            _ => {
-                if let Some(ref mut mapper) = self.mapper {
-                    mapper.write(addr, value);
-                }
-            }
+        // A register write the CPU makes inside an instruction is parked: it
+        // reaches the register on the cycle the chip drives it, not at the
+        // start of the instruction, and `NesBus::replay_deferred_writes` lands
+        // it there. Everything else - RAM, the stack, the cartridge, and a
+        // write from outside an instruction - is applied at once.
+        if self.defer_writes
+            && (0x2000..=0x401F).contains(&addr)
+            && (self.deferred_count as usize) < self.deferred_writes.len()
+        {
+            self.deferred_writes[self.deferred_count as usize] = Some((addr, value));
+            self.deferred_count += 1;
+            return;
         }
+        self.write_now(addr, value);
     }
 
     fn on_cpu_cycle(&mut self, cycles: u8) {
@@ -886,6 +905,51 @@ impl Bus for NesBus {
 }
 
 impl NesBus {
+    /// Apply a write to the machine.
+    ///
+    /// [`Bus::write`] lands register writes here on the cycle they belong to
+    /// rather than the instruction's start.
+    fn write_now(&mut self, addr: u16, value: u8) {
+        self.open_bus = value;
+
+        match addr {
+            // CPU internal RAM
+            0x0000..=0x1FFF => {
+                self.cpu_ram[(addr & 0x07FF) as usize] = value;
+            }
+            // PPU registers
+            0x2000..=0x3FFF => {
+                self.write_ppu_register(addr, value);
+            }
+            // APU and I/O registers
+            0x4000..=0x401F => {
+                self.write_apu_register(addr, value);
+            }
+            // Cartridge space
+            _ => {
+                if let Some(ref mut mapper) = self.mapper {
+                    mapper.write(addr, value);
+                }
+            }
+        }
+
+        self.latch_nmi_line();
+    }
+
+    /// Take up the NMI line a `$2000` write has just raised.
+    ///
+    /// Writing `$2000` with NMI off while the VBlank flag is set raises the
+    /// line on that cycle. The instruction's own interrupt poll ran on the
+    /// cycle before - the penultimate one - so the CPU sees the interrupt after
+    /// the *next* instruction has run, which is what blargg's `04-nmi_control`
+    /// measures ("immediate occurrence should be after NEXT instruction").
+    fn latch_nmi_line(&mut self) {
+        if self.ppu.nmi_pending() {
+            self.ppu.clear_nmi();
+            self.nmi_pending = true;
+        }
+    }
+
     /// Address the PPU drives for the dot it is on.
     ///
     /// The renderer draws a whole scanline in one go, so the fetches the
@@ -1694,6 +1758,205 @@ mod tests {
             end, start,
             "the timing setting has to move the line the write takes effect on"
         );
+    }
+
+    /// A register write inside an instruction reaches its register on the cycle
+    /// the chip drives it, not at the start of the instruction.
+    #[test]
+    fn test_register_write_lands_on_its_own_cycle() {
+        let mut bus = NesBus::new();
+        bus.defer_writes = true;
+        bus.write(0x2003, 0x11);
+
+        assert_eq!(bus.ppu.oam_addr, 0x00, "the write waits for its cycle");
+        assert_eq!(bus.deferred_count, 1, "one write is parked");
+
+        // A four-cycle store parks one write, and it lands on the last cycle.
+        for remaining in [3, 2, 1] {
+            bus.replay_deferred_writes(remaining);
+            assert_eq!(bus.ppu.oam_addr, 0x00, "cycle {remaining} is too early");
+        }
+        bus.replay_deferred_writes(0);
+        assert_eq!(bus.ppu.oam_addr, 0x11, "the write lands on the last cycle");
+        assert_eq!(bus.deferred_count, 0, "nothing is left to replay");
+    }
+
+    /// A read-modify-write parks two writes and they drain from the end: the
+    /// discarded write of the old value is the penultimate cycle, the new value
+    /// the last one.
+    #[test]
+    fn test_read_modify_write_drains_from_the_end() {
+        let mut bus = NesBus::new();
+        bus.defer_writes = true;
+        bus.write(0x2003, 0x11); // discarded write of the old value
+        bus.write(0x2003, 0x22); // the new value
+        assert_eq!(bus.deferred_count, 2);
+
+        // A six-cycle read-modify-write writes on its last two cycles.
+        for remaining in [5, 4, 3, 2] {
+            bus.replay_deferred_writes(remaining);
+            assert_eq!(bus.ppu.oam_addr, 0x00);
+        }
+        bus.replay_deferred_writes(1);
+        assert_eq!(
+            bus.ppu.oam_addr, 0x11,
+            "the discarded write is the penultimate cycle"
+        );
+        bus.replay_deferred_writes(0);
+        assert_eq!(bus.ppu.oam_addr, 0x22, "the new value is the last cycle");
+        assert_eq!(bus.deferred_count, 0);
+    }
+
+    /// Only `$2000-$401F` is parked: RAM and a write made from outside an
+    /// instruction still take effect where the CPU asked for them.
+    #[test]
+    fn test_only_register_writes_are_deferred() {
+        let mut bus = NesBus::new();
+        bus.defer_writes = true;
+        bus.write(0x0010, 0x5A);
+        assert_eq!(bus.cpu_ram[0x10], 0x5A, "RAM is written at once");
+        assert_eq!(bus.deferred_count, 0);
+
+        bus.defer_writes = false;
+        bus.write(0x2003, 0x33);
+        assert_eq!(
+            bus.ppu.oam_addr, 0x33,
+            "a write outside an instruction lands at once"
+        );
+        assert_eq!(bus.deferred_count, 0);
+    }
+
+    /// The addresses the [`nmi_enable_rom`] program uses.
+    struct NmiEnableRom {
+        rom: Vec<u8>,
+        /// The `STA $2000` that turns NMI on while the VBlank flag is set.
+        write_addr: u16,
+        /// The instruction after the write, which must still run.
+        after_write_addr: u16,
+        /// First instruction of the NMI handler.
+        handler_addr: u16,
+    }
+
+    /// ROM whose program waits for vertical blank and then enables NMI, so the
+    /// write that raises the line lands after its own instruction's interrupt
+    /// poll. The instruction after the write loads a marker into the
+    /// accumulator and the handler stores one to RAM, so which of the two ran
+    /// is what tells the two timings apart.
+    fn nmi_enable_rom() -> NmiEnableRom {
+        let mut rom = Vec::new();
+        rom.extend_from_slice(b"NES\x1a");
+        rom.push(1); // 16KB PRG, whose image sits directly at $8000 on NROM
+        rom.push(1); // 8KB CHR
+        rom.push(0); // mapper 0
+        rom.push(0);
+        rom.extend_from_slice(&[0u8; 8]);
+
+        let mut prg = vec![0u8; 0x4000];
+        let base = 0x8000u16;
+        // +0x00 SEI, CLD, turn NMI and rendering off...
+        // +0x0A spin on $2002 until the VBlank flag appears...
+        // +0x11 STA $2000 (the write under test), +0x14 LDA #$5A (marker), ...
+        // +0x19 handler: LDA #$A5, STA $0011, RTI.
+        let code: &[u8] = &[
+            0x78, // SEI
+            0xD8, // CLD
+            0xA9, 0x00, // LDA #$00
+            0x8D, 0x00, 0x20, // STA $2000 (NMI off)
+            0x8D, 0x01, 0x20, // STA $2001 (rendering off)
+            0xAD, 0x02, 0x20, // LDA $2002
+            0x10, 0xFB, // BPL -5 (wait for VBlank)
+            0xA9, 0x80, // LDA #$80
+            0x8D, 0x00, 0x20, // STA $2000 (NMI on, flag already set)
+            0xA9, 0x5A, // LDA #$5A
+            0x4C, 0x16, 0x80, // JMP $8016 (spin)
+            0xA9, 0xA5, // LDA #$A5
+            0x85, 0x11, // STA $0011
+            0x40, // RTI
+        ];
+        let offset = base as usize - 0x8000;
+        prg[offset..offset + code.len()].copy_from_slice(code);
+
+        let vectors = prg.len() - 6;
+        prg[vectors] = 0x19; // NMI   -> $8019
+        prg[vectors + 1] = 0x80;
+        prg[vectors + 2] = 0x00; // RESET -> $8000
+        prg[vectors + 3] = 0x80;
+        prg[vectors + 4] = 0x1D; // IRQ   -> $801D (RTI)
+        prg[vectors + 5] = 0x80;
+        rom.extend_from_slice(&prg);
+        rom.extend_from_slice(&[0u8; 0x2000]);
+
+        NmiEnableRom {
+            rom,
+            write_addr: base + 0x11,
+            after_write_addr: base + 0x14,
+            handler_addr: base + 0x19,
+        }
+    }
+
+    /// Enabling NMI inside vertical blank raises the line on the write's own
+    /// cycle, which is *after* the instruction's interrupt poll - so the CPU
+    /// takes the interrupt once the next instruction has run. blargg's
+    /// `04-nmi_control` measures the same thing ("immediate occurrence should
+    /// be after NEXT instruction").
+    #[test]
+    fn test_nmi_enabled_in_vblank_waits_for_the_next_instruction() {
+        let program = nmi_enable_rom();
+        let mut nes = Nes::new();
+        nes.load_rom(&program.rom).unwrap();
+
+        // Step up to the write that enables NMI. The program waits for vertical
+        // blank first, so the flag is already set when the write lands.
+        let mut at_the_write = false;
+        for _ in 0..100_000 {
+            if nes.cpu.pc() == program.write_addr {
+                at_the_write = true;
+                break;
+            }
+            nes.step_instruction();
+        }
+        assert!(at_the_write, "the program never reached the $2000 write");
+        assert!(
+            nes.bus.ppu.scanline >= 241,
+            "the program must be inside vertical blank"
+        );
+
+        // The `$2002` read that got the program here cleared the VBlank flag
+        // (that is what reading it does), so put it back: a write landing while
+        // the flag is already set is the case this test is about.
+        nes.bus.ppu.status.insert(PpuStatus::VBLANK);
+
+        // The write raises the line, but not in time for its own instruction's
+        // poll: that ran on the cycle before.
+        nes.step_instruction();
+        assert_eq!(
+            nes.cpu.pc(),
+            program.after_write_addr,
+            "the write's own instruction must not vector"
+        );
+        assert!(nes.bus.nmi_pending, "the write raised the NMI line");
+        assert!(!nes.cpu.in_interrupt_sequence());
+        assert_eq!(nes.peek(0x0011), 0x00, "the handler has not run yet");
+
+        // The instruction after the write runs, and its poll is the first one
+        // that sees the NMI.
+        nes.step_instruction();
+        assert_eq!(
+            nes.cpu.a(),
+            0x5A,
+            "the instruction after the write ran first"
+        );
+        assert_eq!(nes.peek(0x0011), 0x00, "the handler starts after it");
+        assert_eq!(
+            nes.cpu.pc(),
+            program.handler_addr,
+            "the NMI is taken after the next instruction"
+        );
+
+        // And the handler runs the stub's own code, through its own vector.
+        nes.step_instruction(); // LDA #$A5
+        nes.step_instruction(); // STA $0011
+        assert_eq!(nes.peek(0x0011), 0xA5);
     }
 
     #[test]
