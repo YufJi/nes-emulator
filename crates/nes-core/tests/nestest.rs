@@ -819,7 +819,7 @@ fn run_nestest(rom_path: &str) -> Result<NestestResults, NesError> {
             // Check if we're in the open bus region ($4018-$5FFF)
             // A crash in open bus is expected when open bus is properly emulated
             let pc = cpu.pc();
-            if pc >= 0x4018 && pc <= 0x5FFF {
+            if (0x4018..=0x5FFF).contains(&pc) {
                 // Expected crash in open bus region
                 break;
             } else {

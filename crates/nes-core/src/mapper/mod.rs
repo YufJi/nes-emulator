@@ -147,9 +147,9 @@ impl crate::state::StateField for Option<Box<dyn Mapper>> {
 /// discovering [`crate::NesError::UnsupportedMapper`] afterwards.
 pub fn supported_mappers() -> &'static [u16] {
     &[
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 18, 21, 22, 23, 24, 25, 26, 30, 32, 33, 34,
-        38, 48, 65, 66, 69, 71, 74, 79, 87, 94, 95, 112, 113, 114, 117, 118, 119, 133, 140,
-        152, 178, 180, 206, 227, 240, 241, 244,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 18, 21, 22, 23, 24, 25, 26, 30, 32, 33, 34, 38,
+        48, 65, 66, 69, 71, 74, 79, 87, 94, 95, 112, 113, 114, 117, 118, 119, 133, 140, 152, 178,
+        180, 206, 227, 240, 241, 244,
     ]
 }
 
@@ -232,13 +232,13 @@ pub mod mapper178;
 pub mod mapper18;
 pub mod mapper180;
 pub mod mapper2;
+pub mod mapper206;
 pub mod mapper21;
+pub mod mapper227;
+pub mod mapper24;
 pub mod mapper240;
 pub mod mapper241;
 pub mod mapper244;
-pub mod mapper24;
-pub mod mapper206;
-pub mod mapper227;
 pub mod mapper3;
 pub mod mapper30;
 pub mod mapper32;
@@ -254,12 +254,12 @@ pub mod mapper69;
 pub mod mapper7;
 pub mod mapper71;
 pub mod mapper74;
+pub mod mapper79;
 pub mod mapper8;
 pub mod mapper87;
-pub mod mapper95;
-pub mod mapper79;
 pub mod mapper9;
 pub mod mapper94;
+pub mod mapper95;
 
 #[cfg(test)]
 mod tests {

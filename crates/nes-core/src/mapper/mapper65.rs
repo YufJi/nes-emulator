@@ -13,9 +13,9 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_065
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Irem H3001 mapper (Mapper 65)
 #[derive(Debug)]
@@ -43,11 +43,7 @@ impl Mapper65 {
     /// Create a new Mapper65 instance
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>) -> Self {
         let chr_is_ram = chr_rom.is_empty();
-        let chr_rom = if chr_is_ram {
-            vec![0u8; 8192]
-        } else {
-            chr_rom
-        };
+        let chr_rom = if chr_is_ram { vec![0u8; 8192] } else { chr_rom };
 
         Self {
             prg_banks: (prg_rom.len() / 0x2000).max(1),
@@ -83,20 +79,32 @@ impl Mapper for Mapper65 {
             0x0000..=0x1FFF => {
                 let slot = (addr as usize) >> 10;
                 let offset = self.chr_offset(self.chr_banks[slot]);
-                self.chr_rom.get(offset + (addr as usize & 0x3FF)).copied().unwrap_or(0)
+                self.chr_rom
+                    .get(offset + (addr as usize & 0x3FF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0x6000..=0x7FFF => 0,
             0x8000..=0x9FFF => {
                 let offset = self.prg_offset(self.prg_bank_8000);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xA000..=0xBFFF => {
                 let offset = self.prg_offset(self.prg_bank_a000);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xC000..=0xFFFF => {
                 let offset = self.prg_offset((self.prg_banks - 1) as u8);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }

@@ -4,8 +4,8 @@
 //! Fixed PRG-ROM (up to 32 KB), with switchable 8 KB CHR-ROM banks.
 //! See https://www.nesdev.org/wiki/INES_Mapper_003
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// CNROM mapper (Mapper 3)
 #[derive(Debug)]
@@ -135,7 +135,7 @@ mod tests {
     fn test_chr_bank_switching() {
         let prg = vec![0u8; 32768];
         let mut chr = vec![0u8; 0x10000]; // 64KB (8 x 8KB banks)
-        // Mark different banks
+                                          // Mark different banks
         for i in 0..8 {
             chr[i * 0x2000] = i as u8;
         }

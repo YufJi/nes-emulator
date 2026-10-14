@@ -46,7 +46,8 @@ pub fn rom_directory(relative: &str) -> Vec<PathBuf> {
 
 /// A console with `path` loaded.
 pub fn console(path: &Path) -> Nes {
-    let data = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let data =
+        std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
     let mut nes = Nes::new();
     nes.load_rom(&data)
         .unwrap_or_else(|e| panic!("{} was rejected by the core: {e:?}", path.display()));
@@ -132,7 +133,11 @@ pub fn check_blargg_directory(relative: &str, max_frames: u32, expected_failures
     let mut regressions = Vec::new();
     let mut fixed = Vec::new();
     for path in &roms {
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let mut nes = console(path);
         let report = run_blargg(&mut nes, max_frames);
         let expected = expected_failures.contains(&name.as_str());
@@ -184,7 +189,10 @@ pub fn check_blargg_directory(relative: &str, max_frames: u32, expected_failures
 /// One readable line for a failing report.
 pub fn describe(report: &BlarggReport) -> String {
     if report.timed_out {
-        return format!("timed out after {} frames (status {:#04X})", report.frames, report.status);
+        return format!(
+            "timed out after {} frames (status {:#04X})",
+            report.frames, report.status
+        );
     }
     let text = report.text.trim();
     if text.is_empty() {

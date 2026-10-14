@@ -12,8 +12,8 @@
 //!
 //! See https://www.nesdev.org/wiki/AxROM
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// AxROM mapper (Mapper 7)
 #[derive(Debug)]
@@ -121,14 +121,8 @@ mod tests {
     #[test]
     fn test_prg_bank_switching() {
         let mut prg = vec![0u8; 65536]; // 64KB (2 x 32KB banks)
-        // Fill first 32KB with 0x11
-        for i in 0..0x8000 {
-            prg[i] = 0x11;
-        }
-        // Fill second 32KB with 0x22
-        for i in 0x8000..0x10000 {
-            prg[i] = 0x22;
-        }
+        prg[..0x8000].fill(0x11); // Bank 0
+        prg[0x8000..].fill(0x22); // Bank 1
 
         let chr = vec![];
         let mut mapper = Mapper7::new(prg, chr);

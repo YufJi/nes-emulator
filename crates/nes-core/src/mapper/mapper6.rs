@@ -18,9 +18,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_006>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// FFE F4 mapper (Mapper 6)
 #[derive(Debug)]

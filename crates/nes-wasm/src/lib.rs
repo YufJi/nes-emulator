@@ -97,7 +97,9 @@ impl Nes {
         #[cfg(feature = "console_error_panic_hook")]
         console_error_panic_hook::set_once();
 
-        Self { nes: CoreNes::new() }
+        Self {
+            nes: CoreNes::new(),
+        }
     }
 
     /// Load a ROM from byte data.

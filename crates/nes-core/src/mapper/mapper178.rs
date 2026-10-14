@@ -11,9 +11,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_178>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Waixing FS004 mapper (Mapper 178)
 #[derive(Debug)]

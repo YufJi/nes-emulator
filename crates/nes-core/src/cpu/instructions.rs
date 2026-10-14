@@ -92,7 +92,7 @@ impl Cpu {
         }
 
         let op = &OPCODE_TABLE[opcode as usize];
-        
+
         // Fetch operands based on addressing mode
         let (addr, extra_cycles) = match op.addr_mode {
             AddressingMode::Immediate => {
@@ -442,18 +442,22 @@ impl Cpu {
     /// ADC - Add with Carry
     fn adc(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
         let value = bus.read(addr);
-        let carry = if self.status.contains(StatusFlags::C) { 1 } else { 0 };
+        let carry = if self.status.contains(StatusFlags::C) {
+            1
+        } else {
+            0
+        };
         let sum = self.a as u16 + value as u16 + carry;
-        
+
         // Set carry if overflow beyond 8 bits
         self.status.set(StatusFlags::C, sum > 0xFF);
-        
+
         // Overflow flag: set if sign changes incorrectly
         // V = (~(A ^ M) & (A ^ R)) & 0x80
         let result = sum as u8;
         let overflow = (!(self.a ^ value) & (self.a ^ result)) & 0x80;
         self.status.set(StatusFlags::V, overflow != 0);
-        
+
         self.a = result;
         self.update_nz_flags(self.a);
         extra_cycles
@@ -462,19 +466,23 @@ impl Cpu {
     /// SBC - Subtract with Carry
     fn sbc(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
         let value = bus.read(addr);
-        let carry = if self.status.contains(StatusFlags::C) { 1 } else { 0 };
+        let carry = if self.status.contains(StatusFlags::C) {
+            1
+        } else {
+            0
+        };
         // A - M - (1 - C) = A + ~M + C
         let subtrahend = (value as u16) ^ 0xFF;
         let diff = self.a as u16 + subtrahend + carry;
-        
+
         // Set carry if no borrow (result >= 0)
         self.status.set(StatusFlags::C, diff > 0xFF);
-        
+
         // Overflow flag
         let result = diff as u8;
         let overflow = ((self.a ^ result) & (self.a ^ value)) & 0x80;
         self.status.set(StatusFlags::V, overflow != 0);
-        
+
         self.a = result;
         self.update_nz_flags(self.a);
         extra_cycles
@@ -605,7 +613,11 @@ impl Cpu {
 
     /// ROL - Rotate Left
     fn rol(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let carry_in = if self.status.contains(StatusFlags::C) { 1 } else { 0 };
+        let carry_in = if self.status.contains(StatusFlags::C) {
+            1
+        } else {
+            0
+        };
         if addr == 0xFFFF {
             // Accumulator mode
             self.status.set(StatusFlags::C, self.a & 0x80 != 0);
@@ -625,7 +637,11 @@ impl Cpu {
 
     /// ROR - Rotate Right
     fn ror(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let carry_in = if self.status.contains(StatusFlags::C) { 0x80 } else { 0 };
+        let carry_in = if self.status.contains(StatusFlags::C) {
+            0x80
+        } else {
+            0
+        };
         if addr == 0xFFFF {
             // Accumulator mode
             self.status.set(StatusFlags::C, self.a & 0x01 != 0);
@@ -681,7 +697,7 @@ impl Cpu {
         self.status = StatusFlags::from_bits_truncate(status);
         self.status.remove(StatusFlags::B);
         self.status.insert(StatusFlags::U);
-        
+
         // Pull program counter
         let lo = self.pull(bus) as u16;
         let hi = self.pull(bus) as u16;
@@ -725,7 +741,7 @@ impl Cpu {
     fn branch(&mut self, bus: &mut dyn Bus, target: u16) -> u8 {
         let old_pc = self.pc;
         self.pc = target;
-        
+
         // Branch takes 1 extra cycle, plus 1 more if page crossed
         if (old_pc & 0xFF00) != (target & 0xFF00) {
             // Page crossed - dummy read at wrong address
@@ -865,19 +881,19 @@ impl Cpu {
         let return_addr = self.pc.wrapping_add(1);
         self.push(bus, (return_addr >> 8) as u8);
         self.push(bus, (return_addr & 0xFF) as u8);
-        
+
         // Push status with B flag set
         let status = self.status | StatusFlags::B | StatusFlags::U;
         self.push(bus, status.bits());
-        
+
         // Set interrupt disable flag
         self.status.insert(StatusFlags::I);
-        
+
         // Jump to IRQ vector at $FFFE
         let lo = bus.read(0xFFFE) as u16;
         let hi = bus.read(0xFFFF) as u16;
         self.pc = (hi << 8) | lo;
-        
+
         0
     }
 
@@ -920,12 +936,17 @@ impl Cpu {
     fn arr(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
         let value = bus.read(addr);
         let temp = self.a & value;
-        let carry_in = if self.status.contains(StatusFlags::C) { 0x80 } else { 0 };
+        let carry_in = if self.status.contains(StatusFlags::C) {
+            0x80
+        } else {
+            0
+        };
         self.a = (temp >> 1) | carry_in;
         self.update_nz_flags(self.a);
         // Special V and C handling for ARR
         self.status.set(StatusFlags::C, temp & 0x80 != 0);
-        self.status.set(StatusFlags::V, ((temp >> 7) ^ (temp >> 6)) & 1 != 0);
+        self.status
+            .set(StatusFlags::V, ((temp >> 7) ^ (temp >> 6)) & 1 != 0);
         0
     }
 
@@ -987,7 +1008,11 @@ impl Cpu {
         let result = value.wrapping_add(1);
         bus.write(addr, result);
         // SBC the result from accumulator
-        let carry = if self.status.contains(StatusFlags::C) { 1 } else { 0 };
+        let carry = if self.status.contains(StatusFlags::C) {
+            1
+        } else {
+            0
+        };
         let subtrahend = (result as u16) ^ 0xFF;
         let diff = self.a as u16 + subtrahend + carry;
         self.status.set(StatusFlags::C, diff > 0xFF);
@@ -1006,7 +1031,11 @@ impl Cpu {
         // RMW pattern: read, write original, write modified
         let value = bus.read(addr);
         bus.write(addr, value); // dummy write
-        let carry_in = if self.status.contains(StatusFlags::C) { 1 } else { 0 };
+        let carry_in = if self.status.contains(StatusFlags::C) {
+            1
+        } else {
+            0
+        };
         self.status.set(StatusFlags::C, value & 0x80 != 0);
         let result = (value << 1) | carry_in;
         bus.write(addr, result);
@@ -1023,12 +1052,20 @@ impl Cpu {
         // RMW pattern: read, write original, write modified
         let value = bus.read(addr);
         bus.write(addr, value); // dummy write
-        let carry_in = if self.status.contains(StatusFlags::C) { 0x80 } else { 0 };
+        let carry_in = if self.status.contains(StatusFlags::C) {
+            0x80
+        } else {
+            0
+        };
         self.status.set(StatusFlags::C, value & 0x01 != 0);
         let result = (value >> 1) | carry_in;
         bus.write(addr, result);
         // ADC to accumulator
-        let carry = if self.status.contains(StatusFlags::C) { 1 } else { 0 };
+        let carry = if self.status.contains(StatusFlags::C) {
+            1
+        } else {
+            0
+        };
         let sum = self.a as u16 + result as u16 + carry;
         self.status.set(StatusFlags::C, sum > 0xFF);
         let result_a = sum as u8;
@@ -1205,532 +1242,1797 @@ impl Cpu {
 /// variants, and the twelve KILs that hang the CPU.
 pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x00 - BRK (Implied)
-    Opcode { mnemonic: "BRK", addr_mode: AddressingMode::Implied, base_cycles: 7, handler: Cpu::brk },
+    Opcode {
+        mnemonic: "BRK",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 7,
+        handler: Cpu::brk,
+    },
     // 0x01 - ORA (Indirect,X)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::ora,
+    },
     // 0x02 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x03 - SLO (Indirect,X)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::slo },
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 8,
+        handler: Cpu::slo,
+    },
     // 0x04 - IGN (Zero Page)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::ign,
+    },
     // 0x05 - ORA (Zero Page)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::ora,
+    },
     // 0x06 - ASL (Zero Page)
-    Opcode { mnemonic: "ASL", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::asl },
+    Opcode {
+        mnemonic: "ASL",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::asl,
+    },
     // 0x07 - SLO (Zero Page)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::slo },
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::slo,
+    },
     // 0x08 - PHP (Implied)
-    Opcode { mnemonic: "PHP", addr_mode: AddressingMode::Implied, base_cycles: 3, handler: Cpu::php },
+    Opcode {
+        mnemonic: "PHP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 3,
+        handler: Cpu::php,
+    },
     // 0x09 - ORA (Immediate)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::ora,
+    },
     // 0x0A - ASL (Accumulator)
-    Opcode { mnemonic: "ASL", addr_mode: AddressingMode::Accumulator, base_cycles: 2, handler: Cpu::asl },
+    Opcode {
+        mnemonic: "ASL",
+        addr_mode: AddressingMode::Accumulator,
+        base_cycles: 2,
+        handler: Cpu::asl,
+    },
     // 0x0B - ANC (Immediate)
-    Opcode { mnemonic: "ANC", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::anc },
+    Opcode {
+        mnemonic: "ANC",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::anc,
+    },
     // 0x0C - NOP (Absolute) - undocumented, 3 bytes / 4 cycles
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::nop },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::nop,
+    },
     // 0x0D - ORA (Absolute)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::ora,
+    },
     // 0x0E - ASL (Absolute)
-    Opcode { mnemonic: "ASL", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::asl },
+    Opcode {
+        mnemonic: "ASL",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::asl,
+    },
     // 0x0F - SLO (Absolute)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::slo },
-    
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::slo,
+    },
     // 0x10 - BPL (Relative)
-    Opcode { mnemonic: "BPL", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bpl },
+    Opcode {
+        mnemonic: "BPL",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bpl,
+    },
     // 0x11 - ORA (Indirect,Y)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::ora,
+    },
     // 0x12 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x13 - SLO (Indirect,Y)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::slo },
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 8,
+        handler: Cpu::slo,
+    },
     // 0x14 - IGN (Zero Page,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x15 - ORA (Zero Page,X)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ora,
+    },
     // 0x16 - ASL (Zero Page,X)
-    Opcode { mnemonic: "ASL", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::asl },
+    Opcode {
+        mnemonic: "ASL",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::asl,
+    },
     // 0x17 - SLO (Zero Page,X)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::slo },
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::slo,
+    },
     // 0x18 - CLC (Implied)
-    Opcode { mnemonic: "CLC", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::clc },
+    Opcode {
+        mnemonic: "CLC",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::clc,
+    },
     // 0x19 - ORA (Absolute,Y)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::ora,
+    },
     // 0x1A - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dummy },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dummy,
+    },
     // 0x1B - SLO (Absolute,Y)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::AbsoluteY, base_cycles: 7, handler: Cpu::slo },
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 7,
+        handler: Cpu::slo,
+    },
     // 0x1C - IGN (Absolute,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x1D - ORA (Absolute,X)
-    Opcode { mnemonic: "ORA", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ora },
+    Opcode {
+        mnemonic: "ORA",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ora,
+    },
     // 0x1E - ASL (Absolute,X)
-    Opcode { mnemonic: "ASL", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::asl },
+    Opcode {
+        mnemonic: "ASL",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::asl,
+    },
     // 0x1F - SLO (Absolute,X)
-    Opcode { mnemonic: "SLO", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::slo },
-    
+    Opcode {
+        mnemonic: "SLO",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::slo,
+    },
     // 0x20 - JSR (Absolute)
-    Opcode { mnemonic: "JSR", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::jsr },
+    Opcode {
+        mnemonic: "JSR",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::jsr,
+    },
     // 0x21 - AND (Indirect,X)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::and,
+    },
     // 0x22 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x23 - RLA (Indirect,X)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::rla },
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 8,
+        handler: Cpu::rla,
+    },
     // 0x24 - BIT (Zero Page)
-    Opcode { mnemonic: "BIT", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::bit },
+    Opcode {
+        mnemonic: "BIT",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::bit,
+    },
     // 0x25 - AND (Zero Page)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::and,
+    },
     // 0x26 - ROL (Zero Page)
-    Opcode { mnemonic: "ROL", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::rol },
+    Opcode {
+        mnemonic: "ROL",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::rol,
+    },
     // 0x27 - RLA (Zero Page)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::rla },
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::rla,
+    },
     // 0x28 - PLP (Implied)
-    Opcode { mnemonic: "PLP", addr_mode: AddressingMode::Implied, base_cycles: 4, handler: Cpu::plp },
+    Opcode {
+        mnemonic: "PLP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 4,
+        handler: Cpu::plp,
+    },
     // 0x29 - AND (Immediate)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::and,
+    },
     // 0x2A - ROL (Accumulator)
-    Opcode { mnemonic: "ROL", addr_mode: AddressingMode::Accumulator, base_cycles: 2, handler: Cpu::rol },
+    Opcode {
+        mnemonic: "ROL",
+        addr_mode: AddressingMode::Accumulator,
+        base_cycles: 2,
+        handler: Cpu::rol,
+    },
     // 0x2B - ANC (Immediate)
-    Opcode { mnemonic: "ANC", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::anc },
+    Opcode {
+        mnemonic: "ANC",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::anc,
+    },
     // 0x2C - BIT (Absolute)
-    Opcode { mnemonic: "BIT", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::bit },
+    Opcode {
+        mnemonic: "BIT",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::bit,
+    },
     // 0x2D - AND (Absolute)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::and,
+    },
     // 0x2E - ROL (Absolute)
-    Opcode { mnemonic: "ROL", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::rol },
+    Opcode {
+        mnemonic: "ROL",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::rol,
+    },
     // 0x2F - RLA (Absolute)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::rla },
-    
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::rla,
+    },
     // 0x30 - BMI (Relative)
-    Opcode { mnemonic: "BMI", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bmi },
+    Opcode {
+        mnemonic: "BMI",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bmi,
+    },
     // 0x31 - AND (Indirect,Y)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::and,
+    },
     // 0x32 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x33 - RLA (Indirect,Y)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::rla },
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 8,
+        handler: Cpu::rla,
+    },
     // 0x34 - IGN (Zero Page,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x35 - AND (Zero Page,X)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::and,
+    },
     // 0x36 - ROL (Zero Page,X)
-    Opcode { mnemonic: "ROL", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::rol },
+    Opcode {
+        mnemonic: "ROL",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::rol,
+    },
     // 0x37 - RLA (Zero Page,X)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::rla },
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::rla,
+    },
     // 0x38 - SEC (Implied)
-    Opcode { mnemonic: "SEC", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::sec },
+    Opcode {
+        mnemonic: "SEC",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::sec,
+    },
     // 0x39 - AND (Absolute,Y)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::and,
+    },
     // 0x3A - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dummy },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dummy,
+    },
     // 0x3B - RLA (Absolute,Y)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::AbsoluteY, base_cycles: 7, handler: Cpu::rla },
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 7,
+        handler: Cpu::rla,
+    },
     // 0x3C - IGN (Absolute,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x3D - AND (Absolute,X)
-    Opcode { mnemonic: "AND", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::and },
+    Opcode {
+        mnemonic: "AND",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::and,
+    },
     // 0x3E - ROL (Absolute,X)
-    Opcode { mnemonic: "ROL", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::rol },
+    Opcode {
+        mnemonic: "ROL",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::rol,
+    },
     // 0x3F - RLA (Absolute,X)
-    Opcode { mnemonic: "RLA", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::rla },
-    
+    Opcode {
+        mnemonic: "RLA",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::rla,
+    },
     // 0x40 - RTI (Implied)
-    Opcode { mnemonic: "RTI", addr_mode: AddressingMode::Implied, base_cycles: 6, handler: Cpu::rti },
+    Opcode {
+        mnemonic: "RTI",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 6,
+        handler: Cpu::rti,
+    },
     // 0x41 - EOR (Indirect,X)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::eor,
+    },
     // 0x42 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x43 - SRE (Indirect,X)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::sre },
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 8,
+        handler: Cpu::sre,
+    },
     // 0x44 - IGN (Zero Page)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::ign,
+    },
     // 0x45 - EOR (Zero Page)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::eor,
+    },
     // 0x46 - LSR (Zero Page)
-    Opcode { mnemonic: "LSR", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::lsr },
+    Opcode {
+        mnemonic: "LSR",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::lsr,
+    },
     // 0x47 - SRE (Zero Page)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::sre },
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::sre,
+    },
     // 0x48 - PHA (Implied)
-    Opcode { mnemonic: "PHA", addr_mode: AddressingMode::Implied, base_cycles: 3, handler: Cpu::pha },
+    Opcode {
+        mnemonic: "PHA",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 3,
+        handler: Cpu::pha,
+    },
     // 0x49 - EOR (Immediate)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::eor,
+    },
     // 0x4A - LSR (Accumulator)
-    Opcode { mnemonic: "LSR", addr_mode: AddressingMode::Accumulator, base_cycles: 2, handler: Cpu::lsr },
+    Opcode {
+        mnemonic: "LSR",
+        addr_mode: AddressingMode::Accumulator,
+        base_cycles: 2,
+        handler: Cpu::lsr,
+    },
     // 0x4B - ALR (Immediate)
-    Opcode { mnemonic: "ALR", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::alr },
+    Opcode {
+        mnemonic: "ALR",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::alr,
+    },
     // 0x4C - JMP (Absolute)
-    Opcode { mnemonic: "JMP", addr_mode: AddressingMode::Absolute, base_cycles: 3, handler: Cpu::jmp },
+    Opcode {
+        mnemonic: "JMP",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 3,
+        handler: Cpu::jmp,
+    },
     // 0x4D - EOR (Absolute)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::eor,
+    },
     // 0x4E - LSR (Absolute)
-    Opcode { mnemonic: "LSR", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::lsr },
+    Opcode {
+        mnemonic: "LSR",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::lsr,
+    },
     // 0x4F - SRE (Absolute)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::sre },
-    
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::sre,
+    },
     // 0x50 - BVC (Relative)
-    Opcode { mnemonic: "BVC", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bvc },
+    Opcode {
+        mnemonic: "BVC",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bvc,
+    },
     // 0x51 - EOR (Indirect,Y)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::eor,
+    },
     // 0x52 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x53 - SRE (Indirect,Y)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::sre },
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 8,
+        handler: Cpu::sre,
+    },
     // 0x54 - IGN (Zero Page,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x55 - EOR (Zero Page,X)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::eor,
+    },
     // 0x56 - LSR (Zero Page,X)
-    Opcode { mnemonic: "LSR", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::lsr },
+    Opcode {
+        mnemonic: "LSR",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::lsr,
+    },
     // 0x57 - SRE (Zero Page,X)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::sre },
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::sre,
+    },
     // 0x58 - CLI (Implied)
-    Opcode { mnemonic: "CLI", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::cli },
+    Opcode {
+        mnemonic: "CLI",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::cli,
+    },
     // 0x59 - EOR (Absolute,Y)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::eor,
+    },
     // 0x5A - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dummy },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dummy,
+    },
     // 0x5B - SRE (Absolute,Y)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::AbsoluteY, base_cycles: 7, handler: Cpu::sre },
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 7,
+        handler: Cpu::sre,
+    },
     // 0x5C - IGN (Absolute,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x5D - EOR (Absolute,X)
-    Opcode { mnemonic: "EOR", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::eor },
+    Opcode {
+        mnemonic: "EOR",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::eor,
+    },
     // 0x5E - LSR (Absolute,X)
-    Opcode { mnemonic: "LSR", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::lsr },
+    Opcode {
+        mnemonic: "LSR",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::lsr,
+    },
     // 0x5F - SRE (Absolute,X)
-    Opcode { mnemonic: "SRE", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::sre },
-    
+    Opcode {
+        mnemonic: "SRE",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::sre,
+    },
     // 0x60 - RTS (Implied)
-    Opcode { mnemonic: "RTS", addr_mode: AddressingMode::Implied, base_cycles: 6, handler: Cpu::rts },
+    Opcode {
+        mnemonic: "RTS",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 6,
+        handler: Cpu::rts,
+    },
     // 0x61 - ADC (Indirect,X)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::adc,
+    },
     // 0x62 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x63 - RRA (Indirect,X)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::rra },
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 8,
+        handler: Cpu::rra,
+    },
     // 0x64 - IGN (Zero Page)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::ign,
+    },
     // 0x65 - ADC (Zero Page)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::adc,
+    },
     // 0x66 - ROR (Zero Page)
-    Opcode { mnemonic: "ROR", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::ror },
+    Opcode {
+        mnemonic: "ROR",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::ror,
+    },
     // 0x67 - RRA (Zero Page)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::rra },
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::rra,
+    },
     // 0x68 - PLA (Implied)
-    Opcode { mnemonic: "PLA", addr_mode: AddressingMode::Implied, base_cycles: 4, handler: Cpu::pla },
+    Opcode {
+        mnemonic: "PLA",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 4,
+        handler: Cpu::pla,
+    },
     // 0x69 - ADC (Immediate)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::adc,
+    },
     // 0x6A - ROR (Accumulator)
-    Opcode { mnemonic: "ROR", addr_mode: AddressingMode::Accumulator, base_cycles: 2, handler: Cpu::ror },
+    Opcode {
+        mnemonic: "ROR",
+        addr_mode: AddressingMode::Accumulator,
+        base_cycles: 2,
+        handler: Cpu::ror,
+    },
     // 0x6B - ARR (Immediate)
-    Opcode { mnemonic: "ARR", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::arr },
+    Opcode {
+        mnemonic: "ARR",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::arr,
+    },
     // 0x6C - JMP (Indirect)
-    Opcode { mnemonic: "JMP", addr_mode: AddressingMode::Indirect, base_cycles: 5, handler: Cpu::jmp },
+    Opcode {
+        mnemonic: "JMP",
+        addr_mode: AddressingMode::Indirect,
+        base_cycles: 5,
+        handler: Cpu::jmp,
+    },
     // 0x6D - ADC (Absolute)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::adc,
+    },
     // 0x6E - ROR (Absolute)
-    Opcode { mnemonic: "ROR", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::ror },
+    Opcode {
+        mnemonic: "ROR",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::ror,
+    },
     // 0x6F - RRA (Absolute)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::rra },
-    
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::rra,
+    },
     // 0x70 - BVS (Relative)
-    Opcode { mnemonic: "BVS", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bvs },
+    Opcode {
+        mnemonic: "BVS",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bvs,
+    },
     // 0x71 - ADC (Indirect,Y)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::adc,
+    },
     // 0x72 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x73 - RRA (Indirect,Y)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::rra },
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 8,
+        handler: Cpu::rra,
+    },
     // 0x74 - IGN (Zero Page,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x75 - ADC (Zero Page,X)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::adc,
+    },
     // 0x76 - ROR (Zero Page,X)
-    Opcode { mnemonic: "ROR", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::ror },
+    Opcode {
+        mnemonic: "ROR",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::ror,
+    },
     // 0x77 - RRA (Zero Page,X)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::rra },
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::rra,
+    },
     // 0x78 - SEI (Implied)
-    Opcode { mnemonic: "SEI", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::sei },
+    Opcode {
+        mnemonic: "SEI",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::sei,
+    },
     // 0x79 - ADC (Absolute,Y)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::adc,
+    },
     // 0x7A - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dummy },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dummy,
+    },
     // 0x7B - RRA (Absolute,Y)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::AbsoluteY, base_cycles: 7, handler: Cpu::rra },
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 7,
+        handler: Cpu::rra,
+    },
     // 0x7C - IGN (Absolute,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0x7D - ADC (Absolute,X)
-    Opcode { mnemonic: "ADC", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::adc },
+    Opcode {
+        mnemonic: "ADC",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::adc,
+    },
     // 0x7E - ROR (Absolute,X)
-    Opcode { mnemonic: "ROR", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::ror },
+    Opcode {
+        mnemonic: "ROR",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::ror,
+    },
     // 0x7F - RRA (Absolute,X)
-    Opcode { mnemonic: "RRA", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::rra },
-    
+    Opcode {
+        mnemonic: "RRA",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::rra,
+    },
     // 0x80 - SKB (Immediate)
-    Opcode { mnemonic: "SKB", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::skb },
+    Opcode {
+        mnemonic: "SKB",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::skb,
+    },
     // 0x81 - STA (Indirect,X)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::sta,
+    },
     // 0x82 - SKB (Immediate)
-    Opcode { mnemonic: "SKB", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::skb },
+    Opcode {
+        mnemonic: "SKB",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::skb,
+    },
     // 0x83 - SAX (Indirect,X)
-    Opcode { mnemonic: "SAX", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::sax },
+    Opcode {
+        mnemonic: "SAX",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::sax,
+    },
     // 0x84 - STY (Zero Page)
-    Opcode { mnemonic: "STY", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::sty },
+    Opcode {
+        mnemonic: "STY",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::sty,
+    },
     // 0x85 - STA (Zero Page)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::sta,
+    },
     // 0x86 - STX (Zero Page)
-    Opcode { mnemonic: "STX", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::stx },
+    Opcode {
+        mnemonic: "STX",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::stx,
+    },
     // 0x87 - SAX (Zero Page)
-    Opcode { mnemonic: "SAX", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::sax },
+    Opcode {
+        mnemonic: "SAX",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::sax,
+    },
     // 0x88 - DEY (Implied)
-    Opcode { mnemonic: "DEY", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dey },
+    Opcode {
+        mnemonic: "DEY",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dey,
+    },
     // 0x89 - SKB (Immediate)
-    Opcode { mnemonic: "SKB", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::skb },
+    Opcode {
+        mnemonic: "SKB",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::skb,
+    },
     // 0x8A - TXA (Implied)
-    Opcode { mnemonic: "TXA", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::txa },
+    Opcode {
+        mnemonic: "TXA",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::txa,
+    },
     // 0x8B - ANE (Immediate)
-    Opcode { mnemonic: "ANE", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::ane },
+    Opcode {
+        mnemonic: "ANE",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::ane,
+    },
     // 0x8C - STY (Absolute)
-    Opcode { mnemonic: "STY", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::sty },
+    Opcode {
+        mnemonic: "STY",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::sty,
+    },
     // 0x8D - STA (Absolute)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::sta,
+    },
     // 0x8E - STX (Absolute)
-    Opcode { mnemonic: "STX", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::stx },
+    Opcode {
+        mnemonic: "STX",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::stx,
+    },
     // 0x8F - SAX (Absolute)
-    Opcode { mnemonic: "SAX", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::sax },
-    
+    Opcode {
+        mnemonic: "SAX",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::sax,
+    },
     // 0x90 - BCC (Relative)
-    Opcode { mnemonic: "BCC", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bcc },
+    Opcode {
+        mnemonic: "BCC",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bcc,
+    },
     // 0x91 - STA (Indirect,Y)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::IndirectY, base_cycles: 6, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 6,
+        handler: Cpu::sta,
+    },
     // 0x92 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0x93 - SHA (Indirect,Y)
-    Opcode { mnemonic: "SHA", addr_mode: AddressingMode::IndirectY, base_cycles: 6, handler: Cpu::sha },
+    Opcode {
+        mnemonic: "SHA",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 6,
+        handler: Cpu::sha,
+    },
     // 0x94 - STY (Zero Page,X)
-    Opcode { mnemonic: "STY", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::sty },
+    Opcode {
+        mnemonic: "STY",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::sty,
+    },
     // 0x95 - STA (Zero Page,X)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::sta,
+    },
     // 0x96 - STX (Zero Page,Y)
-    Opcode { mnemonic: "STX", addr_mode: AddressingMode::ZeroPageY, base_cycles: 4, handler: Cpu::stx },
+    Opcode {
+        mnemonic: "STX",
+        addr_mode: AddressingMode::ZeroPageY,
+        base_cycles: 4,
+        handler: Cpu::stx,
+    },
     // 0x97 - SAX (Zero Page,Y)
-    Opcode { mnemonic: "SAX", addr_mode: AddressingMode::ZeroPageY, base_cycles: 4, handler: Cpu::sax },
+    Opcode {
+        mnemonic: "SAX",
+        addr_mode: AddressingMode::ZeroPageY,
+        base_cycles: 4,
+        handler: Cpu::sax,
+    },
     // 0x98 - TYA (Implied)
-    Opcode { mnemonic: "TYA", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::tya },
+    Opcode {
+        mnemonic: "TYA",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::tya,
+    },
     // 0x99 - STA (Absolute,Y)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::AbsoluteY, base_cycles: 5, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 5,
+        handler: Cpu::sta,
+    },
     // 0x9A - TXS (Implied)
-    Opcode { mnemonic: "TXS", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::txs },
+    Opcode {
+        mnemonic: "TXS",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::txs,
+    },
     // 0x9B - SHS (Absolute,Y)
-    Opcode { mnemonic: "SHS", addr_mode: AddressingMode::AbsoluteY, base_cycles: 5, handler: Cpu::shs },
+    Opcode {
+        mnemonic: "SHS",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 5,
+        handler: Cpu::shs,
+    },
     // 0x9C - SHY (Absolute,X)
-    Opcode { mnemonic: "SHY", addr_mode: AddressingMode::AbsoluteX, base_cycles: 5, handler: Cpu::shy },
+    Opcode {
+        mnemonic: "SHY",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 5,
+        handler: Cpu::shy,
+    },
     // 0x9D - STA (Absolute,X)
-    Opcode { mnemonic: "STA", addr_mode: AddressingMode::AbsoluteX, base_cycles: 5, handler: Cpu::sta },
+    Opcode {
+        mnemonic: "STA",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 5,
+        handler: Cpu::sta,
+    },
     // 0x9E - SHX (Absolute,Y)
-    Opcode { mnemonic: "SHX", addr_mode: AddressingMode::AbsoluteY, base_cycles: 5, handler: Cpu::shx },
+    Opcode {
+        mnemonic: "SHX",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 5,
+        handler: Cpu::shx,
+    },
     // 0x9F - SHA (Absolute,Y)
-    Opcode { mnemonic: "SHA", addr_mode: AddressingMode::AbsoluteY, base_cycles: 5, handler: Cpu::sha },
-    
+    Opcode {
+        mnemonic: "SHA",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 5,
+        handler: Cpu::sha,
+    },
     // 0xA0 - LDY (Immediate)
-    Opcode { mnemonic: "LDY", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::ldy },
+    Opcode {
+        mnemonic: "LDY",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::ldy,
+    },
     // 0xA1 - LDA (Indirect,X)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::lda,
+    },
     // 0xA2 - LDX (Immediate)
-    Opcode { mnemonic: "LDX", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::ldx },
+    Opcode {
+        mnemonic: "LDX",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::ldx,
+    },
     // 0xA3 - LAX (Indirect,X)
-    Opcode { mnemonic: "LAX", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::lax },
+    Opcode {
+        mnemonic: "LAX",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::lax,
+    },
     // 0xA4 - LDY (Zero Page)
-    Opcode { mnemonic: "LDY", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::ldy },
+    Opcode {
+        mnemonic: "LDY",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::ldy,
+    },
     // 0xA5 - LDA (Zero Page)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::lda,
+    },
     // 0xA6 - LDX (Zero Page)
-    Opcode { mnemonic: "LDX", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::ldx },
+    Opcode {
+        mnemonic: "LDX",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::ldx,
+    },
     // 0xA7 - LAX (Zero Page)
-    Opcode { mnemonic: "LAX", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::lax },
+    Opcode {
+        mnemonic: "LAX",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::lax,
+    },
     // 0xA8 - TAY (Implied)
-    Opcode { mnemonic: "TAY", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::tay },
+    Opcode {
+        mnemonic: "TAY",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::tay,
+    },
     // 0xA9 - LDA (Immediate)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::lda,
+    },
     // 0xAA - TAX (Implied)
-    Opcode { mnemonic: "TAX", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::tax },
+    Opcode {
+        mnemonic: "TAX",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::tax,
+    },
     // 0xAB - LXA (Immediate)
-    Opcode { mnemonic: "LXA", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::lxa },
+    Opcode {
+        mnemonic: "LXA",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::lxa,
+    },
     // 0xAC - LDY (Absolute)
-    Opcode { mnemonic: "LDY", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::ldy },
+    Opcode {
+        mnemonic: "LDY",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::ldy,
+    },
     // 0xAD - LDA (Absolute)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::lda,
+    },
     // 0xAE - LDX (Absolute)
-    Opcode { mnemonic: "LDX", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::ldx },
+    Opcode {
+        mnemonic: "LDX",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::ldx,
+    },
     // 0xAF - LAX (Absolute)
-    Opcode { mnemonic: "LAX", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::lax },
-    
+    Opcode {
+        mnemonic: "LAX",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::lax,
+    },
     // 0xB0 - BCS (Relative)
-    Opcode { mnemonic: "BCS", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bcs },
+    Opcode {
+        mnemonic: "BCS",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bcs,
+    },
     // 0xB1 - LDA (Indirect,Y)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::lda,
+    },
     // 0xB2 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0xB3 - LAX (Indirect,Y)
-    Opcode { mnemonic: "LAX", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::lax },
+    Opcode {
+        mnemonic: "LAX",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::lax,
+    },
     // 0xB4 - LDY (Zero Page,X)
-    Opcode { mnemonic: "LDY", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ldy },
+    Opcode {
+        mnemonic: "LDY",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ldy,
+    },
     // 0xB5 - LDA (Zero Page,X)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::lda,
+    },
     // 0xB6 - LDX (Zero Page,Y)
-    Opcode { mnemonic: "LDX", addr_mode: AddressingMode::ZeroPageY, base_cycles: 4, handler: Cpu::ldx },
+    Opcode {
+        mnemonic: "LDX",
+        addr_mode: AddressingMode::ZeroPageY,
+        base_cycles: 4,
+        handler: Cpu::ldx,
+    },
     // 0xB7 - LAX (Zero Page,Y)
-    Opcode { mnemonic: "LAX", addr_mode: AddressingMode::ZeroPageY, base_cycles: 4, handler: Cpu::lax },
+    Opcode {
+        mnemonic: "LAX",
+        addr_mode: AddressingMode::ZeroPageY,
+        base_cycles: 4,
+        handler: Cpu::lax,
+    },
     // 0xB8 - CLV (Implied)
-    Opcode { mnemonic: "CLV", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::clv },
+    Opcode {
+        mnemonic: "CLV",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::clv,
+    },
     // 0xB9 - LDA (Absolute,Y)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::lda,
+    },
     // 0xBA - TSX (Implied)
-    Opcode { mnemonic: "TSX", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::tsx },
+    Opcode {
+        mnemonic: "TSX",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::tsx,
+    },
     // 0xBB - LAE (Absolute,Y)
-    Opcode { mnemonic: "LAE", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::lae },
+    Opcode {
+        mnemonic: "LAE",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::lae,
+    },
     // 0xBC - LDY (Absolute,X)
-    Opcode { mnemonic: "LDY", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ldy },
+    Opcode {
+        mnemonic: "LDY",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ldy,
+    },
     // 0xBD - LDA (Absolute,X)
-    Opcode { mnemonic: "LDA", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::lda },
+    Opcode {
+        mnemonic: "LDA",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::lda,
+    },
     // 0xBE - LDX (Absolute,Y)
-    Opcode { mnemonic: "LDX", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::ldx },
+    Opcode {
+        mnemonic: "LDX",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::ldx,
+    },
     // 0xBF - LAX (Absolute,Y)
-    Opcode { mnemonic: "LAX", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::lax },
-    
+    Opcode {
+        mnemonic: "LAX",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::lax,
+    },
     // 0xC0 - CPY (Immediate)
-    Opcode { mnemonic: "CPY", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::cpy },
+    Opcode {
+        mnemonic: "CPY",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::cpy,
+    },
     // 0xC1 - CMP (Indirect,X)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::cmp,
+    },
     // 0xC2 - SKB (Immediate)
-    Opcode { mnemonic: "SKB", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::skb },
+    Opcode {
+        mnemonic: "SKB",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::skb,
+    },
     // 0xC3 - DCP (Indirect,X)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::dcp },
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 8,
+        handler: Cpu::dcp,
+    },
     // 0xC4 - CPY (Zero Page)
-    Opcode { mnemonic: "CPY", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::cpy },
+    Opcode {
+        mnemonic: "CPY",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::cpy,
+    },
     // 0xC5 - CMP (Zero Page)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::cmp,
+    },
     // 0xC6 - DEC (Zero Page)
-    Opcode { mnemonic: "DEC", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::dec },
+    Opcode {
+        mnemonic: "DEC",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::dec,
+    },
     // 0xC7 - DCP (Zero Page)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::dcp },
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::dcp,
+    },
     // 0xC8 - INY (Implied)
-    Opcode { mnemonic: "INY", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::iny },
+    Opcode {
+        mnemonic: "INY",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::iny,
+    },
     // 0xC9 - CMP (Immediate)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::cmp,
+    },
     // 0xCA - DEX (Implied)
-    Opcode { mnemonic: "DEX", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dex },
+    Opcode {
+        mnemonic: "DEX",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dex,
+    },
     // 0xCB - AXS (Immediate)
-    Opcode { mnemonic: "AXS", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::axs },
+    Opcode {
+        mnemonic: "AXS",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::axs,
+    },
     // 0xCC - CPY (Absolute)
-    Opcode { mnemonic: "CPY", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::cpy },
+    Opcode {
+        mnemonic: "CPY",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::cpy,
+    },
     // 0xCD - CMP (Absolute)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::cmp,
+    },
     // 0xCE - DEC (Absolute)
-    Opcode { mnemonic: "DEC", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::dec },
+    Opcode {
+        mnemonic: "DEC",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::dec,
+    },
     // 0xCF - DCP (Absolute)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::dcp },
-    
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::dcp,
+    },
     // 0xD0 - BNE (Relative)
-    Opcode { mnemonic: "BNE", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::bne },
+    Opcode {
+        mnemonic: "BNE",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::bne,
+    },
     // 0xD1 - CMP (Indirect,Y)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::cmp,
+    },
     // 0xD2 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0xD3 - DCP (Indirect,Y)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::dcp },
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 8,
+        handler: Cpu::dcp,
+    },
     // 0xD4 - IGN (Zero Page,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0xD5 - CMP (Zero Page,X)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::cmp,
+    },
     // 0xD6 - DEC (Zero Page,X)
-    Opcode { mnemonic: "DEC", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::dec },
+    Opcode {
+        mnemonic: "DEC",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::dec,
+    },
     // 0xD7 - DCP (Zero Page,X)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::dcp },
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::dcp,
+    },
     // 0xD8 - CLD (Implied)
-    Opcode { mnemonic: "CLD", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::cld },
+    Opcode {
+        mnemonic: "CLD",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::cld,
+    },
     // 0xD9 - CMP (Absolute,Y)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::cmp,
+    },
     // 0xDA - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dummy },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dummy,
+    },
     // 0xDB - DCP (Absolute,Y)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::AbsoluteY, base_cycles: 7, handler: Cpu::dcp },
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 7,
+        handler: Cpu::dcp,
+    },
     // 0xDC - IGN (Absolute,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0xDD - CMP (Absolute,X)
-    Opcode { mnemonic: "CMP", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::cmp },
+    Opcode {
+        mnemonic: "CMP",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::cmp,
+    },
     // 0xDE - DEC (Absolute,X)
-    Opcode { mnemonic: "DEC", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::dec },
+    Opcode {
+        mnemonic: "DEC",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::dec,
+    },
     // 0xDF - DCP (Absolute,X)
-    Opcode { mnemonic: "DCP", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::dcp },
-    
+    Opcode {
+        mnemonic: "DCP",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::dcp,
+    },
     // 0xE0 - CPX (Immediate)
-    Opcode { mnemonic: "CPX", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::cpx },
+    Opcode {
+        mnemonic: "CPX",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::cpx,
+    },
     // 0xE1 - SBC (Indirect,X)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 6,
+        handler: Cpu::sbc,
+    },
     // 0xE2 - SKB (Immediate)
-    Opcode { mnemonic: "SKB", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::skb },
+    Opcode {
+        mnemonic: "SKB",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::skb,
+    },
     // 0xE3 - ISC (Indirect,X)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::isc },
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::IndirectX,
+        base_cycles: 8,
+        handler: Cpu::isc,
+    },
     // 0xE4 - CPX (Zero Page)
-    Opcode { mnemonic: "CPX", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::cpx },
+    Opcode {
+        mnemonic: "CPX",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::cpx,
+    },
     // 0xE5 - SBC (Zero Page)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::ZeroPage, base_cycles: 3, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 3,
+        handler: Cpu::sbc,
+    },
     // 0xE6 - INC (Zero Page)
-    Opcode { mnemonic: "INC", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::inc },
+    Opcode {
+        mnemonic: "INC",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::inc,
+    },
     // 0xE7 - ISC (Zero Page)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::ZeroPage, base_cycles: 5, handler: Cpu::isc },
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::ZeroPage,
+        base_cycles: 5,
+        handler: Cpu::isc,
+    },
     // 0xE8 - INX (Implied)
-    Opcode { mnemonic: "INX", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::inx },
+    Opcode {
+        mnemonic: "INX",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::inx,
+    },
     // 0xE9 - SBC (Immediate)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::sbc,
+    },
     // 0xEA - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::nop },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::nop,
+    },
     // 0xEB - SBC (Immediate)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::Immediate,
+        base_cycles: 2,
+        handler: Cpu::sbc,
+    },
     // 0xEC - CPX (Absolute)
-    Opcode { mnemonic: "CPX", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::cpx },
+    Opcode {
+        mnemonic: "CPX",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::cpx,
+    },
     // 0xED - SBC (Absolute)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 4,
+        handler: Cpu::sbc,
+    },
     // 0xEE - INC (Absolute)
-    Opcode { mnemonic: "INC", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::inc },
+    Opcode {
+        mnemonic: "INC",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::inc,
+    },
     // 0xEF - ISC (Absolute)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::Absolute, base_cycles: 6, handler: Cpu::isc },
-    
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::Absolute,
+        base_cycles: 6,
+        handler: Cpu::isc,
+    },
     // 0xF0 - BEQ (Relative)
-    Opcode { mnemonic: "BEQ", addr_mode: AddressingMode::Relative, base_cycles: 2, handler: Cpu::beq },
+    Opcode {
+        mnemonic: "BEQ",
+        addr_mode: AddressingMode::Relative,
+        base_cycles: 2,
+        handler: Cpu::beq,
+    },
     // 0xF1 - SBC (Indirect,Y)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 5,
+        handler: Cpu::sbc,
+    },
     // 0xF2 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
+    Opcode {
+        mnemonic: "KIL",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::jam,
+    },
     // 0xF3 - ISC (Indirect,Y)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::isc },
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::IndirectY,
+        base_cycles: 8,
+        handler: Cpu::isc,
+    },
     // 0xF4 - IGN (Zero Page,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0xF5 - SBC (Zero Page,X)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::ZeroPageX, base_cycles: 4, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 4,
+        handler: Cpu::sbc,
+    },
     // 0xF6 - INC (Zero Page,X)
-    Opcode { mnemonic: "INC", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::inc },
+    Opcode {
+        mnemonic: "INC",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::inc,
+    },
     // 0xF7 - ISC (Zero Page,X)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::ZeroPageX, base_cycles: 6, handler: Cpu::isc },
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::ZeroPageX,
+        base_cycles: 6,
+        handler: Cpu::isc,
+    },
     // 0xF8 - SED (Implied)
-    Opcode { mnemonic: "SED", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::sed },
+    Opcode {
+        mnemonic: "SED",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::sed,
+    },
     // 0xF9 - SBC (Absolute,Y)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::AbsoluteY, base_cycles: 4, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 4,
+        handler: Cpu::sbc,
+    },
     // 0xFA - NOP (Implied)
-    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::dummy },
+    Opcode {
+        mnemonic: "NOP",
+        addr_mode: AddressingMode::Implied,
+        base_cycles: 2,
+        handler: Cpu::dummy,
+    },
     // 0xFB - ISC (Absolute,Y)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::AbsoluteY, base_cycles: 7, handler: Cpu::isc },
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::AbsoluteY,
+        base_cycles: 7,
+        handler: Cpu::isc,
+    },
     // 0xFC - IGN (Absolute,X)
-    Opcode { mnemonic: "IGN", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::ign },
+    Opcode {
+        mnemonic: "IGN",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::ign,
+    },
     // 0xFD - SBC (Absolute,X)
-    Opcode { mnemonic: "SBC", addr_mode: AddressingMode::AbsoluteX, base_cycles: 4, handler: Cpu::sbc },
+    Opcode {
+        mnemonic: "SBC",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 4,
+        handler: Cpu::sbc,
+    },
     // 0xFE - INC (Absolute,X)
-    Opcode { mnemonic: "INC", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::inc },
+    Opcode {
+        mnemonic: "INC",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::inc,
+    },
     // 0xFF - ISC (Absolute,X)
-    Opcode { mnemonic: "ISC", addr_mode: AddressingMode::AbsoluteX, base_cycles: 7, handler: Cpu::isc },
+    Opcode {
+        mnemonic: "ISC",
+        addr_mode: AddressingMode::AbsoluteX,
+        base_cycles: 7,
+        handler: Cpu::isc,
+    },
 ];
 
 #[cfg(test)]
@@ -1795,13 +3097,13 @@ mod tests {
     fn test_lda_immediate() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // LDA #$42
         bus.load_program(0x0600, &[0xA9, 0x42]);
         cpu.pc = 0x0600;
-        
+
         let cycles = cpu.execute_instruction(&mut bus, 0xA9);
-        
+
         assert_eq!(cpu.a, 0x42);
         assert!(!cpu.status.contains(StatusFlags::Z));
         assert!(!cpu.status.contains(StatusFlags::N));
@@ -1812,13 +3114,13 @@ mod tests {
     fn test_lda_zero_flag() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // LDA #$00
         bus.load_program(0x0600, &[0xA9, 0x00]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xA9);
-        
+
         assert_eq!(cpu.a, 0x00);
         assert!(cpu.status.contains(StatusFlags::Z));
         assert!(!cpu.status.contains(StatusFlags::N));
@@ -1828,13 +3130,13 @@ mod tests {
     fn test_lda_negative_flag() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // LDA #$80
         bus.load_program(0x0600, &[0xA9, 0x80]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xA9);
-        
+
         assert_eq!(cpu.a, 0x80);
         assert!(!cpu.status.contains(StatusFlags::Z));
         assert!(cpu.status.contains(StatusFlags::N));
@@ -1844,14 +3146,14 @@ mod tests {
     fn test_sta_absolute() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x42;
         // STA $0200
         bus.load_program(0x0600, &[0x8D, 0x00, 0x02]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x8D);
-        
+
         assert_eq!(bus.memory[0x0200], 0x42);
     }
 
@@ -1859,14 +3161,14 @@ mod tests {
     fn test_tax() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x42;
         // TAX
         bus.load_program(0x0600, &[0xAA]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xAA);
-        
+
         assert_eq!(cpu.x, 0x42);
         assert!(!cpu.status.contains(StatusFlags::Z));
         assert!(!cpu.status.contains(StatusFlags::N));
@@ -1876,14 +3178,14 @@ mod tests {
     fn test_adc() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x10;
         // ADC #$20
         bus.load_program(0x0600, &[0x69, 0x20]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x69);
-        
+
         assert_eq!(cpu.a, 0x30);
         assert!(!cpu.status.contains(StatusFlags::C));
     }
@@ -1892,15 +3194,15 @@ mod tests {
     fn test_adc_with_carry() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x10;
         cpu.status.insert(StatusFlags::C);
         // ADC #$20
         bus.load_program(0x0600, &[0x69, 0x20]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x69);
-        
+
         assert_eq!(cpu.a, 0x31);
     }
 
@@ -1908,15 +3210,15 @@ mod tests {
     fn test_adc_overflow() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // Adding two positive numbers gives negative result
         cpu.a = 0x50; // +80
-        // ADC #$50
+                      // ADC #$50
         bus.load_program(0x0600, &[0x69, 0x50]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x69);
-        
+
         assert_eq!(cpu.a, 0xA0); // -96 (overflow!)
         assert!(cpu.status.contains(StatusFlags::V));
     }
@@ -1925,15 +3227,15 @@ mod tests {
     fn test_sbc() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x50;
         cpu.status.insert(StatusFlags::C); // No borrow
-        // SBC #$20
+                                           // SBC #$20
         bus.load_program(0x0600, &[0xE9, 0x20]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xE9);
-        
+
         assert_eq!(cpu.a, 0x30);
         assert!(cpu.status.contains(StatusFlags::C)); // No borrow needed
     }
@@ -1942,14 +3244,14 @@ mod tests {
     fn test_and() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0xF0;
         // AND #$0F
         bus.load_program(0x0600, &[0x29, 0x0F]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x29);
-        
+
         assert_eq!(cpu.a, 0x00);
         assert!(cpu.status.contains(StatusFlags::Z));
     }
@@ -1958,14 +3260,14 @@ mod tests {
     fn test_ora() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0xF0;
         // ORA #$0F
         bus.load_program(0x0600, &[0x09, 0x0F]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x09);
-        
+
         assert_eq!(cpu.a, 0xFF);
         assert!(cpu.status.contains(StatusFlags::N));
     }
@@ -1974,14 +3276,14 @@ mod tests {
     fn test_eor() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0xFF;
         // EOR #$0F
         bus.load_program(0x0600, &[0x49, 0x0F]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x49);
-        
+
         assert_eq!(cpu.a, 0xF0);
     }
 
@@ -1989,14 +3291,14 @@ mod tests {
     fn test_asl_accumulator() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x81;
         // ASL A
         bus.load_program(0x0600, &[0x0A]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x0A);
-        
+
         assert_eq!(cpu.a, 0x02);
         assert!(cpu.status.contains(StatusFlags::C));
     }
@@ -2005,14 +3307,14 @@ mod tests {
     fn test_lsr_accumulator() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x81;
         // LSR A
         bus.load_program(0x0600, &[0x4A]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x4A);
-        
+
         assert_eq!(cpu.a, 0x40);
         assert!(cpu.status.contains(StatusFlags::C));
     }
@@ -2021,15 +3323,15 @@ mod tests {
     fn test_rol_accumulator() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x80;
         cpu.status.insert(StatusFlags::C);
         // ROL A
         bus.load_program(0x0600, &[0x2A]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x2A);
-        
+
         assert_eq!(cpu.a, 0x01);
         assert!(cpu.status.contains(StatusFlags::C));
     }
@@ -2038,15 +3340,15 @@ mod tests {
     fn test_ror_accumulator() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x01;
         cpu.status.insert(StatusFlags::C);
         // ROR A
         bus.load_program(0x0600, &[0x6A]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x6A);
-        
+
         assert_eq!(cpu.a, 0x80);
         assert!(cpu.status.contains(StatusFlags::C));
     }
@@ -2055,14 +3357,14 @@ mod tests {
     fn test_cmp() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x50;
         // CMP #$30
         bus.load_program(0x0600, &[0xC9, 0x30]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xC9);
-        
+
         assert!(cpu.status.contains(StatusFlags::C)); // A >= M
         assert!(!cpu.status.contains(StatusFlags::Z)); // A != M
     }
@@ -2071,14 +3373,14 @@ mod tests {
     fn test_inx() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0x7F;
         // INX
         bus.load_program(0x0600, &[0xE8]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xE8);
-        
+
         assert_eq!(cpu.x, 0x80);
         assert!(cpu.status.contains(StatusFlags::N));
     }
@@ -2087,14 +3389,14 @@ mod tests {
     fn test_dex() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0x00;
         // DEX
         bus.load_program(0x0600, &[0xCA]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0xCA);
-        
+
         assert_eq!(cpu.x, 0xFF);
         assert!(cpu.status.contains(StatusFlags::N));
     }
@@ -2103,25 +3405,25 @@ mod tests {
     fn test_pha_pla() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x42;
         cpu.sp = 0xFF;
         // PHA
         bus.load_program(0x0600, &[0x48]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x48);
-        
+
         assert_eq!(cpu.sp, 0xFE);
         assert_eq!(bus.memory[0x01FF], 0x42);
-        
+
         cpu.a = 0x00;
         // PLA
         bus.load_program(0x0601, &[0x68]);
         cpu.pc = 0x0601;
-        
+
         cpu.execute_instruction(&mut bus, 0x68);
-        
+
         assert_eq!(cpu.a, 0x42);
         assert_eq!(cpu.sp, 0xFF);
     }
@@ -2130,25 +3432,25 @@ mod tests {
     fn test_php_plp() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.status = StatusFlags::N | StatusFlags::C;
         cpu.sp = 0xFF;
         // PHP
         bus.load_program(0x0600, &[0x08]);
         cpu.pc = 0x0600;
-        
+
         cpu.execute_instruction(&mut bus, 0x08);
-        
+
         // PHP pushes with B and U flags set
         assert_eq!(bus.memory[0x01FF], 0xB1); // N=1, U=1, B=1, C=1
-        
+
         cpu.status = StatusFlags::empty();
         // PLP
         bus.load_program(0x0601, &[0x28]);
         cpu.pc = 0x0601;
-        
+
         cpu.execute_instruction(&mut bus, 0x28);
-        
+
         // PLP restores flags but B is cleared and U is set
         assert!(cpu.status.contains(StatusFlags::N));
         assert!(cpu.status.contains(StatusFlags::C));
@@ -2160,14 +3462,14 @@ mod tests {
     fn test_beq_branch_taken() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.status.insert(StatusFlags::Z);
         cpu.pc = 0x0600;
         // BEQ +5
         bus.load_program(0x0600, &[0xF0, 0x05]);
-        
+
         cpu.execute_instruction(&mut bus, 0xF0);
-        
+
         // PC should be 0x0602 + 5 = 0x0607
         assert_eq!(cpu.pc, 0x0607);
     }
@@ -2176,14 +3478,14 @@ mod tests {
     fn test_beq_branch_not_taken() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.status.remove(StatusFlags::Z);
         cpu.pc = 0x0600;
         // BEQ +5
         bus.load_program(0x0600, &[0xF0, 0x05]);
-        
+
         cpu.execute_instruction(&mut bus, 0xF0);
-        
+
         // PC should be 0x0602 (next instruction)
         assert_eq!(cpu.pc, 0x0602);
     }
@@ -2192,13 +3494,13 @@ mod tests {
     fn test_jmp_absolute() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.pc = 0x0600;
         // JMP $1234
         bus.load_program(0x0600, &[0x4C, 0x34, 0x12]);
-        
+
         cpu.execute_instruction(&mut bus, 0x4C);
-        
+
         assert_eq!(cpu.pc, 0x1234);
     }
 
@@ -2206,27 +3508,27 @@ mod tests {
     fn test_jsr_rts() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.sp = 0xFF;
         cpu.pc = 0x0600;
         // JSR $1234
         bus.load_program(0x0600, &[0x20, 0x34, 0x12]);
-        
+
         cpu.execute_instruction(&mut bus, 0x20);
-        
+
         // PC should be 0x1234
         assert_eq!(cpu.pc, 0x1234);
         // Return address (PC - 1 = 0x0602) should be on stack
         assert_eq!(bus.memory[0x01FF], 0x06);
         assert_eq!(bus.memory[0x01FE], 0x02);
         assert_eq!(cpu.sp, 0xFD);
-        
+
         // RTS
         bus.load_program(0x1234, &[0x60]);
         cpu.pc = 0x1234;
-        
+
         cpu.execute_instruction(&mut bus, 0x60);
-        
+
         // PC should be 0x0603 (return address + 1)
         assert_eq!(cpu.pc, 0x0603);
         assert_eq!(cpu.sp, 0xFF);
@@ -2236,13 +3538,13 @@ mod tests {
     fn test_nop() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.pc = 0x0600;
         // NOP
         bus.load_program(0x0600, &[0xEA]);
-        
+
         let cycles = cpu.execute_instruction(&mut bus, 0xEA);
-        
+
         assert_eq!(cycles, 2);
         assert_eq!(cpu.pc, 0x0601);
     }
@@ -2251,15 +3553,15 @@ mod tests {
     fn test_bit() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0xFF;
         bus.write_mem(0x0200, 0xC0); // Bits 7 and 6 set
         cpu.pc = 0x0600;
         // BIT $0200
         bus.load_program(0x0600, &[0x2C, 0x00, 0x02]);
-        
+
         cpu.execute_instruction(&mut bus, 0x2C);
-        
+
         assert!(cpu.status.contains(StatusFlags::N));
         assert!(cpu.status.contains(StatusFlags::V));
         assert!(!cpu.status.contains(StatusFlags::Z));
@@ -2269,14 +3571,14 @@ mod tests {
     fn test_inc_memory() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         bus.write_mem(0x0200, 0x7F);
         cpu.pc = 0x0600;
         // INC $0200
         bus.load_program(0x0600, &[0xEE, 0x00, 0x02]);
-        
+
         cpu.execute_instruction(&mut bus, 0xEE);
-        
+
         assert_eq!(bus.memory[0x0200], 0x80);
         assert!(cpu.status.contains(StatusFlags::N));
     }
@@ -2285,14 +3587,14 @@ mod tests {
     fn test_dec_memory() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         bus.write_mem(0x0200, 0x80);
         cpu.pc = 0x0600;
         // DEC $0200
         bus.load_program(0x0600, &[0xCE, 0x00, 0x02]);
-        
+
         cpu.execute_instruction(&mut bus, 0xCE);
-        
+
         assert_eq!(bus.memory[0x0200], 0x7F);
         assert!(!cpu.status.contains(StatusFlags::N));
     }
@@ -2301,18 +3603,18 @@ mod tests {
     fn test_clc_sec() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.pc = 0x0600;
         // SEC
         bus.load_program(0x0600, &[0x38]);
-        
+
         cpu.execute_instruction(&mut bus, 0x38);
         assert!(cpu.status.contains(StatusFlags::C));
-        
+
         // CLC
         bus.load_program(0x0601, &[0x18]);
         cpu.pc = 0x0601;
-        
+
         cpu.execute_instruction(&mut bus, 0x18);
         assert!(!cpu.status.contains(StatusFlags::C));
     }
@@ -2321,18 +3623,18 @@ mod tests {
     fn test_cli_sei() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.pc = 0x0600;
         // SEI
         bus.load_program(0x0600, &[0x78]);
-        
+
         cpu.execute_instruction(&mut bus, 0x78);
         assert!(cpu.status.contains(StatusFlags::I));
-        
+
         // CLI
         bus.load_program(0x0601, &[0x58]);
         cpu.pc = 0x0601;
-        
+
         cpu.execute_instruction(&mut bus, 0x58);
         assert!(!cpu.status.contains(StatusFlags::I));
     }
@@ -2341,14 +3643,14 @@ mod tests {
     fn test_clv() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.status.insert(StatusFlags::V);
         cpu.pc = 0x0600;
         // CLV
         bus.load_program(0x0600, &[0xB8]);
-        
+
         cpu.execute_instruction(&mut bus, 0xB8);
-        
+
         assert!(!cpu.status.contains(StatusFlags::V));
     }
 
@@ -2356,20 +3658,20 @@ mod tests {
     fn test_brk() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.pc = 0x0600;
         cpu.sp = 0xFF;
         cpu.status = StatusFlags::C;
-        
+
         // Set up IRQ vector
         bus.write_mem(0xFFFE, 0x34);
         bus.write_mem(0xFFFF, 0x12);
-        
+
         // BRK
         bus.load_program(0x0600, &[0x00]);
-        
+
         cpu.execute_instruction(&mut bus, 0x00);
-        
+
         // PC should be at IRQ vector
         assert_eq!(cpu.pc, 0x1234);
         // I flag should be set
@@ -2402,7 +3704,11 @@ mod tests {
             // and the machine keeps ticking around it.
             let pc = cpu.pc();
             assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 2);
-            assert_eq!(cpu.pc(), pc, "{opcode:#04X} must not advance the PC while halted");
+            assert_eq!(
+                cpu.pc(),
+                pc,
+                "{opcode:#04X} must not advance the PC while halted"
+            );
             assert!(cpu.is_halted());
         }
     }
@@ -2582,22 +3888,35 @@ mod tests {
         assert!(cpu.status.contains(StatusFlags::N));
 
         // SAX $10 - store A AND X
-        let (_, bus, _) = run(0x87, 0x10, |cpu| {
-            cpu.a = 0xF0;
-            cpu.x = 0xFF;
-        }, 0x00);
+        let (_, bus, _) = run(
+            0x87,
+            0x10,
+            |cpu| {
+                cpu.a = 0xF0;
+                cpu.x = 0xFF;
+            },
+            0x00,
+        );
         assert_eq!(bus.memory[0x10], 0xF0);
 
         // DCP $10 - decrement memory then compare with A
         let (cpu, bus, _) = run(0xC7, 0x10, |cpu| cpu.a = 0x40, 0x41);
         assert_eq!(bus.memory[0x10], 0x40);
-        assert!(cpu.status.contains(StatusFlags::Z), "A == memory after the decrement");
+        assert!(
+            cpu.status.contains(StatusFlags::Z),
+            "A == memory after the decrement"
+        );
 
         // ISC $10 - increment memory then subtract it from A
-        let (cpu, bus, _) = run(0xE7, 0x10, |cpu| {
-            cpu.a = 0x10;
-            cpu.status.insert(StatusFlags::C);
-        }, 0x04);
+        let (cpu, bus, _) = run(
+            0xE7,
+            0x10,
+            |cpu| {
+                cpu.a = 0x10;
+                cpu.status.insert(StatusFlags::C);
+            },
+            0x04,
+        );
         assert_eq!(bus.memory[0x10], 0x05);
         assert_eq!(cpu.a, 0x0B);
 
@@ -2608,10 +3927,15 @@ mod tests {
         assert!(cpu.status.contains(StatusFlags::C));
 
         // RLA $10 - rotate memory left, then AND into A
-        let (cpu, bus, _) = run(0x27, 0x10, |cpu| {
-            cpu.a = 0xFF;
-            cpu.status.remove(StatusFlags::C);
-        }, 0x81);
+        let (cpu, bus, _) = run(
+            0x27,
+            0x10,
+            |cpu| {
+                cpu.a = 0xFF;
+                cpu.status.remove(StatusFlags::C);
+            },
+            0x81,
+        );
         assert_eq!(bus.memory[0x10], 0x02);
         assert_eq!(cpu.a, 0x02);
         assert!(cpu.status.contains(StatusFlags::C));
@@ -2624,10 +3948,15 @@ mod tests {
 
         // RRA $10 - rotate memory right, then ADC into A with the carry the
         // rotate just produced
-        let (cpu, bus, _) = run(0x67, 0x10, |cpu| {
-            cpu.a = 0x00;
-            cpu.status.insert(StatusFlags::C);
-        }, 0x02);
+        let (cpu, bus, _) = run(
+            0x67,
+            0x10,
+            |cpu| {
+                cpu.a = 0x00;
+                cpu.status.insert(StatusFlags::C);
+            },
+            0x02,
+        );
         assert_eq!(bus.memory[0x10], 0x81);
         assert_eq!(cpu.a, 0x81);
 

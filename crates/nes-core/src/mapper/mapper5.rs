@@ -6,9 +6,9 @@
 //! nametable attributes, vertical split screen, and scanline-counting IRQ.
 //! See https://www.nesdev.org/wiki/MMC5
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::apu::mmc5::Mmc5Audio;
+use crate::prelude::*;
 
 /// MMC5 mapper (Mapper 5)
 #[derive(Debug)]
@@ -290,8 +290,9 @@ impl Mapper5 {
                 let reg_idx = quarter * 2 + 1;
                 (self.chr_bank_a[reg_idx] & 0x1FF) as usize
             }
-            3 | _ => {
-                // 1K mode: $5120-$5127 each select a 1K page
+            _ => {
+                // 1K mode (3, and any mode the datasheet leaves open):
+                // $5120-$5127 each select a 1K page
                 (self.chr_bank_a[slot] & 0x3FF) as usize
             }
         };
@@ -775,7 +776,7 @@ mod tests {
         mapper.write(0x5114, 0x80 | 0x05); // Bank 5 at $8000 (ROM)
         mapper.write(0x5115, 0x80 | 0x0A); // Bank 10 at $A000 (ROM)
         mapper.write(0x5116, 0x80 | 0x0F); // Bank 15 at $C000 (ROM)
-        // $5117 defaults to 0xFF
+                                           // $5117 defaults to 0xFF
 
         assert_eq!(mapper.read(0x8000), 5);
         assert_eq!(mapper.read(0xA000), 10);
@@ -855,8 +856,16 @@ mod tests {
         mapper.write(0x5104, 0x00);
         assert!(mapper.nametable_write(0x2000, 0x42));
         assert_eq!(mapper.nametable_read(0x2000), Some(0x42));
-        assert_eq!(mapper.nametable_read(0x2400), Some(0x42), "all four windows share it");
-        assert_eq!(mapper.mirroring(), None, "ExRAM windows are the hooks' business");
+        assert_eq!(
+            mapper.nametable_read(0x2400),
+            Some(0x42),
+            "all four windows share it"
+        );
+        assert_eq!(
+            mapper.mirroring(),
+            None,
+            "ExRAM windows are the hooks' business"
+        );
 
         // Single-screen fill mode substitutes one tile everywhere.
         mapper.write(0x5105, 0xFF);
@@ -868,12 +877,19 @@ mod tests {
             Some(0x02 * 0x55),
             "the fill attribute is copied into all four quadrants"
         );
-        assert!(mapper.nametable_write(0x2000, 0x11), "fill windows swallow writes");
+        assert!(
+            mapper.nametable_write(0x2000, 0x11),
+            "fill windows swallow writes"
+        );
 
         // A pure CIRAM mapping is a plain mirroring mode again.
         mapper.write(0x5105, 0x50); // 0, 0, 1, 1
         assert_eq!(mapper.mirroring(), Some(Mirroring::Horizontal));
-        assert_eq!(mapper.nametable_read(0x2000), None, "the PPU's own memory answers");
+        assert_eq!(
+            mapper.nametable_read(0x2000),
+            None,
+            "the PPU's own memory answers"
+        );
         mapper.write(0x5105, 0x44); // 0, 1, 0, 1
         assert_eq!(mapper.mirroring(), Some(Mirroring::Vertical));
         mapper.write(0x5105, 0x00);

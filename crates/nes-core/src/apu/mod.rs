@@ -20,29 +20,30 @@ pub use dmc::DmcChannel;
 pub use mmc5::Mmc5Audio;
 pub use noise::NoiseChannel;
 pub use pulse::PulseChannel;
-pub use triangle::TriangleChannel;
 pub use sunsoft5b::Sunsoft5bAudio;
+pub use triangle::TriangleChannel;
 pub use vrc6::Vrc6Audio;
 
 /// AudioChannel trait defines the interface for all APU channels
 pub trait AudioChannel {
     /// Tick the channel for one APU cycle
     fn tick(&mut self);
-    
+
     /// Get the current output value (0-15 for most channels)
     fn get_output(&self) -> u8;
-    
+
     /// Write to a channel register
     fn write_register(&mut self, addr: u16, value: u8);
-    
+
     /// Read from a channel register
     fn read_register(&self, addr: u16) -> u8;
 }
 
 /// Frame counter mode - determines the sequence of clock events
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum FrameCounterMode {
     /// 4-step sequence (fires IRQ on step 4)
+    #[default]
     FourStep,
     /// 5-step sequence (no IRQ)
     FiveStep,
@@ -63,14 +64,8 @@ impl crate::state::StateField for FrameCounterMode {
     }
 }
 
-impl Default for FrameCounterMode {
-    fn default() -> Self {
-        FrameCounterMode::FourStep
-    }
-}
-
 /// Frame counter state - manages the APU frame sequencer
-/// 
+///
 /// The frame counter generates clock signals at specific intervals
 /// to update envelope, sweep, and length counters.
 #[derive(Debug, Clone)]
@@ -86,49 +81,46 @@ crate::state::state_fields!(FrameCounter { cycle, step });
 impl FrameCounter {
     /// Create a new frame counter
     pub fn new() -> Self {
-        Self {
-            cycle: 0,
-            step: 0,
-        }
+        Self { cycle: 0, step: 0 }
     }
-    
+
     /// Reset the frame counter
     pub fn reset(&mut self) {
         self.cycle = 0;
         self.step = 0;
     }
-    
+
     /// Tick the frame counter by one CPU cycle
     /// Returns true if a step boundary was crossed
     pub fn tick(&mut self, mode: FrameCounterMode) -> bool {
         self.cycle += 1;
-        
+
         let step_boundaries = match mode {
             FrameCounterMode::FourStep => [7457, 14913, 22371, 29828, 29829],
             FrameCounterMode::FiveStep => [7457, 14913, 22371, 29829, 37281],
         };
-        
+
         let period = match mode {
             FrameCounterMode::FourStep => 29830,
             FrameCounterMode::FiveStep => 37282,
         };
-        
+
         // Check if we crossed a step boundary
         let old_step = self.step;
-        
+
         for (i, &boundary) in step_boundaries.iter().enumerate() {
             if self.cycle == boundary {
                 self.step = i as u8 + 1;
                 break;
             }
         }
-        
+
         // Wrap around at end of period
         if self.cycle >= period {
             self.cycle = 0;
             self.step = 0;
         }
-        
+
         self.step != old_step
     }
 }
@@ -195,13 +187,13 @@ impl Apu {
             pulse_table: [0.0; 31],
             tnd_table: [0.0; 203],
         };
-        
+
         apu.init_lookup_tables();
         apu
     }
-    
+
     /// Initialize the DAC lookup tables
-    /// 
+    ///
     /// These tables are used to mix the output of all channels
     /// according to the NES APU hardware formula.
     fn init_lookup_tables(&mut self) {
@@ -212,7 +204,7 @@ impl Apu {
         }
         // Handle the 0 case (avoid division by zero)
         self.pulse_table[0] = 0.0;
-        
+
         // Triangle/Noise/DMC lookup table
         // Formula: 163.67 / (24329.0 / tnd_output + 100.0)
         for i in 0..203 {
@@ -221,12 +213,12 @@ impl Apu {
         // Handle the 0 case
         self.tnd_table[0] = 0.0;
     }
-    
+
     /// Read from an APU register
-    /// 
+    ///
     /// # Arguments
     /// * `addr` - Register address ($4000-$4017)
-    /// 
+    ///
     /// # Returns
     /// The value read from the register
     pub fn read_register(&mut self, addr: u16) -> u8 {
@@ -270,9 +262,9 @@ impl Apu {
             }
         }
     }
-    
+
     /// Write to an APU register
-    /// 
+    ///
     /// # Arguments
     /// * `addr` - Register address ($4000-$4017)
     /// * `value` - Value to write
@@ -444,7 +436,7 @@ mod tests {
     fn test_structure() {
         // Test that Apu can be instantiated
         let apu = Apu::new();
-        
+
         // Verify initial state
         assert_eq!(apu.frame_counter.cycle, 0);
         assert_eq!(apu.frame_counter.step, 0);
@@ -456,15 +448,15 @@ mod tests {
     #[test]
     fn test_frame_counter() {
         let mut apu = Apu::new();
-        
+
         // Test frame counter ticking
         for _ in 0..100 {
             apu.tick();
         }
-        
+
         // Frame counter should have advanced
         assert_eq!(apu.frame_counter.cycle, 100);
-        
+
         // Test reset
         apu.reset();
         assert_eq!(apu.frame_counter.cycle, 0);
@@ -474,14 +466,14 @@ mod tests {
     #[test]
     fn test_frame_counter_mode_switch() {
         let mut apu = Apu::new();
-        
+
         // Default is 4-step mode
         assert_eq!(apu.frame_counter_mode, FrameCounterMode::FourStep);
-        
+
         // Switch to 5-step mode via register write
         apu.write_register(0x4017, 0x80);
         assert_eq!(apu.frame_counter_mode, FrameCounterMode::FiveStep);
-        
+
         // Switch back to 4-step mode
         apu.write_register(0x4017, 0x00);
         assert_eq!(apu.frame_counter_mode, FrameCounterMode::FourStep);
@@ -490,14 +482,14 @@ mod tests {
     #[test]
     fn test_frame_counter_irq_inhibit() {
         let mut apu = Apu::new();
-        
+
         // Enable IRQ inhibit
         apu.write_register(0x4017, 0x40);
         assert!(apu.frame_counter_irq_inhibit);
-        
+
         // Set IRQ flag manually
         apu.frame_counter_irq = true;
-        
+
         // Writing with inhibit flag should clear IRQ
         apu.write_register(0x4017, 0x40);
         assert!(!apu.frame_counter_irq);
@@ -506,20 +498,20 @@ mod tests {
     #[test]
     fn test_read_status_register() {
         let mut apu = Apu::new();
-        
+
         // Read status register ($4015)
         let status = apu.read_register(0x4015);
-        
+
         // Initially should be 0 (no channels active, no IRQ)
         assert_eq!(status, 0);
-        
+
         // Set IRQ flag and read again
         apu.frame_counter_irq = true;
         let status_with_irq = apu.read_register(0x4015);
-        
+
         // Bit 6 should be set
         assert_eq!(status_with_irq & 0x40, 0x40);
-        
+
         // IRQ flag should be cleared after read
         assert!(!apu.frame_counter_irq);
     }
@@ -527,12 +519,12 @@ mod tests {
     #[test]
     fn test_lookup_tables_initialized() {
         let apu = Apu::new();
-        
+
         // Verify lookup tables are initialized
         // Index 0 should be 0.0 (special case to avoid division by zero)
         assert_eq!(apu.pulse_table[0], 0.0);
         assert_eq!(apu.tnd_table[0], 0.0);
-        
+
         // Non-zero indices should have calculated values
         assert!(apu.pulse_table[1] > 0.0);
         assert!(apu.tnd_table[1] > 0.0);
@@ -544,31 +536,31 @@ mod tests {
         struct MockChannel {
             output: u8,
         }
-        
+
         impl AudioChannel for MockChannel {
             fn tick(&mut self) {
                 self.output = (self.output + 1) % 16;
             }
-            
+
             fn get_output(&self) -> u8 {
                 self.output
             }
-            
+
             fn write_register(&mut self, _addr: u16, value: u8) {
                 self.output = value & 0x0F;
             }
-            
+
             fn read_register(&self, _addr: u16) -> u8 {
                 self.output
             }
         }
-        
+
         let mut channel = MockChannel { output: 0 };
-        
+
         // Test tick
         channel.tick();
         assert_eq!(channel.get_output(), 1);
-        
+
         // Test write/read
         channel.write_register(0x4000, 0x0A);
         assert_eq!(channel.read_register(0x4000), 0x0A);

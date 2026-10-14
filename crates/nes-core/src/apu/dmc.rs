@@ -5,14 +5,13 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/APU_DMC
 
-use crate::prelude::*;
 use crate::apu::AudioChannel;
+use crate::prelude::*;
 
 /// DMC timer period table for NTSC (16 preset values)
 /// These values represent the number of CPU cycles between output unit clocks.
 const DMC_PERIOD_TABLE: [u16; 16] = [
-    428, 380, 340, 320, 286, 254, 226, 214,
-    190, 160, 142, 128, 106, 84, 72, 54
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
 ];
 
 /// DMC channel play modes

@@ -139,7 +139,7 @@ mod tests {
         // Games enable the channel first: the length counter only latches a
         // new value while the channel is enabled.
         audio.write_register(0x5015, 0x01); // enable A
-        // Duty 2, constant volume 15.
+                                            // Duty 2, constant volume 15.
         audio.write_register(0x5000, 0xBF);
         audio.write_register(0x5002, 0x20); // period low
         audio.write_register(0x5003, 0x08); // period high + length load
@@ -163,5 +163,4 @@ mod tests {
         audio.write_register(0x5011, 0x00);
         assert_eq!(audio.output(), 0.0);
     }
-
 }

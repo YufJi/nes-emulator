@@ -6,11 +6,11 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/PPU_rendering
 
-use crate::prelude::*;
-use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
-use crate::ppu::sprite::{SpriteRenderer, SecondaryOam};
-use crate::ppu::sprite::SpriteEvaluator;
 use crate::mapper::Mapper;
+use crate::ppu::sprite::SpriteEvaluator;
+use crate::ppu::sprite::{SecondaryOam, SpriteRenderer};
+use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuStatus};
+use crate::prelude::*;
 
 /// Supplies pattern-table bytes to the renderers.
 ///
@@ -235,7 +235,7 @@ impl BgRenderState {
         let attr_high = (self.attr_shift_high >> bit_pos) & 0x01;
 
         // Combine to get palette index: 0-3
-        ((attr_high as u8) << 3) | ((attr_low as u8) << 2) | ((high_bit as u8) << 1) | (low_bit as u8)
+        (attr_high << 3) | (attr_low << 2) | ((high_bit as u8) << 1) | (low_bit as u8)
     }
 }
 
@@ -298,7 +298,11 @@ pub struct FrameBuffer {
     pub height: usize,
 }
 
-crate::state::state_fields!(FrameBuffer { pixels, width, height });
+crate::state::state_fields!(FrameBuffer {
+    pixels,
+    width,
+    height
+});
 
 impl Default for FrameBuffer {
     fn default() -> Self {
@@ -354,10 +358,11 @@ impl FrameBuffer {
 ///
 /// The NES has 4 nametables but only 2KB of VRAM for them.
 /// Mirroring determines how the 4 logical nametables map to the 2 physical ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mirroring {
     /// Horizontal mirroring: nametables 0 and 1 are the same, 2 and 3 are the same
     /// Used for vertical scrolling games
+    #[default]
     Horizontal,
     /// Vertical mirroring: nametables 0 and 2 are the same, 1 and 3 are the same
     /// Used for horizontal scrolling games
@@ -368,7 +373,7 @@ pub enum Mirroring {
     /// Single screen mirroring onto the upper physical nametable ($2400)
     SingleScreenUpper,
     /// Four screen mirroring: all 4 nametables are unique (requires extra VRAM on cartridge)
-   FourScreen,
+    FourScreen,
 }
 
 impl crate::state::StateField for Mirroring {
@@ -389,12 +394,6 @@ impl crate::state::StateField for Mirroring {
             4 => Mirroring::FourScreen,
             _ => Mirroring::Horizontal,
         };
-    }
-}
-
-impl Default for Mirroring {
-    fn default() -> Self {
-        Mirroring::Horizontal
     }
 }
 
@@ -426,10 +425,18 @@ impl Mirroring {
 
         let physical_nt = match self {
             Mirroring::Horizontal => {
-                if nametable < 2 { 0 } else { 1 }
+                if nametable < 2 {
+                    0
+                } else {
+                    1
+                }
             }
             Mirroring::Vertical => {
-                if nametable == 0 || nametable == 2 { 0 } else { 1 }
+                if nametable == 0 || nametable == 2 {
+                    0
+                } else {
+                    1
+                }
             }
             Mirroring::SingleScreen => 0,
             Mirroring::SingleScreenUpper => 1,
@@ -775,7 +782,7 @@ impl BackgroundRenderer {
         // Clear background pixel tracking
         self.bg_pixels.fill(0);
 
-        let base_y = (((ppu.render_v >> 5) & 0x1F) * 8 + ((ppu.render_v >> 12) & 0x07)) as u16;
+        let base_y = ((ppu.render_v >> 5) & 0x1F) * 8 + ((ppu.render_v >> 12) & 0x07);
         let nametable = ((ppu.render_v >> 10) & 0x03) as u8;
 
         // Render all 240 visible scanlines
@@ -796,6 +803,9 @@ impl BackgroundRenderer {
     /// * `tile_y` - Nametable row to fetch tiles from (0-31)
     /// * `row_fine_y` - Pixel row within the tile (0-7)
     /// * `mask` - PPUMASK register value
+    // Every input is a distinct borrow of the frame loop's state; bundling them
+    // into a struct would only hide the renderer's dependencies.
+    #[allow(clippy::too_many_arguments)]
     fn render_row(
         &mut self,
         ppu: &Ppu,
@@ -814,7 +824,8 @@ impl BackgroundRenderer {
             // Fill with backdrop color
             let backdrop_color = self.get_bg_palette_color(ppu, 0, 0);
             for x in 0..256 {
-                self.frame_buffer.set_pixel(x, scanline as usize, backdrop_color);
+                self.frame_buffer
+                    .set_pixel(x, scanline as usize, backdrop_color);
             }
             return;
         }
@@ -842,18 +853,14 @@ impl BackgroundRenderer {
             let nt_addr = self.mirroring.get_nametable_address(effective_nametable);
 
             // Fetch tile index from nametable
-            let tile_index =
-                self.fetch_nametable_byte(ppu, chr, nt_addr, effective_tile_x, tile_y);
+            let tile_index = self.fetch_nametable_byte(ppu, chr, nt_addr, effective_tile_x, tile_y);
 
             // Fetch attribute byte
             let attr_byte = self.fetch_attribute_byte(ppu, chr, nt_addr, effective_tile_x, tile_y);
 
             // Extract palette index for this specific tile
-            let palette_idx = Self::extract_palette_index(
-                attr_byte,
-                effective_tile_x & 0x03,
-                tile_y & 0x03,
-            );
+            let palette_idx =
+                Self::extract_palette_index(attr_byte, effective_tile_x & 0x03, tile_y & 0x03);
 
             // Fetch pattern data for this tile
             let (pattern_low, pattern_high) =
@@ -863,7 +870,7 @@ impl BackgroundRenderer {
             for px in 0..8 {
                 let screen_x = pixel_x + px;
 
-                if screen_x >= 0 && screen_x < 256 {
+                if (0..256).contains(&screen_x) {
                     // Extract pixel color from pattern data
                     // Pattern data is stored with bit 7 being the leftmost pixel
                     let bit = 7 - px;
@@ -943,7 +950,10 @@ impl BackgroundRenderer {
 
     /// Get sprite 0 hit coordinates
     pub fn get_sprite_0_hit_coords(&self) -> (i16, i16) {
-        (self.sprite_renderer.sprite_0_hit_x, self.sprite_renderer.sprite_0_hit_y)
+        (
+            self.sprite_renderer.sprite_0_hit_x,
+            self.sprite_renderer.sprite_0_hit_y,
+        )
     }
 }
 
@@ -1037,14 +1047,14 @@ impl ScanlineProcessor {
 
                         // Render sprites for this scanline
                         renderer.render_sprites_for_scanline(ppu, chr, scanline, ppu.mask);
-                        
+
                         // Check for sprite 0 hit and update status
                         if renderer.check_sprite_0_hit() {
                             ppu.status.insert(PpuStatus::SPRITE_0_HIT);
                         }
                     }
                 }
-                
+
                 // Sprite evaluation happens during cycles 65-256
                 // For efficiency, we do it all at cycle 256 for the NEXT scanline
                 if ppu.cycle == 256 {
@@ -1183,7 +1193,10 @@ mod tests {
         let mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT;
         renderer.render_scanline(&ppu, &mut chr, 0, mask);
 
-        assert!(!chr.calls.is_empty(), "no pattern fetches went through ChrSource");
+        assert!(
+            !chr.calls.is_empty(),
+            "no pattern fetches went through ChrSource"
+        );
         assert!(
             chr.calls.iter().all(|addr| *addr < 0x2000),
             "pattern fetches must stay inside the pattern tables"
@@ -1193,14 +1206,8 @@ mod tests {
     #[test]
     fn test_nes_color_grayscale_masks_to_grey_column() {
         // Grayscale forces the low four bits of the index to zero.
-        assert_eq!(
-            nes_color(0x2A, PpuMask::GRAYSCALE),
-            NES_PALETTE[0x20]
-        );
-        assert_eq!(
-            nes_color(0x15, PpuMask::GRAYSCALE),
-            NES_PALETTE[0x10]
-        );
+        assert_eq!(nes_color(0x2A, PpuMask::GRAYSCALE), NES_PALETTE[0x20]);
+        assert_eq!(nes_color(0x15, PpuMask::GRAYSCALE), NES_PALETTE[0x10]);
     }
 
     #[test]

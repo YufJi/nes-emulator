@@ -27,8 +27,8 @@
 //!
 //! See https://www.nesdev.org/wiki/MMC2
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// MMC2 mapper (Mapper 9)
 #[derive(Debug)]
@@ -128,27 +128,11 @@ impl Mapper9 {
     fn update_latch(&mut self, addr: u16) {
         match addr {
             // Latch 0 triggers on exactly $0FD8 (sets to $FD) and $0FE8 (sets to $FE)
-            0x0FD8 => {
-                if self.latch0 != 0xFD {
-                    self.latch0 = 0xFD;
-                }
-            }
-            0x0FE8 => {
-                if self.latch0 != 0xFE {
-                    self.latch0 = 0xFE;
-                }
-            }
+            0x0FD8 if self.latch0 != 0xFD => self.latch0 = 0xFD,
+            0x0FE8 if self.latch0 != 0xFE => self.latch0 = 0xFE,
             // Latch 1 triggers on $1FD8-$1FDF (sets to $FD) and $1FE8-$1FEF (sets to $FE)
-            0x1FD8..=0x1FDF => {
-                if self.latch1 != 0xFD {
-                    self.latch1 = 0xFD;
-                }
-            }
-            0x1FE8..=0x1FEF => {
-                if self.latch1 != 0xFE {
-                    self.latch1 = 0xFE;
-                }
-            }
+            0x1FD8..=0x1FDF if self.latch1 != 0xFD => self.latch1 = 0xFD,
+            0x1FE8..=0x1FEF if self.latch1 != 0xFE => self.latch1 = 0xFE,
             _ => {}
         }
     }
@@ -193,7 +177,7 @@ impl Mapper for Mapper9 {
                     0xE000..=0xFFFF => total_banks.saturating_sub(1),
                     _ => 0,
                 };
-                let bank = bank_offset.max(0) % total_banks.max(1);
+                let bank = bank_offset % total_banks.max(1);
                 let offset = (bank * 0x2000) + ((addr - 0xA000) % 0x2000) as usize;
                 self.prg_rom.get(offset).copied().unwrap_or(0)
             }

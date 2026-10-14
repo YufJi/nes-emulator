@@ -12,8 +12,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_117>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Future Media mapper (Mapper 117)
 #[derive(Debug)]

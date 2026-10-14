@@ -13,9 +13,9 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_033
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Taito TC0190 mapper (Mapper 33)
 #[derive(Debug)]
@@ -91,7 +91,10 @@ impl Mapper33 {
     fn read_chr_low(&self, addr: usize) -> u8 {
         let bank = self.chr_banks_2k[(addr >> 11) & 0x01] as usize;
         let offset = (bank % (self.chr_1k_bank_count / 2).max(1)) * 0x800;
-        self.chr_rom.get(offset + (addr & 0x7FF)).copied().unwrap_or(0)
+        self.chr_rom
+            .get(offset + (addr & 0x7FF))
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -106,20 +109,32 @@ impl Mapper for Mapper33 {
             0x1000..=0x1FFF => {
                 let slot = ((addr as usize) >> 10) & 0x03;
                 let offset = self.chr_1k_offset(self.chr_banks_1k[slot]);
-                self.chr_rom.get(offset + (addr as usize & 0x3FF)).copied().unwrap_or(0)
+                self.chr_rom
+                    .get(offset + (addr as usize & 0x3FF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0x6000..=0x7FFF => 0,
             0x8000..=0x9FFF => {
                 let offset = self.prg_offset(self.prg_bank_8000);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xA000..=0xBFFF => {
                 let offset = self.prg_offset(self.prg_bank_a000);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xC000..=0xFFFF => {
                 let offset = self.prg_offset((self.prg_bank_count - 1) as u8);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }
@@ -133,20 +148,18 @@ impl Mapper for Mapper33 {
                     self.chr_rom[index] = value;
                 }
             }
-            0x8000..=0x8003 => {
-                match addr & 0x03 {
-                    0 => {
-                        self.mirroring = if value & 0x40 != 0 {
-                            Mirroring::Horizontal
-                        } else {
-                            Mirroring::Vertical
-                        };
-                    }
-                    1 => self.prg_bank_8000 = value & 0x3F,
-                    2 => self.prg_bank_a000 = value & 0x3F,
-                    _ => {}
+            0x8000..=0x8003 => match addr & 0x03 {
+                0 => {
+                    self.mirroring = if value & 0x40 != 0 {
+                        Mirroring::Horizontal
+                    } else {
+                        Mirroring::Vertical
+                    };
                 }
-            }
+                1 => self.prg_bank_8000 = value & 0x3F,
+                2 => self.prg_bank_a000 = value & 0x3F,
+                _ => {}
+            },
             0xA000..=0xA003 => {
                 let slot = (addr as usize) & 0x03;
                 self.chr_banks_2k[slot & 0x01] = value;
@@ -155,32 +168,30 @@ impl Mapper for Mapper33 {
                 let slot = (addr as usize) & 0x03;
                 self.chr_banks_1k[slot] = value;
             }
-            0xE000..=0xE003 if self.has_irq => {
-                match addr & 0x03 {
-                    0 => {
-                        self.irq_latch = value;
-                        self.irq_counter = 0;
-                        self.irq_reload = 1;
-                    }
-                    1 => {
-                        self.irq_reload = 0;
-                        if self.irq_counter == 0 {
-                            self.irq_mode = 0;
-                            self.irq_enabled = true;
-                        } else {
-                            self.irq_mode = 1;
-                        }
-                    }
-                    2 => {
-                        self.irq_enabled = false;
-                        self.irq_pending = false;
-                    }
-                    _ => {
-                        self.irq_mode = 1;
+            0xE000..=0xE003 if self.has_irq => match addr & 0x03 {
+                0 => {
+                    self.irq_latch = value;
+                    self.irq_counter = 0;
+                    self.irq_reload = 1;
+                }
+                1 => {
+                    self.irq_reload = 0;
+                    if self.irq_counter == 0 {
+                        self.irq_mode = 0;
                         self.irq_enabled = true;
+                    } else {
+                        self.irq_mode = 1;
                     }
                 }
-            }
+                2 => {
+                    self.irq_enabled = false;
+                    self.irq_pending = false;
+                }
+                _ => {
+                    self.irq_mode = 1;
+                    self.irq_enabled = true;
+                }
+            },
             _ => {}
         }
     }

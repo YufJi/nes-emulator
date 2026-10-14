@@ -113,11 +113,20 @@ impl Sunsoft5bAudio {
     pub fn write_data(&mut self, value: u8) {
         match self.selected_register {
             0x00 => self.tone_period[0] = (self.tone_period[0] & 0x0F00) | value as u16,
-            0x01 => self.tone_period[0] = (self.tone_period[0] & 0x00FF) | (((value & 0x0F) as u16) << 8),
+            0x01 => {
+                self.tone_period[0] =
+                    (self.tone_period[0] & 0x00FF) | (((value & 0x0F) as u16) << 8)
+            }
             0x02 => self.tone_period[1] = (self.tone_period[1] & 0x0F00) | value as u16,
-            0x03 => self.tone_period[1] = (self.tone_period[1] & 0x00FF) | (((value & 0x0F) as u16) << 8),
+            0x03 => {
+                self.tone_period[1] =
+                    (self.tone_period[1] & 0x00FF) | (((value & 0x0F) as u16) << 8)
+            }
             0x04 => self.tone_period[2] = (self.tone_period[2] & 0x0F00) | value as u16,
-            0x05 => self.tone_period[2] = (self.tone_period[2] & 0x00FF) | (((value & 0x0F) as u16) << 8),
+            0x05 => {
+                self.tone_period[2] =
+                    (self.tone_period[2] & 0x00FF) | (((value & 0x0F) as u16) << 8)
+            }
             0x06 => self.noise_period = value & 0x1F,
             0x07 => self.mixer = value,
             0x08..=0x0A => {
@@ -154,7 +163,7 @@ impl Sunsoft5bAudio {
         }
 
         for channel in 0..3 {
-            let period = self.tone_period[channel].max(1) as u16;
+            let period = self.tone_period[channel].max(1);
             self.tone_counter[channel] += 1;
             if self.tone_counter[channel] >= period {
                 self.tone_counter[channel] = 0;

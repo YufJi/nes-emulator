@@ -66,7 +66,16 @@ impl crate::state::StateField for StatusFlags {
     }
 }
 
-crate::state::state_fields!(Cpu { a, x, y, sp, pc, status, cycles, halted });
+crate::state::state_fields!(Cpu {
+    a,
+    x,
+    y,
+    sp,
+    pc,
+    status,
+    cycles,
+    halted
+});
 
 impl Default for Cpu {
     fn default() -> Self {
@@ -96,7 +105,7 @@ impl Cpu {
     pub fn reset(&mut self, bus: &mut dyn Bus) {
         self.sp = self.sp.wrapping_sub(3);
         self.status.insert(StatusFlags::I);
-        
+
         // Read reset vector
         let lo = bus.read(0xFFFC) as u16;
         let hi = bus.read(0xFFFD) as u16;

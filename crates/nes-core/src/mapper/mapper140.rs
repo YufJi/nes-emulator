@@ -13,8 +13,8 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_140
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Jaleco JF-11/JF-14 mapper (Mapper 140)
 #[derive(Debug)]
@@ -91,15 +91,12 @@ impl Mapper for Mapper140 {
     }
 
     fn write(&mut self, addr: u16, value: u8) {
-        match addr {
-            // Mapper register at $6000-$7FFF
-            0x6000..=0x7FFF => {
-                // Bits 0-3: CHR bank select (8KB)
-                self.chr_bank = value & 0x0F;
-                // Bits 4-5: PRG bank select (32KB)
-                self.prg_bank = (value >> 4) & 0x03;
-            }
-            _ => {}
+        // Mapper register at $6000-$7FFF
+        if let 0x6000..=0x7FFF = addr {
+            // Bits 0-3: CHR bank select (8KB)
+            self.chr_bank = value & 0x0F;
+            // Bits 4-5: PRG bank select (32KB)
+            self.prg_bank = (value >> 4) & 0x03;
         }
     }
 
@@ -130,7 +127,7 @@ mod tests {
     #[test]
     fn test_prg_bank_switching() {
         let mut prg = vec![0u8; 131072]; // 128KB (4 x 32KB banks)
-        // Fill each 32KB bank with unique values
+                                         // Fill each 32KB bank with unique values
         for bank in 0..4 {
             for i in 0..0x8000 {
                 prg[bank * 0x8000 + i] = bank as u8;
@@ -165,7 +162,7 @@ mod tests {
     fn test_chr_bank_switching() {
         let prg = vec![0u8; 32768];
         let mut chr = vec![0u8; 131072]; // 128KB (16 x 8KB banks)
-        // Fill each 8KB bank with unique values
+                                         // Fill each 8KB bank with unique values
         for bank in 0..16 {
             for i in 0..0x2000 {
                 chr[bank * 0x2000 + i] = (bank + 10) as u8;

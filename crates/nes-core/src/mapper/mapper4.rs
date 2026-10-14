@@ -6,8 +6,8 @@
 //! software-switchable H/V nametable mirroring.
 //! See https://www.nesdev.org/wiki/MMC3
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// MMC3 mapper (Mapper 4)
 #[derive(Debug)]
@@ -159,7 +159,7 @@ impl Mapper4 {
                     self.bank_regs[(slot + 2) as usize] as usize
                 }
             }
-            4 | 5 | 6 | 7 => {
+            4..=7 => {
                 if self.chr_address_select == 0 {
                     // R2-R5 for slots 4-7 (1KB banks)
                     self.bank_regs[(slot - 2) as usize] as usize
@@ -211,7 +211,7 @@ impl Mapper4 {
                 // Or at $1000/$1800 if chr_address_select is set
                 self.bank_regs[cmd_idx] = value;
             }
-            2 | 3 | 4 | 5 => {
+            2..=5 => {
                 // Select 1KB CHR bank
                 self.bank_regs[cmd_idx] = value;
             }
@@ -446,12 +446,12 @@ mod tests {
 
         // Set R6 to bank 3
         mapper.write(0x8000, 0x06); // Select command 6
-        mapper.write(0x8001, 3);    // Set bank to 3
+        mapper.write(0x8001, 3); // Set bank to 3
         assert_eq!(mapper.bank_regs[6], 3);
 
         // Set R7 to bank 5
         mapper.write(0x8000, 0x07); // Select command 7
-        mapper.write(0x8001, 5);    // Set bank to 5
+        mapper.write(0x8001, 5); // Set bank to 5
         assert_eq!(mapper.bank_regs[7], 5);
 
         // Read from different regions
@@ -489,8 +489,8 @@ mod tests {
 
         // Read from different regions
         assert_eq!(mapper.read(0x8000), 14); // Second-to-last (fixed)
-        assert_eq!(mapper.read(0xA000), 5);  // R7
-        assert_eq!(mapper.read(0xC000), 3);  // R6
+        assert_eq!(mapper.read(0xA000), 5); // R7
+        assert_eq!(mapper.read(0xC000), 3); // R6
         assert_eq!(mapper.read(0xE000), 15); // Last (fixed)
     }
 
@@ -498,7 +498,7 @@ mod tests {
     fn test_chr_bank_switching() {
         let prg = vec![0u8; 0x20000];
         let mut chr = vec![0u8; 0x10000]; // 64KB (16 x 4KB banks)
-        // Mark 1KB banks
+                                          // Mark 1KB banks
         for i in 0..64 {
             chr[i * 0x0400] = i as u8;
         }
@@ -511,15 +511,15 @@ mod tests {
 
         // Set R0 to bank 2 (2KB bank, so uses banks 2 and 3)
         mapper.write(0x8000, 0x00); // command = 0
-        mapper.write(0x8001, 2);    // Set to bank 2 (even)
+        mapper.write(0x8001, 2); // Set to bank 2 (even)
 
         // Set R2 to bank 10 (1KB bank at $1000)
         mapper.write(0x8000, 0x02); // command = 2
         mapper.write(0x8001, 10);
 
         // Read CHR
-        assert_eq!(mapper.read(0x0000), 2);  // R0 first 1KB
-        assert_eq!(mapper.read(0x0400), 3);  // R0 second 1KB
+        assert_eq!(mapper.read(0x0000), 2); // R0 first 1KB
+        assert_eq!(mapper.read(0x0400), 3); // R0 second 1KB
         assert_eq!(mapper.read(0x1000), 10); // R2 at $1000
     }
 
@@ -558,7 +558,10 @@ mod tests {
         mapper.write(0xC000, 3);
         assert_eq!(mapper.irq_latch, 3);
         mapper.write(0xC001, 0);
-        assert_eq!(mapper.irq_counter, 0x80, "the counter is pushed up, not cleared");
+        assert_eq!(
+            mapper.irq_counter, 0x80,
+            "the counter is pushed up, not cleared"
+        );
 
         mapper.write(0xE001, 0);
         assert!(mapper.irq_enabled);
@@ -727,7 +730,10 @@ mod tests {
         }
 
         scanline(&mut mapper);
-        assert_eq!(mapper.irq_counter, 5, "the first clock reloaded from the latch");
+        assert_eq!(
+            mapper.irq_counter, 5,
+            "the first clock reloaded from the latch"
+        );
         assert!(!mapper.irq_pending());
 
         scanline(&mut mapper);
@@ -737,6 +743,9 @@ mod tests {
         for _ in 0..4 {
             scanline(&mut mapper);
         }
-        assert!(mapper.irq_pending(), "four more lines walk the counter to zero");
+        assert!(
+            mapper.irq_pending(),
+            "four more lines walk the counter to zero"
+        );
     }
 }

@@ -101,7 +101,7 @@ impl Cpu {
         // This "dummy read" is a real bus cycle that can trigger I/O side effects.
         // See https://www.nesdev.org/wiki/CPU_addressing_modes
         bus.read(operand as u16);
-        
+
         let addr = operand.wrapping_add(self.x) as u16;
         AddressingResult::new(addr, 0, false)
     }
@@ -121,7 +121,7 @@ impl Cpu {
     pub fn addr_zero_page_y(&mut self, bus: &mut dyn Bus, operand: u8) -> AddressingResult {
         // Dummy read from unindexed zero-page address
         bus.read(operand as u16);
-        
+
         let addr = operand.wrapping_add(self.y) as u16;
         AddressingResult::new(addr, 0, false)
     }
@@ -155,13 +155,18 @@ impl Cpu {
     ///
     /// # Returns
     /// AddressingResult with the indexed address and page cross info
-    pub fn addr_absolute_x(&mut self, bus: &mut dyn Bus, operand_lo: u8, operand_hi: u8) -> AddressingResult {
+    pub fn addr_absolute_x(
+        &mut self,
+        bus: &mut dyn Bus,
+        operand_lo: u8,
+        operand_hi: u8,
+    ) -> AddressingResult {
         let base_addr = ((operand_hi as u16) << 8) | (operand_lo as u16);
         let indexed_addr = base_addr.wrapping_add(self.x as u16);
-        
+
         // Check for page crossing
         let page_crossed = (base_addr & 0xFF00) != (indexed_addr & 0xFF00);
-        
+
         if page_crossed {
             // Page boundary crossed: the 6502 first reads from the "wrong"
             // address (correct low byte, uncorrected high byte) before reading
@@ -188,13 +193,18 @@ impl Cpu {
     ///
     /// # Returns
     /// AddressingResult with the indexed address and page cross info
-    pub fn addr_absolute_y(&mut self, bus: &mut dyn Bus, operand_lo: u8, operand_hi: u8) -> AddressingResult {
+    pub fn addr_absolute_y(
+        &mut self,
+        bus: &mut dyn Bus,
+        operand_lo: u8,
+        operand_hi: u8,
+    ) -> AddressingResult {
         let base_addr = ((operand_hi as u16) << 8) | (operand_lo as u16);
         let indexed_addr = base_addr.wrapping_add(self.y as u16);
-        
+
         // Check for page crossing
         let page_crossed = (base_addr & 0xFF00) != (indexed_addr & 0xFF00);
-        
+
         if page_crossed {
             // Same dummy read behavior as Absolute X
             let dummy_addr = (base_addr & 0xFF00) | (indexed_addr & 0x00FF);
@@ -222,15 +232,15 @@ impl Cpu {
     /// AddressingResult with the target address
     pub fn addr_indirect(&mut self, bus: &mut dyn Bus, ptr_lo: u8, ptr_hi: u8) -> AddressingResult {
         let ptr_addr = ((ptr_hi as u16) << 8) | (ptr_lo as u16);
-        
+
         // Read low byte of target address
         let target_lo = bus.read(ptr_addr);
-        
+
         // The 6502 bug: when pointer low byte is $FF, high byte wraps
         // within the same page instead of crossing to next page
         let ptr_hi_addr = (ptr_addr & 0xFF00) | ((ptr_addr.wrapping_add(1)) & 0x00FF);
         let target_hi = bus.read(ptr_hi_addr);
-        
+
         let target_addr = ((target_hi as u16) << 8) | (target_lo as u16);
         AddressingResult::new(target_addr, 0, false)
     }
@@ -251,14 +261,14 @@ impl Cpu {
     pub fn addr_indirect_x(&mut self, bus: &mut dyn Bus, operand: u8) -> AddressingResult {
         // Dummy read from the unindexed pointer address while adding X
         bus.read(operand as u16);
-        
+
         // Add X to get the zero-page pointer address (wraps in zero page)
         let zp_ptr = operand.wrapping_add(self.x);
-        
+
         // Read the 16-bit effective address from zero page
         let addr_lo = bus.read(zp_ptr as u16);
         let addr_hi = bus.read(zp_ptr.wrapping_add(1) as u16);
-        
+
         let addr = ((addr_hi as u16) << 8) | (addr_lo as u16);
         AddressingResult::new(addr, 0, false)
     }
@@ -281,13 +291,13 @@ impl Cpu {
         let base_lo = bus.read(operand as u16);
         let base_hi = bus.read(operand.wrapping_add(1) as u16);
         let base_addr = ((base_hi as u16) << 8) | (base_lo as u16);
-        
+
         // Add Y to get the effective address
         let effective_addr = base_addr.wrapping_add(self.y as u16);
-        
+
         // Check for page crossing
         let page_crossed = (base_addr & 0xFF00) != (effective_addr & 0xFF00);
-        
+
         if page_crossed {
             // Page boundary crossed: dummy read from wrong address
             let dummy_addr = (base_addr & 0xFF00) | (effective_addr & 0x00FF);
@@ -332,7 +342,7 @@ impl Cpu {
     pub fn addr_accumulator(&mut self, bus: &mut dyn Bus, pc: u16) -> AddressingResult {
         // The 6502 performs a dummy read of the byte at PC during its second cycle
         bus.read(pc);
-        
+
         // Return a special value indicating accumulator mode
         // The actual address doesn't matter - the instruction will use self.a
         AddressingResult::new(0xFFFF, 0, false)
@@ -355,7 +365,7 @@ impl Cpu {
         // (the next opcode). This is a real bus operation.
         // See https://www.nesdev.org/wiki/CPU_addressing_modes
         bus.read(pc);
-        
+
         AddressingResult::new(0, 0, false)
     }
 }
@@ -431,10 +441,10 @@ mod tests {
     fn test_zero_page_x() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0x10;
         let result = cpu.addr_zero_page_x(&mut bus, 0x44);
-        
+
         assert_eq!(result.address, 0x0054);
         assert_eq!(result.extra_cycles, 0);
         assert!(!result.page_crossed);
@@ -445,10 +455,10 @@ mod tests {
     fn test_zero_page_x_wrap() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0xFF;
         let result = cpu.addr_zero_page_x(&mut bus, 0x80);
-        
+
         // 0x80 + 0xFF = 0x17F, wraps to 0x7F in zero page
         assert_eq!(result.address, 0x007F);
         assert_eq!(result.extra_cycles, 0);
@@ -458,10 +468,10 @@ mod tests {
     fn test_zero_page_y() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.y = 0x20;
         let result = cpu.addr_zero_page_y(&mut bus, 0x30);
-        
+
         assert_eq!(result.address, 0x0050);
         assert_eq!(result.extra_cycles, 0);
         assert!(!result.page_crossed);
@@ -481,10 +491,10 @@ mod tests {
     fn test_absolute_x_no_cross() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0x10;
         let result = cpu.addr_absolute_x(&mut bus, 0x40, 0x12);
-        
+
         assert_eq!(result.address, 0x1250);
         assert_eq!(result.extra_cycles, 0);
         assert!(!result.page_crossed);
@@ -495,10 +505,10 @@ mod tests {
     fn test_absolute_x_with_cross() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0xFF;
         let result = cpu.addr_absolute_x(&mut bus, 0x80, 0x12);
-        
+
         // 0x1280 + 0xFF = 0x137F, crosses from page 0x12 to 0x13
         assert_eq!(result.address, 0x137F);
         assert_eq!(result.extra_cycles, 1);
@@ -510,10 +520,10 @@ mod tests {
     fn test_absolute_y_no_cross() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.y = 0x10;
         let result = cpu.addr_absolute_y(&mut bus, 0x40, 0x12);
-        
+
         assert_eq!(result.address, 0x1250);
         assert_eq!(result.extra_cycles, 0);
         assert!(!result.page_crossed);
@@ -523,10 +533,10 @@ mod tests {
     fn test_absolute_y_with_cross() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.y = 0xFF;
         let result = cpu.addr_absolute_y(&mut bus, 0x80, 0x12);
-        
+
         assert_eq!(result.address, 0x137F);
         assert_eq!(result.extra_cycles, 1);
         assert!(result.page_crossed);
@@ -537,13 +547,13 @@ mod tests {
     fn test_indirect_normal() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // Set up pointer at 0x4400 pointing to 0x1234
         bus.write(0x4400, 0x34);
         bus.write(0x4401, 0x12);
-        
+
         let result = cpu.addr_indirect(&mut bus, 0x00, 0x44);
-        
+
         assert_eq!(result.address, 0x1234);
         assert_eq!(result.extra_cycles, 0);
         assert_eq!(bus.get_reads(), &[0x4400, 0x4401]);
@@ -553,14 +563,14 @@ mod tests {
     fn test_indirect_bug() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // Set up pointer at 0x44FF with the bug
         // Low byte at 0x44FF, high byte should be at 0x4500 but wraps to 0x4400
         bus.write(0x44FF, 0x34);
         bus.write(0x4400, 0x12); // This is where the bug reads the high byte
-        
+
         let result = cpu.addr_indirect(&mut bus, 0xFF, 0x44);
-        
+
         // Should read 0x1234 (with high byte from 0x4400, not 0x4500)
         assert_eq!(result.address, 0x1234);
         assert_eq!(bus.get_reads(), &[0x44FF, 0x4400]);
@@ -570,15 +580,15 @@ mod tests {
     fn test_indirect_x() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0x02;
-        
+
         // Set up pointer at 0x0046 (0x44 + 0x02) pointing to 0xABCD
         bus.write(0x0046, 0xCD);
         bus.write(0x0047, 0xAB);
-        
+
         let result = cpu.addr_indirect_x(&mut bus, 0x44);
-        
+
         assert_eq!(result.address, 0xABCD);
         assert_eq!(result.extra_cycles, 0);
         // Dummy read at 0x44, then reads at 0x46 and 0x47
@@ -589,15 +599,15 @@ mod tests {
     fn test_indirect_x_wrap() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.x = 0x05;
-        
+
         // Pointer at 0x0004 (0xFF + 0x05 wraps in zero page)
         bus.write(0x0004, 0x78);
         bus.write(0x0005, 0x56);
-        
+
         let result = cpu.addr_indirect_x(&mut bus, 0xFF);
-        
+
         assert_eq!(result.address, 0x5678);
     }
 
@@ -605,15 +615,15 @@ mod tests {
     fn test_indirect_y_no_cross() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.y = 0x10;
-        
+
         // Set up pointer at 0x0044 pointing to 0x1200
         bus.write(0x0044, 0x00);
         bus.write(0x0045, 0x12);
-        
+
         let result = cpu.addr_indirect_y(&mut bus, 0x44);
-        
+
         assert_eq!(result.address, 0x1210);
         assert_eq!(result.extra_cycles, 0);
         assert!(!result.page_crossed);
@@ -623,15 +633,15 @@ mod tests {
     fn test_indirect_y_with_cross() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.y = 0xFF;
-        
+
         // Set up pointer at 0x0044 pointing to 0x1280
         bus.write(0x0044, 0x80);
         bus.write(0x0045, 0x12);
-        
+
         let result = cpu.addr_indirect_y(&mut bus, 0x44);
-        
+
         // 0x1280 + 0xFF = 0x137F, crosses page boundary
         assert_eq!(result.address, 0x137F);
         assert_eq!(result.extra_cycles, 1);
@@ -668,10 +678,10 @@ mod tests {
     fn test_accumulator() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         cpu.a = 0x42;
         let result = cpu.addr_accumulator(&mut bus, 0x0200);
-        
+
         // Returns special marker address
         assert_eq!(result.address, 0xFFFF);
         assert_eq!(result.extra_cycles, 0);
@@ -682,9 +692,9 @@ mod tests {
     fn test_implied() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         let result = cpu.addr_implied(&mut bus, 0x0200);
-        
+
         assert_eq!(result.address, 0);
         assert_eq!(result.extra_cycles, 0);
         assert_eq!(bus.get_reads(), &[0x0200]); // Dummy read
@@ -694,11 +704,11 @@ mod tests {
     fn test_page_cross_boundary() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // Test crossing from 0x12FF to 0x1300
         cpu.x = 0x01;
         let result = cpu.addr_absolute_x(&mut bus, 0xFF, 0x12);
-        
+
         assert_eq!(result.address, 0x1300);
         assert_eq!(result.extra_cycles, 1);
         assert!(result.page_crossed);
@@ -708,11 +718,11 @@ mod tests {
     fn test_no_page_cross_same_page() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // Test within same page: 0x1200 to 0x12FF
         cpu.x = 0xFF;
         let result = cpu.addr_absolute_x(&mut bus, 0x00, 0x12);
-        
+
         assert_eq!(result.address, 0x12FF);
         assert_eq!(result.extra_cycles, 0);
         assert!(!result.page_crossed);
@@ -722,11 +732,11 @@ mod tests {
     fn test_absolute_x_wrap_16bit() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        
+
         // Test wrap at 0xFFFF
         cpu.x = 0x01;
         let result = cpu.addr_absolute_x(&mut bus, 0xFF, 0xFF);
-        
+
         // 0xFFFF + 1 wraps to 0x0000
         assert_eq!(result.address, 0x0000);
         // Crosses from page 0xFF to 0x00

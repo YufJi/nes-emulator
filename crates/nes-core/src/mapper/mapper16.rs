@@ -9,7 +9,7 @@
 //! - 0-7: 1 KB CHR banks
 //! - 8:   16 KB PRG bank at $8000 ($C000 stays fixed)
 //! - 9:   mirroring (0 = vertical, 1 = horizontal, 2 = one screen lower,
-//!        3 = one screen upper)
+//!   3 = one screen upper)
 //! - A:   IRQ latch low, reload the counter, acknowledge
 //! - B:   IRQ latch high
 //! - C:   IRQ mode
@@ -21,9 +21,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_016>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Bandai FCG mapper (Mapper 16)
 #[derive(Debug)]

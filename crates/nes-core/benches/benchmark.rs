@@ -165,6 +165,7 @@ fn parse_rom_header(data: &[u8]) -> Result<(RomHeader, usize), Box<dyn std::erro
 /// - 262 scanlines (0-261)
 /// - 341 PPU cycles per scanline
 /// - 3 PPU cycles = 1 CPU cycle
+///
 /// Total: ~29780 CPU cycles per frame
 fn execute_frame(cpu: &mut Cpu, bus: &mut BenchBus) {
     const CYCLES_PER_FRAME: u32 = 29780;

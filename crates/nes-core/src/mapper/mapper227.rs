@@ -15,9 +15,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_227>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Multicart mapper (Mapper 227)
 #[derive(Debug)]
@@ -85,7 +85,12 @@ impl Mapper for Mapper227 {
 
                 if addr & 0x0001 != 0 {
                     // 32 KB mode: one 32 KB bank across the whole window.
-                    self.slots = [base, base.wrapping_add(1), base.wrapping_add(2), base.wrapping_add(3)];
+                    self.slots = [
+                        base,
+                        base.wrapping_add(1),
+                        base.wrapping_add(2),
+                        base.wrapping_add(3),
+                    ];
                 } else if addr & 0x0004 != 0 {
                     // 16 KB pairs, high pair first.
                     self.slots[0] = base.wrapping_add(2);
@@ -104,7 +109,11 @@ impl Mapper for Mapper227 {
                     // The top 16 KB follows the outer bank unless bit 7 says
                     // otherwise.
                     let outer = (bank & 0x1C).wrapping_mul(4);
-                    let top = if addr & 0x0200 != 0 { outer.wrapping_add(14) } else { outer };
+                    let top = if addr & 0x0200 != 0 {
+                        outer.wrapping_add(14)
+                    } else {
+                        outer
+                    };
                     self.slots[2] = top;
                     self.slots[3] = top.wrapping_add(1);
                 }

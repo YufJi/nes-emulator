@@ -18,9 +18,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_114>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Asder mapper (Mapper 114)
 #[derive(Debug)]

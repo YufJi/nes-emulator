@@ -9,8 +9,8 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_038
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// PCI556 mapper (Mapper 38) - Crime Busters
 #[derive(Debug)]
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_prg_bank_switching() {
         let mut prg = vec![0u8; 131072]; // 128KB (4 x 32KB banks)
-        // Fill each 32KB bank with unique values
+                                         // Fill each 32KB bank with unique values
         for bank in 0..4 {
             for i in 0..0x8000 {
                 prg[bank * 0x8000 + i] = bank as u8;
@@ -183,7 +183,7 @@ mod tests {
     fn test_chr_bank_switching() {
         let prg = vec![0u8; 32768];
         let mut chr = vec![0u8; 32768]; // 32KB (4 x 8KB banks)
-        // Fill each 8KB bank with unique values
+                                        // Fill each 8KB bank with unique values
         for bank in 0..4 {
             for i in 0..0x2000 {
                 chr[bank * 0x2000 + i] = (bank + 10) as u8;

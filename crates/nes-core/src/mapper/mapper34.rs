@@ -11,8 +11,8 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_034
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// BNROM mapper (Mapper 34)
 #[derive(Debug)]
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn test_prg_bank_switching() {
         let mut prg = vec![0u8; 131072]; // 128KB (4 x 32KB banks)
-        // Fill each 32KB bank with unique values
+                                         // Fill each 32KB bank with unique values
         for bank in 0..4 {
             for i in 0..0x8000 {
                 prg[bank * 0x8000 + i] = bank as u8;

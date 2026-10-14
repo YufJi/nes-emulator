@@ -248,8 +248,16 @@ mod tests {
         // The frame rate comes from the PPU clock, so it is not exactly 60/50.
         assert_eq!(Region::Ntsc.scanlines(), 262);
         assert_eq!(Region::Pal.scanlines(), 312);
-        assert!((Region::Ntsc.fps() - 60.098).abs() < 1e-3, "{}", Region::Ntsc.fps());
-        assert!((Region::Pal.fps() - 50.007).abs() < 1e-3, "{}", Region::Pal.fps());
+        assert!(
+            (Region::Ntsc.fps() - 60.098).abs() < 1e-3,
+            "{}",
+            Region::Ntsc.fps()
+        );
+        assert!(
+            (Region::Pal.fps() - 50.007).abs() < 1e-3,
+            "{}",
+            Region::Pal.fps()
+        );
 
         // Front-end pacing must not assume a nominal 60 Hz.
         assert!(Region::Ntsc.fps() > 60.0);

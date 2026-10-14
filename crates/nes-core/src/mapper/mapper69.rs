@@ -20,10 +20,10 @@
 //!
 //! See https://www.nesdev.org/wiki/Sunsoft_FME-7
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::apu::sunsoft5b::Sunsoft5bAudio;
 use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Sunsoft FME-7 mapper (Mapper 69)
 #[derive(Debug)]
@@ -116,7 +116,10 @@ impl Mapper for Mapper69 {
             0x0000..=0x1FFF => {
                 let slot = (addr as usize) >> 10;
                 let offset = self.chr_offset(self.chr_banks[slot]);
-                self.chr_rom.get(offset + (addr as usize & 0x3FF)).copied().unwrap_or(0)
+                self.chr_rom
+                    .get(offset + (addr as usize & 0x3FF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0x6000..=0x7FFF => {
                 // Cartridge work RAM (bank register $8 selects a ROM bank on
@@ -125,19 +128,31 @@ impl Mapper for Mapper69 {
             }
             0x8000..=0x9FFF => {
                 let offset = self.prg_offset(self.prg_banks[1]);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xA000..=0xBFFF => {
                 let offset = self.prg_offset(self.prg_banks[2]);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xC000..=0xDFFF => {
                 let offset = self.prg_offset(self.prg_banks[3]);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xE000..=0xFFFF => {
                 let offset = self.prg_offset((self.prg_bank_count - 1) as u8);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }

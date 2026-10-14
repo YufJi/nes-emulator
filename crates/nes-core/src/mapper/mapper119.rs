@@ -8,8 +8,8 @@
 //! while CHR A16 directly enables the RAM chip.
 //! See https://www.nesdev.org/wiki/INES_Mapper_119
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Mapper 119 - TQROM (MMC3 variant)
 #[derive(Debug)]
@@ -61,8 +61,8 @@ impl Mapper119 {
     /// Create a new Mapper119 instance
     pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>) -> Self {
         let prg_rom_banks = prg_rom.len() / 0x2000; // 8KB banks
-        // CHR ROM banks are 1KB each, but bit 6 selects ROM/RAM
-        // So we have up to 64 banks of ROM (bit 6 = 0)
+                                                    // CHR ROM banks are 1KB each, but bit 6 selects ROM/RAM
+                                                    // So we have up to 64 banks of ROM (bit 6 = 0)
         let chr_rom_banks = chr_rom.len() / 0x0400; // 1KB banks
 
         Self {
@@ -149,7 +149,7 @@ impl Mapper119 {
                     slot + 2 // R4-R5 for slots 2-3
                 }
             }
-            4 | 5 | 6 | 7 => {
+            4..=7 => {
                 if self.chr_address_select == 0 {
                     slot - 2 // R2-R5 for slots 4-7
                 } else if slot < 6 {
@@ -286,7 +286,7 @@ impl Mapper119 {
                 self.bank_regs[cmd_idx] = value;
                 self.update_chr_slots();
             }
-            2 | 3 | 4 | 5 => {
+            2..=5 => {
                 // Select 1KB CHR bank
                 self.bank_regs[cmd_idx] = value;
                 self.update_chr_slots();
@@ -558,7 +558,7 @@ mod tests {
     fn test_chr_rom_selection() {
         let prg = vec![0u8; 0x20000];
         let mut chr = vec![0u8; 0x10000]; // 64KB CHR ROM
-        // Mark 1KB banks
+                                          // Mark 1KB banks
         for i in 0..64 {
             chr[i * 0x0400] = i as u8;
         }

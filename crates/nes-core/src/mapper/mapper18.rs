@@ -16,9 +16,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_018>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Jaleco SS88006 mapper (Mapper 18)
 #[derive(Debug)]
@@ -186,4 +186,3 @@ impl Mapper for Mapper18 {
         }
     }
 }
-

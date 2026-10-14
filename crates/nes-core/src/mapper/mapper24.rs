@@ -25,10 +25,10 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_024
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::apu::vrc6::Vrc6Audio;
 use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Konami VRC6 mapper (Mappers 24 and 26)
 #[derive(Debug)]
@@ -100,7 +100,7 @@ impl Mapper24 {
             irq_scanline_accumulator: 0,
             audio: Vrc6Audio::new(),
             swap_address_bits,
-            }
+        }
     }
 
     fn prg_16k_offset(&self, bank: u8) -> usize {
@@ -152,20 +152,32 @@ impl Mapper for Mapper24 {
             0x0000..=0x1FFF => {
                 let slot = (addr as usize) >> 10;
                 let offset = self.chr_offset(self.chr_banks[slot]);
-                self.chr_rom.get(offset + (addr as usize & 0x3FF)).copied().unwrap_or(0)
+                self.chr_rom
+                    .get(offset + (addr as usize & 0x3FF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0x6000..=0x7FFF => self.prg_ram[(addr - 0x6000) as usize],
             0x8000..=0xBFFF => {
                 let offset = self.prg_16k_offset(self.prg_bank_16k);
-                self.prg_rom.get(offset + (addr as usize & 0x3FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x3FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xC000..=0xDFFF => {
                 let offset = self.prg_8k_offset(self.prg_bank_8k);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xE000..=0xFFFF => {
                 let offset = self.prg_8k_offset((self.prg_8k_bank_count - 1) as u8);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }
@@ -191,7 +203,9 @@ impl Mapper for Mapper24 {
                 }
                 0xB003 => self.banking_style = value,
                 0xC000 => self.prg_bank_8k = value & 0x1F,
-                0xD000..=0xD003 => self.chr_banks[(self.register_index(addr) - 0xD000) as usize] = value,
+                0xD000..=0xD003 => {
+                    self.chr_banks[(self.register_index(addr) - 0xD000) as usize] = value
+                }
                 0xE000..=0xE003 => {
                     self.chr_banks[(self.register_index(addr) - 0xE000 + 4) as usize] = value
                 }
@@ -344,5 +358,4 @@ mod tests {
         mapper.write(0xD002, 5);
         assert_eq!(mapper.chr_banks[1], 5);
     }
-
 }

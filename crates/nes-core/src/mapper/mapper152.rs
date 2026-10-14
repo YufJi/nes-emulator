@@ -13,9 +13,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_152>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Bandai 74161/32 mapper (Mapper 152)
 #[derive(Debug)]

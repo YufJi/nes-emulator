@@ -27,9 +27,9 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_021
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Konami VRC2/VRC4 mapper
 #[derive(Debug)]
@@ -69,7 +69,13 @@ pub struct Mapper21 {
 
 impl Mapper21 {
     /// Create a mapper with the given sub-register address lines.
-    fn new_variant(prg_rom: Vec<u8>, chr_rom: Vec<u8>, addr_bit0: u8, addr_bit1: u8, is_vrc2: bool) -> Self {
+    fn new_variant(
+        prg_rom: Vec<u8>,
+        chr_rom: Vec<u8>,
+        addr_bit0: u8,
+        addr_bit1: u8,
+        is_vrc2: bool,
+    ) -> Self {
         let chr_is_ram = chr_rom.is_empty();
         let chr_rom = if chr_is_ram { vec![0u8; 8192] } else { chr_rom };
 
@@ -163,7 +169,10 @@ impl Mapper for Mapper21 {
             0x0000..=0x1FFF => {
                 let slot = (addr as usize) >> 10;
                 let offset = self.chr_offset(self.chr_bank(slot));
-                self.chr_rom.get(offset + (addr as usize & 0x3FF)).copied().unwrap_or(0)
+                self.chr_rom
+                    .get(offset + (addr as usize & 0x3FF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0x6000..=0x7FFF => {
                 if self.wram_enable || self.is_vrc2 {
@@ -175,23 +184,38 @@ impl Mapper for Mapper21 {
             0x8000..=0x9FFF if self.swap_mode => {
                 // Swap mode: $8000 shows the second-to-last bank.
                 let offset = self.prg_offset((self.prg_8k_bank_count - 2) as u8);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0x8000..=0x9FFF => {
                 let offset = self.prg_offset(self.prg_bank_0);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xA000..=0xBFFF => {
                 let offset = self.prg_offset(self.prg_bank_1);
-                self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x1FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xC000..=0xDFFF if !self.is_vrc2 => {
                 if self.swap_mode {
                     let offset = self.prg_offset(self.prg_bank_0);
-                    self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                    self.prg_rom
+                        .get(offset + (addr as usize & 0x1FFF))
+                        .copied()
+                        .unwrap_or(0)
                 } else {
                     let offset = self.prg_offset((self.prg_8k_bank_count - 2) as u8);
-                    self.prg_rom.get(offset + (addr as usize & 0x1FFF)).copied().unwrap_or(0)
+                    self.prg_rom
+                        .get(offset + (addr as usize & 0x1FFF))
+                        .copied()
+                        .unwrap_or(0)
                 }
             }
             // $C000-$FFFF on VRC2, and $E000-$FFFF everywhere, is the last
@@ -203,7 +227,10 @@ impl Mapper for Mapper21 {
                     ((self.prg_8k_bank_count - 1) as u8, 0x1FFF)
                 };
                 let offset = self.prg_offset(bank);
-                self.prg_rom.get(offset + (addr as usize & mask)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & mask))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }

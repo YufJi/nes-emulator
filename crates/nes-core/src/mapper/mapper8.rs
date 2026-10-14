@@ -10,8 +10,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_008>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// FFE F3 mapper (Mapper 8)
 #[derive(Debug)]
@@ -127,7 +127,11 @@ mod tests {
         m.write(0x8000, 0x28); // bits 3-7 = 5
         assert_eq!(m.read(0x8000), 5);
         assert_eq!(m.read(0x9FFF), 5);
-        assert_eq!(m.read(0xC000), 7, "switching the window must not move the top");
+        assert_eq!(
+            m.read(0xC000),
+            7,
+            "switching the window must not move the top"
+        );
     }
 
     #[test]

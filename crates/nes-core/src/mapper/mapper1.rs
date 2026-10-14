@@ -6,8 +6,8 @@
 //! and software-controlled nametable mirroring.
 //! See https://www.nesdev.org/wiki/MMC1
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// MMC1 mapper (Mapper 1)
 #[derive(Debug)]
@@ -168,7 +168,7 @@ impl Mapper1 {
             let bank_8k = ((self.chr_bank_0 & 0x1E) >> 1) as usize;
             let offset = addr as usize;
             let chr_addr = (bank_8k * 0x2000 + offset) % self.chr_rom.len();
-            return self.chr_rom.get(chr_addr).copied().unwrap_or(0);
+            self.chr_rom.get(chr_addr).copied().unwrap_or(0)
         } else {
             // 4KB mode
             let is_upper_bank = addr >= 0x1000;
@@ -179,7 +179,7 @@ impl Mapper1 {
             };
             let offset = (addr & 0x0FFF) as usize;
             let chr_addr = (bank_4k as usize * 0x1000 + offset) % self.chr_rom.len();
-            return self.chr_rom.get(chr_addr).copied().unwrap_or(0);
+            self.chr_rom.get(chr_addr).copied().unwrap_or(0)
         }
     }
 
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn test_prg_bank_switching_16kb() {
         let mut prg = vec![0u8; 0x40000]; // 256KB
-        // Mark different banks
+                                          // Mark different banks
         for i in 0..16 {
             prg[i * 0x4000] = i as u8;
         }
@@ -400,7 +400,7 @@ mod tests {
     fn test_chr_bank_switching_4kb() {
         let prg = vec![0u8; 32768];
         let mut chr = vec![0u8; 0x10000]; // 64KB
-        // Mark different 4KB banks
+                                          // Mark different 4KB banks
         for i in 0..16 {
             chr[i * 0x1000] = i as u8;
         }
@@ -441,7 +441,7 @@ mod tests {
     fn test_chr_bank_switching_8kb() {
         let prg = vec![0u8; 32768];
         let mut chr = vec![0u8; 0x10000]; // 64KB
-        // Mark different 8KB banks
+                                          // Mark different 8KB banks
         for i in 0..8 {
             chr[i * 0x2000] = i as u8;
         }
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn test_prg_bank_switching_32kb() {
         let mut prg = vec![0u8; 0x40000]; // 256KB (8 x 32KB banks)
-        // Mark different 32KB banks
+                                          // Mark different 32KB banks
         for i in 0..8 {
             prg[i * 0x8000] = i as u8;
         }

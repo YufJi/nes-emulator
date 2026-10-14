@@ -15,9 +15,14 @@
 //! Reference: https://www.nesdev.org/wiki/PPU_tests
 
 use nes_core::ppu::{
+    rendering::{
+        BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor, VramChr, NES_PALETTE,
+    },
+    sprite::{
+        SecondaryOam, Sprite, SpriteAttributes, SpriteEvaluator, SpritePatternFetcher,
+        SpriteRenderer,
+    },
     Ppu, PpuCtrl, PpuMask, PpuStatus,
-    rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor, VramChr, NES_PALETTE},
-    sprite::{Sprite, SpriteAttributes, SpriteEvaluator, SecondaryOam, SpritePatternFetcher, SpriteRenderer},
 };
 
 // ============================================================================
@@ -694,8 +699,8 @@ fn test_sprite_is_on_scanline_8x8() {
     };
 
     assert!(!sprite.is_on_scanline(10, 8)); // Scanline 10: just before
-    assert!(sprite.is_on_scanline(11, 8));  // Scanline 11: first visible
-    assert!(sprite.is_on_scanline(18, 8));  // Scanline 18: last visible
+    assert!(sprite.is_on_scanline(11, 8)); // Scanline 11: first visible
+    assert!(sprite.is_on_scanline(18, 8)); // Scanline 18: last visible
     assert!(!sprite.is_on_scanline(19, 8)); // Scanline 19: just after
 }
 
@@ -710,8 +715,8 @@ fn test_sprite_is_on_scanline_8x16() {
     };
 
     assert!(!sprite.is_on_scanline(10, 16)); // Scanline 10: just before
-    assert!(sprite.is_on_scanline(11, 16));  // Scanline 11: first visible
-    assert!(sprite.is_on_scanline(26, 16));  // Scanline 26: last visible
+    assert!(sprite.is_on_scanline(11, 16)); // Scanline 11: first visible
+    assert!(sprite.is_on_scanline(26, 16)); // Scanline 26: last visible
     assert!(!sprite.is_on_scanline(27, 16)); // Scanline 27: just after
 }
 
@@ -913,20 +918,20 @@ fn test_sprite_pattern_fetcher_8x16() {
 #[test]
 fn test_reverse_bits() {
     let mut ppu = Ppu::new();
-    
+
     let sprite = Sprite {
         y: 10,
         tile: 0,
         attributes: 0x40,
         x: 0,
     };
-    
+
     ppu.vram[0x0000] = 0b1000_0000;
     ppu.vram[0x0008] = 0x00;
-    
+
     let ctrl = PpuCtrl::empty();
     let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut VramChr, &sprite, 11, 8, ctrl);
-    
+
     assert_eq!(low, 0b0000_0001);
 }
 
@@ -941,10 +946,10 @@ fn test_sprite_0_hit_detection() {
 
     // Set up a sprite 0 that overlaps with background
     // Sprite at Y=10, X=10
-    ppu.oam[0] = 9;   // Y position (scanline - 1)
-    ppu.oam[1] = 0;   // Tile index
-    ppu.oam[2] = 0;   // Attributes (no flip, priority in front)
-    ppu.oam[3] = 10;  // X position
+    ppu.oam[0] = 9; // Y position (scanline - 1)
+    ppu.oam[1] = 0; // Tile index
+    ppu.oam[2] = 0; // Attributes (no flip, priority in front)
+    ppu.oam[3] = 10; // X position
 
     // Set up pattern table for sprite (non-transparent pixels)
     ppu.vram[0x0000] = 0xFF; // Low plane
@@ -1037,13 +1042,7 @@ fn test_vblank_flag_clear() {
     ppu.scanline = 261;
     ppu.cycle = 1;
 
-    ScanlineProcessor::process_scanline(
-        &mut ppu,
-        &mut renderer,
-        &mut VramChr,
-        261,
-        &mut evaluator,
-    );
+    ScanlineProcessor::process_scanline(&mut ppu, &mut renderer, &mut VramChr, 261, &mut evaluator);
 
     // VBlank flag should be cleared
     assert!(!ppu.status.contains(PpuStatus::VBLANK));
@@ -1211,7 +1210,7 @@ fn test_open_bus_status_read() {
 
     // First write to a register to set open bus
     ppu.write_register(0x2000, 0x1F);
-    
+
     // Read from a write-only register to get open bus value
     let open_bus_val = ppu.read_register(0x2000);
     assert_eq!(open_bus_val, 0x1F);
@@ -1328,7 +1327,7 @@ fn test_vram_address_wrapping() {
     ppu.write_register(0x2006, 0x3F);
     ppu.write_register(0x2006, 0xFF);
     ppu.write_register(0x2007, 0xAA);
-    
+
     assert_eq!(ppu.v, 0x4000);
 }
 
@@ -1338,10 +1337,10 @@ fn test_coarse_x_wrapping() {
 
     ppu.write_register(0x2005, 0xF8);
     ppu.write_register(0x2005, 0x00);
-    
+
     ppu.write_register(0x2006, 0x20);
     ppu.write_register(0x2006, 0x1F);
-    
+
     ppu.write_register(0x2007, 0x00);
     assert_eq!(ppu.v & 0x001F, 0x0000);
 }
@@ -1352,7 +1351,7 @@ fn test_coarse_y_wrapping() {
 
     ppu.write_register(0x2006, 0x23);
     ppu.write_register(0x2006, 0xA0);
-    
+
     assert_eq!((ppu.v >> 5) & 0x1F, 29);
     assert_eq!((ppu.v >> 10) & 0x03, 0);
 }
@@ -1425,8 +1424,8 @@ fn test_full_sprite_evaluation() {
     // Set up 64 sprites (maximum)
     for i in 0..64 {
         oam[i * 4] = (i * 4) as u8; // Y position
-        oam[i * 4 + 1] = i as u8;   // Tile
-        oam[i * 4 + 2] = 0;         // Attributes
+        oam[i * 4 + 1] = i as u8; // Tile
+        oam[i * 4 + 2] = 0; // Attributes
         oam[i * 4 + 3] = (i * 4) as u8; // X position
     }
 
@@ -1754,5 +1753,8 @@ fn test_cartridge_nametable_answers_ppudata() {
             open_bus: 0,
         },
     );
-    assert_eq!(value, 0x42, "the write went to the cartridge, and came back");
+    assert_eq!(
+        value, 0x42,
+        "the write went to the cartridge, and came back"
+    );
 }

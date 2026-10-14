@@ -6,9 +6,8 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/PPU_sprite_evaluation
 
-use crate::prelude::*;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask};
-
+use crate::prelude::*;
 
 /// Sprite attributes byte layout
 ///
@@ -95,7 +94,6 @@ impl Sprite {
     pub fn is_on_scanline(&self, scanline: u16, sprite_height: u8) -> bool {
         // Sprite Y is display line - 1, so visible Y range is (y+1) to (y+sprite_height)
         let sprite_y = self.y as u16 + 1;
-        let scanline = scanline as u16;
         scanline >= sprite_y && scanline < sprite_y + sprite_height as u16
     }
 
@@ -286,7 +284,13 @@ impl SpriteEvaluator {
     ///
     /// # Returns
     /// true if sprite overflow occurred
-    pub fn evaluate(&mut self, oam: &[u8; 256], scanline: u16, ctrl: PpuCtrl, oam_addr: u8) -> bool {
+    pub fn evaluate(
+        &mut self,
+        oam: &[u8; 256],
+        scanline: u16,
+        ctrl: PpuCtrl,
+        oam_addr: u8,
+    ) -> bool {
         // Clear secondary OAM at the start of evaluation
         self.secondary_oam.clear();
         self.overflow = false;
@@ -329,11 +333,8 @@ impl SpriteEvaluator {
             // Check if sprite is on this scanline
             // Sprite Y is display line - 1, so visible range is (y+1) to (y+height)
             let sprite_y = y_byte as u16 + 1;
-            let scanline_u16 = scanline as u16;
 
-            if scanline_u16 >= sprite_y
-                && scanline_u16 < sprite_y + self.sprite_height as u16
-            {
+            if scanline >= sprite_y && scanline < sprite_y + self.sprite_height as u16 {
                 // Sprite is on this scanline
                 if self.secondary_oam.count < 8 {
                     // Copy the four bytes starting at the address we actually
@@ -427,9 +428,17 @@ impl SpritePatternFetcher {
 
             // Determine which half (top/bottom) this scanline falls in
             let tile_offset = if fine_y < 8 {
-                if attrs.vertical_flip() { 1 } else { 0 }
+                if attrs.vertical_flip() {
+                    1
+                } else {
+                    0
+                }
             } else {
-                if attrs.vertical_flip() { 0 } else { 1 }
+                if attrs.vertical_flip() {
+                    0
+                } else {
+                    1
+                }
             };
 
             let tile_index = base_tile + tile_offset;
@@ -552,6 +561,8 @@ impl SpriteRenderer {
     /// * `secondary_oam` - Secondary OAM with sprites for this scanline
     /// * `scanline` - Current scanline (0-239)
     /// * `mask` - PPUMASK register
+    // As in `render_row`: the caller already owns every one of these borrows.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_scanline(
         &mut self,
         ppu: &Ppu,
@@ -603,6 +614,9 @@ impl SpriteRenderer {
     /// * `sprite_height` - 8 or 16
     /// * `mask` - PPUMASK register
     /// * `is_sprite_0` - Whether this is sprite 0 (for hit detection)
+    // The sprite plus the frame state the caller already holds, as in
+    // `render_scanline`.
+    #[allow(clippy::too_many_arguments)]
     fn render_sprite(
         &mut self,
         ppu: &Ppu,
@@ -626,15 +640,21 @@ impl SpriteRenderer {
         let palette_idx = attrs.palette();
 
         // Fetch pattern data
-        let (pattern_low, pattern_high) =
-            SpritePatternFetcher::fetch_pattern(ppu, chr, sprite, scanline, sprite_height, ppu.ctrl);
+        let (pattern_low, pattern_high) = SpritePatternFetcher::fetch_pattern(
+            ppu,
+            chr,
+            sprite,
+            scanline,
+            sprite_height,
+            ppu.ctrl,
+        );
 
         // Render 8 pixels horizontally
         for px in 0..8 {
             let screen_x = sprite.x as i16 + px;
 
             // Skip if off-screen
-            if screen_x < 0 || screen_x >= 256 {
+            if !(0..256).contains(&screen_x) {
                 continue;
             }
 
@@ -652,7 +672,7 @@ impl SpriteRenderer {
             let bit = 7 - px as u8;
             let low_bit = (pattern_low >> bit) & 0x01;
             let high_bit = (pattern_high >> bit) & 0x01;
-            let color_idx = ((high_bit << 1) | low_bit) as u8;
+            let color_idx = (high_bit << 1) | low_bit;
 
             // Skip transparent pixels (color 0)
             if color_idx == 0 {
@@ -665,11 +685,7 @@ impl SpriteRenderer {
             // - Non-transparent sprite pixel overlaps non-transparent background
             // - X coordinate is 1-255 (not at x=255)
             // - Left clipping doesn't apply
-            if is_sprite_0
-                && !self.sprite_0_hit
-                && x < 255
-                && bg_pixels[buffer_index] != 0
-            {
+            if is_sprite_0 && !self.sprite_0_hit && x < 255 && bg_pixels[buffer_index] != 0 {
                 let left_clip = !mask.contains(PpuMask::SHOW_BG_LEFT)
                     || !mask.contains(PpuMask::SHOW_SPRITES_LEFT);
                 if !(left_clip && x < 8) {
@@ -753,8 +769,8 @@ mod tests {
         };
 
         assert!(!sprite.is_on_scanline(10, 8)); // Scanline 10: just before
-        assert!(sprite.is_on_scanline(11, 8));  // Scanline 11: first visible
-        assert!(sprite.is_on_scanline(18, 8));  // Scanline 18: last visible
+        assert!(sprite.is_on_scanline(11, 8)); // Scanline 11: first visible
+        assert!(sprite.is_on_scanline(18, 8)); // Scanline 18: last visible
         assert!(!sprite.is_on_scanline(19, 8)); // Scanline 19: just after
     }
 
@@ -769,8 +785,8 @@ mod tests {
         };
 
         assert!(!sprite.is_on_scanline(10, 16)); // Scanline 10: just before
-        assert!(sprite.is_on_scanline(11, 16));  // Scanline 11: first visible
-        assert!(sprite.is_on_scanline(26, 16));  // Scanline 26: last visible
+        assert!(sprite.is_on_scanline(11, 16)); // Scanline 11: first visible
+        assert!(sprite.is_on_scanline(26, 16)); // Scanline 26: last visible
         assert!(!sprite.is_on_scanline(27, 16)); // Scanline 27: just after
     }
 
@@ -936,7 +952,10 @@ mod tests {
 
         let overflow = evaluator.evaluate(&oam, 20, PpuCtrl::empty(), 0);
 
-        assert!(overflow, "the sprite overflow bug should report a false positive");
+        assert!(
+            overflow,
+            "the sprite overflow bug should report a false positive"
+        );
         assert_eq!(evaluator.secondary_oam.count(), 8);
     }
 
@@ -983,7 +1002,14 @@ mod tests {
         ppu.vram[0x0008] = 0x00;
 
         let ctrl = PpuCtrl::empty(); // Pattern table $0000
-        let (low, high) = SpritePatternFetcher::fetch_pattern(&ppu, &mut crate::ppu::rendering::VramChr, &sprite, 11, 8, ctrl);
+        let (low, high) = SpritePatternFetcher::fetch_pattern(
+            &ppu,
+            &mut crate::ppu::rendering::VramChr,
+            &sprite,
+            11,
+            8,
+            ctrl,
+        );
 
         assert_eq!(low, 0xFF);
         assert_eq!(high, 0x00);
@@ -1012,11 +1038,25 @@ mod tests {
         let ctrl = PpuCtrl::SPRITE_SIZE; // 8x16 mode
 
         // First scanline (row 0 of top tile)
-        let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut crate::ppu::rendering::VramChr, &sprite, 11, 16, ctrl);
+        let (low, _) = SpritePatternFetcher::fetch_pattern(
+            &ppu,
+            &mut crate::ppu::rendering::VramChr,
+            &sprite,
+            11,
+            16,
+            ctrl,
+        );
         assert_eq!(low, 0xAA);
 
         // Ninth scanline (row 0 of bottom tile)
-        let (low, _) = SpritePatternFetcher::fetch_pattern(&ppu, &mut crate::ppu::rendering::VramChr, &sprite, 19, 16, ctrl);
+        let (low, _) = SpritePatternFetcher::fetch_pattern(
+            &ppu,
+            &mut crate::ppu::rendering::VramChr,
+            &sprite,
+            19,
+            16,
+            ctrl,
+        );
         assert_eq!(low, 0x55);
     }
 

@@ -22,9 +22,9 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_010
 
-use crate::prelude::*;
 use super::Mapper;
 use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// Nintendo MMC4 mapper (Mapper 10)
 #[derive(Debug)]
@@ -158,11 +158,17 @@ impl Mapper for Mapper10 {
             0x6000..=0x7FFF => self.prg_ram[(addr - 0x6000) as usize],
             0x8000..=0xBFFF => {
                 let offset = self.prg_offset(self.prg_bank);
-                self.prg_rom.get(offset + (addr as usize & 0x3FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x3FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             0xC000..=0xFFFF => {
                 let offset = self.prg_offset((self.prg_16k_bank_count - 1) as u8);
-                self.prg_rom.get(offset + (addr as usize & 0x3FFF)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset + (addr as usize & 0x3FFF))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }

@@ -19,8 +19,8 @@
 //!
 //! See https://www.nesdev.org/wiki/INES_Mapper_074
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// First 1 KB CHR bank that lives in CHR RAM instead of CHR ROM.
 const CHR_RAM_FIRST_BANK: usize = 8;
@@ -164,7 +164,7 @@ impl Mapper74 {
                     self.bank_regs[(slot + 2) as usize] as usize
                 }
             }
-            4 | 5 | 6 | 7 => {
+            4..=7 => {
                 if self.chr_address_select == 0 {
                     // R2-R5 for slots 4-7 (1KB banks)
                     self.bank_regs[(slot - 2) as usize] as usize
@@ -211,7 +211,7 @@ impl Mapper74 {
     fn execute_command(&mut self, cmd: u8, value: u8) {
         match cmd {
             // 2KB CHR bank at $0000 (0) or $0800 (1), $1000/$1800 when swapped
-            0 | 1 | 2 | 3 | 4 | 5 => self.bank_regs[cmd as usize] = value,
+            0..=5 => self.bank_regs[cmd as usize] = value,
             // 8KB PRG bank, 6 bits wide
             6 => self.bank_regs[6] = value & 0x3F,
             7 => self.bank_regs[7] = value & 0x3F,
@@ -233,9 +233,20 @@ impl Mapper74 {
 }
 
 impl Mapper for Mapper74 {
-    crate::state::mapper_state!(chr_ram, prg_ram, command, prg_address_select,
-        chr_address_select, bank_regs, irq_counter, irq_latch, irq_enabled,
-        irq_pending, mirroring, prg_rom_banks);
+    crate::state::mapper_state!(
+        chr_ram,
+        prg_ram,
+        command,
+        prg_address_select,
+        chr_address_select,
+        bank_regs,
+        irq_counter,
+        irq_latch,
+        irq_enabled,
+        irq_pending,
+        mirroring,
+        prg_rom_banks
+    );
 
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
@@ -542,7 +553,10 @@ mod tests {
         assert_eq!(mapper.read(0x6000), 0x42);
         assert_eq!(mapper.read(0x7FFF), 0xEF);
 
-        let saved = mapper.save_ram().expect("MMC3 boards carry work RAM").to_vec();
+        let saved = mapper
+            .save_ram()
+            .expect("MMC3 boards carry work RAM")
+            .to_vec();
         assert_eq!(saved[0], 0x42);
 
         mapper.write(0x6000, 0x00);

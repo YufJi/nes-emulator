@@ -7,8 +7,8 @@
 //! diagonal mirroring modes that standard MMC3 cannot produce.
 //! See https://www.nesdev.org/wiki/INES_Mapper_118
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Mapper 118 - TxSROM (MMC3 variant)
 #[derive(Debug)]
@@ -150,7 +150,7 @@ impl Mapper118 {
                     (self.bank_regs[(slot + 2) as usize] & 0x7F) as usize
                 }
             }
-            4 | 5 | 6 | 7 => {
+            4..=7 => {
                 if self.chr_address_select == 0 {
                     // R2-R5 for slots 4-7 (1KB banks)
                     (self.bank_regs[(slot - 2) as usize] & 0x7F) as usize
@@ -203,7 +203,7 @@ impl Mapper118 {
                 self.bank_regs[cmd_idx] = value;
                 self.update_nametable_mirroring();
             }
-            2 | 3 | 4 | 5 => {
+            2..=5 => {
                 // Select 1KB CHR bank
                 self.bank_regs[cmd_idx] = value;
                 self.update_nametable_mirroring();

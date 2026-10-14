@@ -9,8 +9,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_133>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Sachen 8259 mapper (Mapper 133)
 #[derive(Debug)]

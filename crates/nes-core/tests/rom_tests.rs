@@ -106,7 +106,11 @@ fn blargg_ppu_open_bus() {
 
 #[test]
 fn blargg_sprite_hit() {
-    common::check_blargg_directory("blargg/sprite_hit_tests_2005.10.05", BLARGG_SLOW_FRAMES, &[]);
+    common::check_blargg_directory(
+        "blargg/sprite_hit_tests_2005.10.05",
+        BLARGG_SLOW_FRAMES,
+        &[],
+    );
 }
 
 #[test]
@@ -122,10 +126,7 @@ fn blargg_mmc3() {
         // The A12 edge filter and the dot-exact timing of the first rise are
         // not exact enough yet, and the "alternate" IRQ revision this board
         // variant uses needs a submapper this project does not parse (§15.1).
-        &[
-            "4-scanline_timing.nes",
-            "6-MMC3_alt.nes",
-        ],
+        &["4-scanline_timing.nes", "6-MMC3_alt.nes"],
     );
 }
 

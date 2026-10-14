@@ -14,9 +14,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/UNROM_512>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// CHR-RAM on this board, in bytes.
 const CHR_RAM_SIZE: usize = 0x8000;
@@ -140,7 +140,11 @@ mod tests {
         // Bank = bits 0-4, CHR bank = bits 5-6, nametable = bit 7.
         m.write(0x8000, 0b1100_0110);
         assert_eq!(m.read(0x8000), 0x06);
-        assert_eq!(m.read(0xC000), 0x0F, "the top half is fixed to the last bank");
+        assert_eq!(
+            m.read(0xC000),
+            0x0F,
+            "the top half is fixed to the last bank"
+        );
         assert_eq!(m.chr_bank, (0b1100_0110u8 >> 5) & 0x03);
         assert_eq!(m.mirroring(), Some(Mirroring::SingleScreenUpper));
 

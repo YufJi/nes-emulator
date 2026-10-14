@@ -5,8 +5,8 @@
 //! Uses CHR-RAM (no CHR-ROM bank switching).
 //! See https://www.nesdev.org/wiki/UxROM
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// UxROM mapper (Mapper 2)
 #[derive(Debug)]
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn test_bank_switching() {
         let mut prg = vec![0u8; 0x40000]; // 256KB (16 x 16KB banks)
-        // Mark different banks
+                                          // Mark different banks
         for i in 0..16 {
             prg[i * 0x4000] = i as u8;
         }

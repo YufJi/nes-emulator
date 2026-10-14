@@ -562,7 +562,10 @@ impl Ppu {
         } else if addr < 0x3F00 {
             // Nametables ($2000-$2FFF): a cartridge can point a window at its
             // own RAM (MMC5's ExRAM), and answers first when it does.
-            if let PpuMemory::System { chr: Some(mapper), .. } = memory {
+            if let PpuMemory::System {
+                chr: Some(mapper), ..
+            } = memory
+            {
                 if let Some(byte) = mapper.nametable_read(addr) {
                     return byte;
                 }
@@ -597,7 +600,10 @@ impl Ppu {
         } else if addr < 0x3F00 {
             // Nametables ($2000-$2FFF): a cartridge that maps a window to its
             // own RAM takes the write instead.
-            if let PpuMemory::System { chr: Some(mapper), .. } = memory {
+            if let PpuMemory::System {
+                chr: Some(mapper), ..
+            } = memory
+            {
                 if mapper.nametable_write(addr, value) {
                     return;
                 }
@@ -710,9 +716,19 @@ mod tests {
         ppu.cycle = 1;
 
         let value = ppu.read_register(0x2002);
-        assert_eq!(value & 0x80, 0, "the flag is not visible on the dot it is set");
-        assert!(ppu.take_vblank_suppression(), "the frame's VBlank is suppressed");
-        assert!(!ppu.take_vblank_suppression(), "and only for that one frame");
+        assert_eq!(
+            value & 0x80,
+            0,
+            "the flag is not visible on the dot it is set"
+        );
+        assert!(
+            ppu.take_vblank_suppression(),
+            "the frame's VBlank is suppressed"
+        );
+        assert!(
+            !ppu.take_vblank_suppression(),
+            "and only for that one frame"
+        );
 
         // A read anywhere else behaves as an ordinary status read.
         ppu.scanline = 241;

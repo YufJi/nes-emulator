@@ -14,8 +14,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_112>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Asder mapper (Mapper 112)
 #[derive(Debug)]

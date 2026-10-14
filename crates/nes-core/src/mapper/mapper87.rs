@@ -11,8 +11,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_087>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// J87 mapper (Mapper 87)
 #[derive(Debug)]
@@ -59,7 +59,10 @@ impl Mapper for Mapper87 {
             // halves, which the modulo does on its own.
             0x8000..=0xFFFF => {
                 let offset = (addr - 0x8000) as usize;
-                self.prg_rom.get(offset % self.prg_rom.len().max(1)).copied().unwrap_or(0)
+                self.prg_rom
+                    .get(offset % self.prg_rom.len().max(1))
+                    .copied()
+                    .unwrap_or(0)
             }
             _ => 0,
         }

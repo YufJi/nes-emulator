@@ -382,7 +382,10 @@ impl NesBus {
         if !self.has_battery {
             return None;
         }
-        self.mapper.as_ref().and_then(|m| m.save_ram()).map(|r| r.to_vec())
+        self.mapper
+            .as_ref()
+            .and_then(|m| m.save_ram())
+            .map(|r| r.to_vec())
     }
 
     /// Restore a snapshot produced by [`NesBus::save_ram`].
@@ -682,50 +685,50 @@ impl NesBus {
                 RenderTiming::ScanlineStart => 0,
             };
             if cycle == draw_at {
-                    // Reload the horizontal scroll for this line from t.
-                    self.ppu.render_v =
-                        (self.ppu.render_v & !0x041F) | (self.ppu.t & 0x041F);
+                // Reload the horizontal scroll for this line from t.
+                self.ppu.render_v = (self.ppu.render_v & !0x041F) | (self.ppu.t & 0x041F);
 
-                    // Background + sprites for this scanline. Pattern data is
-                    // read through the cartridge so mid-frame CHR bank
-                    // switches take effect immediately.
-                    let mask = self.ppu.mask;
-                    match self.mapper.as_deref_mut() {
-                        Some(mapper) => {
-                            let mut chr = MapperChr(mapper);
-                            self.bg_renderer.render_scanline(&self.ppu, &mut chr, scanline, mask);
-                            self.bg_renderer
-                                .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
-                        }
-                        None => {
-                            let mut chr = VramChr;
-                            self.bg_renderer.render_scanline(&self.ppu, &mut chr, scanline, mask);
-                            self.bg_renderer
-                                .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
-                        }
+                // Background + sprites for this scanline. Pattern data is
+                // read through the cartridge so mid-frame CHR bank
+                // switches take effect immediately.
+                let mask = self.ppu.mask;
+                match self.mapper.as_deref_mut() {
+                    Some(mapper) => {
+                        let mut chr = MapperChr(mapper);
+                        self.bg_renderer
+                            .render_scanline(&self.ppu, &mut chr, scanline, mask);
+                        self.bg_renderer
+                            .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
                     }
-                    if self.bg_renderer.check_sprite_0_hit() {
-                        self.ppu.status.insert(PpuStatus::SPRITE_0_HIT);
+                    None => {
+                        let mut chr = VramChr;
+                        self.bg_renderer
+                            .render_scanline(&self.ppu, &mut chr, scanline, mask);
+                        self.bg_renderer
+                            .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
                     }
+                }
+                if self.bg_renderer.check_sprite_0_hit() {
+                    self.ppu.status.insert(PpuStatus::SPRITE_0_HIT);
+                }
 
-                    // Advance the vertical scroll for the next scanline.
-                    self.ppu.render_v = ScanlineProcessor::increment_scroll_y(self.ppu.render_v);
+                // Advance the vertical scroll for the next scanline.
+                self.ppu.render_v = ScanlineProcessor::increment_scroll_y(self.ppu.render_v);
 
-                    // Evaluate sprites for the next scanline.
-                    let next_scanline = scanline + 1;
-                    if next_scanline < 240 {
-                        let overflow = self.sprite_evaluator.evaluate(
-                            &self.ppu.oam,
-                            next_scanline,
-                            self.ppu.ctrl,
-                            self.ppu.oam_addr,
-                        );
-                        if overflow {
-                            self.ppu.status.insert(PpuStatus::SPRITE_OVERFLOW);
-                        }
-                        self.bg_renderer.secondary_oam =
-                            self.sprite_evaluator.secondary_oam.clone();
+                // Evaluate sprites for the next scanline.
+                let next_scanline = scanline + 1;
+                if next_scanline < 240 {
+                    let overflow = self.sprite_evaluator.evaluate(
+                        &self.ppu.oam,
+                        next_scanline,
+                        self.ppu.ctrl,
+                        self.ppu.oam_addr,
+                    );
+                    if overflow {
+                        self.ppu.status.insert(PpuStatus::SPRITE_OVERFLOW);
                     }
+                    self.bg_renderer.secondary_oam = self.sprite_evaluator.secondary_oam.clone();
+                }
             }
         } else if scanline == 241 {
             // Start of VBlank
@@ -826,7 +829,7 @@ impl Bus for NesBus {
         self.irq_pending
             || self.apu.frame_counter_irq
             || self.apu.dmc.irq_active()
-            || self.mapper.as_ref().map_or(false, |m| m.irq_pending())
+            || self.mapper.as_ref().is_some_and(|m| m.irq_pending())
     }
 }
 
@@ -936,7 +939,9 @@ impl NesBus {
                     self.ppu.frame += 1;
                     self.frame_ready = true;
 
-                    self.frame_buffer.pixels.copy_from_slice(self.bg_renderer.get_frame());
+                    self.frame_buffer
+                        .pixels
+                        .copy_from_slice(self.bg_renderer.get_frame());
                 }
 
                 // Let mappers with a scanline counter tick here.
@@ -1216,7 +1221,10 @@ impl Nes {
     /// machine untouched.
     pub fn load_state(&mut self, data: &[u8]) {
         const HEADER: usize = STATE_MAGIC.len() + 1;
-        if data.len() < HEADER || !data.starts_with(STATE_MAGIC) || data[STATE_MAGIC.len()] != STATE_VERSION {
+        if data.len() < HEADER
+            || !data.starts_with(STATE_MAGIC)
+            || data[STATE_MAGIC.len()] != STATE_VERSION
+        {
             return;
         }
 
@@ -1381,19 +1389,31 @@ mod tests {
     #[test]
     fn ppustatus_read_clears_vblank_and_sprite_flags() {
         let mut nes = Nes::new();
-        nes.bus.ppu.status.insert(
-            PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
-        );
+        nes.bus
+            .ppu
+            .status
+            .insert(PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT);
 
         let value = nes.peek(0x2002);
 
         assert_eq!(value & 0x80, 0x80, "VBlank should be reported by the read");
-        assert_eq!(value & 0x40, 0x40, "sprite 0 hit should be reported by the read");
-        assert_eq!(value & 0x20, 0x20, "sprite overflow should be reported by the read");
+        assert_eq!(
+            value & 0x40,
+            0x40,
+            "sprite 0 hit should be reported by the read"
+        );
+        assert_eq!(
+            value & 0x20,
+            0x20,
+            "sprite overflow should be reported by the read"
+        );
         assert!(!nes.bus.ppu.status.contains(PpuStatus::VBLANK));
         assert!(!nes.bus.ppu.status.contains(PpuStatus::SPRITE_OVERFLOW));
         assert!(!nes.bus.ppu.status.contains(PpuStatus::SPRITE_0_HIT));
-        assert!(!nes.bus.ppu.w, "the write toggle should be reset by the read");
+        assert!(
+            !nes.bus.ppu.w,
+            "the write toggle should be reset by the read"
+        );
     }
 
     #[test]
@@ -1428,7 +1448,7 @@ mod tests {
         rom.extend_from_slice(b"NES\x1a");
         rom.push(2); // 32KB PRG
         rom.push(1); // 8KB CHR
-        // Mapper number = (flags7 & 0xF0) | (flags6 >> 4).
+                     // Mapper number = (flags7 & 0xF0) | (flags6 >> 4).
         rom.extend_from_slice(&[0x40, 0x00]); // flags6, flags7 -> mapper 4
         rom.extend_from_slice(&[0u8; 8]); // padding
 
@@ -1658,7 +1678,7 @@ mod tests {
         ];
         prg[base..base + code.len()].copy_from_slice(code);
         prg[base + 0x10] = 0x40; // RTI for stray interrupts
-        // Vectors live in the final six bytes of the ROM ($FFFA-$FFFF).
+                                 // Vectors live in the final six bytes of the ROM ($FFFA-$FFFF).
         let vectors = prg.len() - 6;
         prg[vectors] = 0x10; // NMI   -> $E010
         prg[vectors + 1] = 0xE0;
@@ -1746,7 +1766,8 @@ mod tests {
                     let mut nes = Nes::new();
                     match nes.load_rom(&rom) {
                         Ok(()) => nes.frame(),
-                        Err(NesError::InvalidRomFormat(_)) | Err(NesError::UnsupportedMapper(_)) => {}
+                        Err(NesError::InvalidRomFormat(_))
+                        | Err(NesError::UnsupportedMapper(_)) => {}
                         Err(other) => panic!("mapper {mapper} came back with {other:?}"),
                     }
                 }
@@ -1762,7 +1783,10 @@ mod tests {
         nes.frame();
 
         let queued = nes.buffered_audio_frames();
-        assert!(queued > 100, "a frame should carry audio, got {queued} frames");
+        assert!(
+            queued > 100,
+            "a frame should carry audio, got {queued} frames"
+        );
 
         // A device period shorter than the queue takes only part of it.
         let mut period = vec![0.0f32; 100];
@@ -1879,9 +1903,15 @@ mod tests {
             if stepped.is_frame_ready() {
                 break;
             }
-            assert!(stepped.step_instruction() > 0, "an instruction must cost cycles");
+            assert!(
+                stepped.step_instruction() > 0,
+                "an instruction must cost cycles"
+            );
         }
-        assert!(stepped.is_frame_ready(), "stepping never reached a frame boundary");
+        assert!(
+            stepped.is_frame_ready(),
+            "stepping never reached a frame boundary"
+        );
 
         assert_eq!(stepped.save_state(), whole.save_state());
     }
@@ -1909,8 +1939,8 @@ mod tests {
         rom.extend_from_slice(b"NES\x1a");
         rom.push(8); // 128KB PRG
         rom.push(1); // 8KB CHR
-        // Mapper number = (flags7 & 0xF0) | (flags6 >> 4), so 24 = 0x18
-        // needs flags6 = 0x80 and flags7 = 0x10.
+                     // Mapper number = (flags7 & 0xF0) | (flags6 >> 4), so 24 = 0x18
+                     // needs flags6 = 0x80 and flags7 = 0x10.
         rom.push(0x80);
         rom.push(0x10);
         rom.extend_from_slice(&[0u8; 8]);

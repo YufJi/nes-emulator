@@ -27,9 +27,8 @@ const DUTY_TABLE: [[u8; 8]; 4] = [
 ///
 /// Maps the 5-bit length counter load value to the actual counter value.
 const LENGTH_TABLE: [u8; 32] = [
-    0x0A, 0xFE, 0x14, 0x02, 0x28, 0x04, 0x50, 0x06, 0xA0, 0x08, 0x3C, 0x0A, 0x0E, 0x0C, 0x1A,
-    0x0E, 0x0C, 0x10, 0x18, 0x12, 0x30, 0x14, 0x60, 0x16, 0xC0, 0x18, 0x48, 0x1A, 0x10, 0x1C,
-    0x20, 0x1E,
+    0x0A, 0xFE, 0x14, 0x02, 0x28, 0x04, 0x50, 0x06, 0xA0, 0x08, 0x3C, 0x0A, 0x0E, 0x0C, 0x1A, 0x0E,
+    0x0C, 0x10, 0x18, 0x12, 0x30, 0x14, 0x60, 0x16, 0xC0, 0x18, 0x48, 0x1A, 0x10, 0x1C, 0x20, 0x1E,
 ];
 
 /// Envelope unit for pulse channels
@@ -301,7 +300,11 @@ pub struct LengthCounter {
     pub enabled: bool,
 }
 
-crate::state::state_fields!(LengthCounter { counter, halt, enabled });
+crate::state::state_fields!(LengthCounter {
+    counter,
+    halt,
+    enabled
+});
 
 impl LengthCounter {
     /// Create a new length counter
@@ -419,7 +422,10 @@ pub struct Sequencer {
     pub duty_mode: u8,
 }
 
-crate::state::state_fields!(Sequencer { position, duty_mode });
+crate::state::state_fields!(Sequencer {
+    position,
+    duty_mode
+});
 
 impl Sequencer {
     /// Create a new sequencer
@@ -624,7 +630,11 @@ impl AudioChannel for PulseChannel {
                 // Read back duty/envelope settings
                 let duty = (self.sequencer.duty_mode & 0x03) << 6;
                 let loop_flag = if self.envelope.loop_flag { 0x20 } else { 0 };
-                let constant = if self.envelope.constant_volume { 0x10 } else { 0 };
+                let constant = if self.envelope.constant_volume {
+                    0x10
+                } else {
+                    0
+                };
                 duty | loop_flag | constant | (self.envelope.volume & 0x0F)
             }
             1 => {

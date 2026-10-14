@@ -3,8 +3,8 @@
 //! The simplest mapper with no bank switching.
 //! Supports up to 32KB PRG-ROM and 8KB CHR-ROM (or CHR-RAM).
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// NROM mapper (Mapper 0)
 #[derive(Debug)]

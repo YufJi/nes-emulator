@@ -7,8 +7,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_244>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Decathlon mapper (Mapper 244)
 #[derive(Debug)]

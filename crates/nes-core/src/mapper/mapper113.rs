@@ -13,9 +13,9 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_113>
 
-use crate::prelude::*;
-use crate::ppu::rendering::Mirroring;
 use super::Mapper;
+use crate::ppu::rendering::Mirroring;
+use crate::prelude::*;
 
 /// HES mapper (Mapper 113)
 #[derive(Debug)]

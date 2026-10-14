@@ -13,8 +13,8 @@
 //!
 //! See <https://www.nesdev.org/wiki/INES_Mapper_206>
 
-use crate::prelude::*;
 use super::Mapper;
+use crate::prelude::*;
 
 /// Namcot 118 mapper (Mapper 206)
 #[derive(Debug)]

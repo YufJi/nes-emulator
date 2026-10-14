@@ -10,19 +10,15 @@ use super::AudioChannel;
 /// Triangle sequencer table - 32-step waveform
 /// Produces values from 15 down to 0, then 0 up to 15
 const TRIANGLE_TABLE: [u8; 32] = [
-    15, 14, 13, 12, 11, 10, 9, 8,
-    7, 6, 5, 4, 3, 2, 1, 0,
-    0, 1, 2, 3, 4, 5, 6, 7,
-    8, 9, 10, 11, 12, 13, 14, 15
+    15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15,
 ];
 
 /// Length counter lookup table
 /// Maps the upper 5 bits of the length register to a count value
 const LENGTH_TABLE: [u8; 32] = [
-    10, 254, 20, 2, 40, 4, 80, 6,
-    160, 8, 60, 10, 14, 12, 26, 14,
-    12, 16, 24, 18, 48, 20, 96, 22,
-    192, 24, 72, 26, 16, 28, 32, 30
+    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
+    192, 24, 72, 26, 16, 28, 32, 30,
 ];
 
 /// Triangle channel state
@@ -502,7 +498,11 @@ mod tests {
 
         for (input, expected) in test_cases.iter() {
             channel.write_register(0x400B, *input);
-            assert_eq!(channel.length_counter, *expected, "Failed for input 0x{:02X}", input);
+            assert_eq!(
+                channel.length_counter, *expected,
+                "Failed for input 0x{:02X}",
+                input
+            );
         }
     }
 
@@ -576,10 +576,8 @@ mod tests {
     fn test_sequencer_waveform() {
         // Verify the sequencer produces the expected waveform
         let expected_waveform = [
-            15, 14, 13, 12, 11, 10, 9, 8,
-            7, 6, 5, 4, 3, 2, 1, 0,
-            0, 1, 2, 3, 4, 5, 6, 7,
-            8, 9, 10, 11, 12, 13, 14, 15
+            15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15,
         ];
 
         for (i, &expected) in expected_waveform.iter().enumerate() {
