@@ -758,8 +758,8 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 0/5 |
-| `ppu_vbl_nmi` | 4/10 |
+| `cpu_interrupts_v2` | 1/5（`2`/`3`/`4`/`5` 需要 cycle 级精确的中断向量过程） |
+| `ppu_vbl_nmi` | 5/10 |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -833,6 +833,12 @@ flowchart LR
   同时抹掉该帧的标志与 NMI）、以及"VBlank 期间写 $2000 打开 NMI 立即触发"都已实现——
   blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 4/10。仍缺：立即触发时 CPU 要**延后一条指令**
   才响应 NMI、抑制窗口的 dot 级精度、以及奇数帧跳点判定所依据的确切 dot。
+- **中断时序是"指令级精确"，不是 cycle 级**：CLI/SEI/PLP 对中断使能的影响要延后一条指令
+  （RTI 不延后）、未跨页的已跳转分支会跳过自己最后一个周期的轮询、帧中写 `$2000` 打开的
+  NMI 要再过一条指令才被看到——这三条已由 `1-cli_latency` 与 `04-nmi_control` 钉住。剩下的
+  `cpu_interrupts_v2`（`2`/`3`/`4`/`5`）性质不同：它们读的是"处理程序开始执行时的 CPU
+  周期数"，因此需要把中断序列本身也按 cycle 步进——与 MMC3 A12、NMI 窗口想要的是同一个
+  cycle 精度台阶。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，
@@ -907,10 +913,10 @@ flowchart LR
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **测试 ROM 已经点名的精度欠账**：`cpu_interrupts_v2` 的 5 项、dot 级精确的 A12 与 NMI
-   时序（§13.1 里 `ppu_vbl_nmi` 与 MMC3 剩余几项）、MMC5 的扩展属性、sprite 0 命中时序、
-   §8 里说明延后的 5 个 Mapper、PAL 的 dot 比例——以及一个在需要时能暴露 `RenderTiming`
-   的前端。
+5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 16 项——`cpu_interrupts_v2` 的 4 项、
+   `apu_test` 的 5 项、`ppu_vbl_nmi` 的 5 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展属性、
+   sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。它们几乎都归结为同一件
+   事：让 CPU 与中断序列按 cycle 步进，而不是按指令步进。
 
 ---
 

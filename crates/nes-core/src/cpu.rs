@@ -41,6 +41,22 @@ pub struct Cpu {
     /// the effective address alone. It is written and read inside a single
     /// instruction, so it stays out of save states.
     addr_base: u16,
+    /// Whether an IRQ is inhibited right now, as the interrupt decision sees it.
+    ///
+    /// Normally this is just the I flag, but CLI, SEI and PLP only change what
+    /// interrupts are allowed *after* the next instruction has run, while RTI
+    /// takes effect immediately. Keeping the decision its own copy is what lets
+    /// the flag itself update at once — `CLI` followed by `PHP` still shows I
+    /// clear in the pushed status — without the IRQ handler being entered an
+    /// instruction too early.
+    irq_inhibit: bool,
+    /// Set by a taken branch that does not cross a page, to skip the interrupt
+    /// poll the next instruction would otherwise make.
+    ///
+    /// The hardware polls interrupts on the penultimate cycle of an instruction,
+    /// and a branch's last cycle is not one: the instruction after the branch
+    /// gets to run first.
+    skip_interrupt_poll: bool,
 }
 
 bitflags::bitflags! {
@@ -83,7 +99,9 @@ crate::state::state_fields!(Cpu {
     pc,
     status,
     cycles,
-    halted
+    halted,
+    irq_inhibit,
+    skip_interrupt_poll
 });
 
 impl Default for Cpu {
@@ -108,6 +126,8 @@ impl Cpu {
             cycles: 0,
             halted: false,
             addr_base: 0,
+            irq_inhibit: true,
+            skip_interrupt_poll: false,
         }
     }
 
@@ -122,6 +142,8 @@ impl Cpu {
         self.pc = (hi << 8) | lo;
 
         self.halted = false;
+        self.irq_inhibit = true;
+        self.skip_interrupt_poll = false;
         self.cycles = 0;
     }
 

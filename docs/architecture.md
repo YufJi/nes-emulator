@@ -827,8 +827,8 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 0/5 |
-| `ppu_vbl_nmi` | 4/10 |
+| `cpu_interrupts_v2` | 1/5 (`2`/`3`/`4`/`5` need cycle-exact vectoring) |
+| `ppu_vbl_nmi` | 5/10 |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -916,6 +916,13 @@ clone needs `npm run build:wasm` before building the front end.
   implemented — blargg's `ppu_vbl_nmi` went from 1/10 to 4/10 on them. Still missing: the
   one-instruction delay before the CPU services that immediate NMI, the dot-exact
   suppression windows, and the exact dot the odd-frame skip is decided on.
+- **Interrupt timing is instruction-exact, not cycle-exact**: CLI/SEI/PLP delay what
+  interrupts are allowed by one instruction (RTI does not), a taken branch that stays in its
+  page skips the poll on its last cycle, and an NMI raised by a mid-frame `$2000` write is
+  seen one instruction later. `1-cli_latency` and `04-nmi_control` pinned those down. What
+  the remaining `cpu_interrupts_v2` cases (`2`/`3`/`4`/`5`) ask for is different in kind:
+  they read the CPU cycle the handler starts on, so they need the interrupt sequence itself
+  to be cycle-stepped - the same cycle-accuracy step the MMC3 A12 and NMI windows want.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
@@ -1012,10 +1019,11 @@ backlog, so they are written down here to stop them being re-litigated:
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **The accuracy backlog the test ROMs now name**: `cpu_interrupts_v2`'s five cases,
-   dot-exact A12 and NMI timing (the remaining `ppu_vbl_nmi` and MMC3 cases in §13.1), MMC5's
-   extended attributes, sprite 0 hit timing, the five mappers §8 defers, and the PAL dot
-   ratio — plus a front end that exposes `RenderTiming` when a game needs it.
+5. **The accuracy backlog the test ROMs now name**: the sixteen remaining cases in §13.1 —
+   `cpu_interrupts_v2`'s four, `apu_test`'s five, `ppu_vbl_nmi`'s five, `mmc3_test_2`'s two —
+   plus MMC5's extended attributes, sprite 0 hit timing, the five mappers §8 defers, and the
+   PAL dot ratio. Almost all of them come down to one thing: stepping the CPU and its
+   interrupt sequence by cycle instead of by instruction.
 
 ---
 

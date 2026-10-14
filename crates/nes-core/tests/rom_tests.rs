@@ -42,10 +42,11 @@ fn blargg_cpu_interrupts() {
     common::check_blargg_directory(
         "blargg/cpu_interrupts_v2/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // IRQ/NMI latency around CLI, BRK and DMA is not modelled closely
-        // enough yet (§15.1).
+        // The instruction-level ordering is right (CLI's delayed inhibition,
+        // taken branches skipping their poll); what these need is the interrupt
+        // to be vectored at an exact CPU cycle, which needs a cycle-stepped CPU
+        // (§15.1).
         &[
-            "1-cli_latency.nes",
             "2-nmi_and_brk.nes",
             "3-nmi_and_irq.nes",
             "4-irq_and_dma.nes",
@@ -62,7 +63,6 @@ fn blargg_ppu_vbl_nmi() {
         // VBlank set/clear timing, NMI suppression and the odd-frame skip are
         // all still approximate (§15.1).
         &[
-            "04-nmi_control.nes",
             "05-nmi_timing.nes",
             "06-suppression.nes",
             "07-nmi_on_timing.nes",

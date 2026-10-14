@@ -71,18 +71,26 @@ impl Cpu {
         // Interrupts are taken between instructions.
         //
         // NMI is edge-triggered and cannot be masked. IRQ is level-triggered
-        // and is ignored while the I flag is set.
+        // and is ignored while the I flag is set — but the flag the decision
+        // uses is `irq_inhibit`, not the live one: CLI/SEI/PLP only change what
+        // interrupts are allowed *after* the next instruction runs, while RTI
+        // takes effect at once (see `irq_inhibit` on `Cpu`).
         //
         // Taking one is also what restarts a halted CPU, which is why the halt
         // check sits below rather than above these.
-        if bus.nmi_pending() {
-            bus.clear_nmi();
-            self.halted = false;
-            return self.service_interrupt(bus, 0xFFFA);
-        }
-        if bus.irq_pending() && !self.status.contains(StatusFlags::I) {
-            self.halted = false;
-            return self.service_interrupt(bus, 0xFFFE);
+        //
+        // A taken branch that does not cross a page skips the poll on its last
+        // cycle, so the instruction after it runs before any interrupt does.
+        if !core::mem::take(&mut self.skip_interrupt_poll) {
+            if bus.nmi_pending() {
+                bus.clear_nmi();
+                self.halted = false;
+                return self.service_interrupt(bus, 0xFFFA);
+            }
+            if bus.irq_pending() && !self.irq_inhibit {
+                self.halted = false;
+                return self.service_interrupt(bus, 0xFFFE);
+            }
         }
 
         // A KIL/JAM opcode stops the CPU: it keeps burning cycles but fetches
@@ -90,6 +98,10 @@ impl Cpu {
         if self.halted {
             return 2;
         }
+
+        // Captured for the delayed-inhibition rule below, before the handler can
+        // touch it.
+        let i_before = self.status.contains(StatusFlags::I);
 
         let op = &OPCODE_TABLE[opcode as usize];
 
@@ -227,6 +239,16 @@ impl Cpu {
 
         // Execute the instruction handler
         let handler_cycles = (op.handler)(self, bus, addr, extra_cycles);
+
+        // The interrupt decision the *next* instruction makes sees the I flag as
+        // it was before CLI/SEI/PLP wrote it: those three only take effect after
+        // one more instruction has run. Every other instruction - RTI included -
+        // lets the change through at once.
+        self.irq_inhibit = if matches!(opcode, 0x58 | 0x78 | 0x28) {
+            i_before
+        } else {
+            self.status.contains(StatusFlags::I)
+        };
 
         // The addressing mode reports the page-crossing penalty as
         // `extra_cycles`, and it is the *handler* that decides whether this
@@ -728,6 +750,10 @@ impl Cpu {
         self.push(bus, status.bits());
 
         self.status.insert(StatusFlags::I);
+        // The handler runs with interrupts inhibited, and it is the interrupt
+        // sequence - not the instruction before it - that the next poll sees.
+        self.irq_inhibit = true;
+        self.skip_interrupt_poll = false;
 
         let lo = bus.read(vector) as u16;
         let hi = bus.read(vector.wrapping_add(1)) as u16;
@@ -752,6 +778,9 @@ impl Cpu {
             bus.read(dummy_addr);
             2
         } else {
+            // The poll a three-cycle branch would make at its end falls on the
+            // cycle it does not have: the next instruction runs first.
+            self.skip_interrupt_poll = true;
             1
         }
     }
@@ -3061,6 +3090,7 @@ mod tests {
     struct MockBus {
         memory: [u8; 65536],
         nmi: bool,
+        irq: bool,
     }
 
     impl MockBus {
@@ -3068,12 +3098,20 @@ mod tests {
             Self {
                 memory: [0; 65536],
                 nmi: false,
+                irq: false,
             }
         }
 
         /// Raise the NMI line, the interrupt that restarts a halted CPU.
         fn set_nmi(&mut self, pending: bool) {
             self.nmi = pending;
+        }
+
+        /// Raise the IRQ line, which the CPU takes only while I is clear - or,
+        /// thanks to the delayed-inhibition rule, one instruction after it goes
+        /// clear.
+        fn set_irq(&mut self, pending: bool) {
+            self.irq = pending;
         }
 
         fn write_mem(&mut self, addr: u16, value: u8) {
@@ -3107,7 +3145,7 @@ mod tests {
         }
 
         fn irq_pending(&self) -> bool {
-            false
+            self.irq
         }
     }
 
@@ -3866,6 +3904,85 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// CLI, SEI and PLP only change what interrupts are allowed *after* the
+    /// next instruction has run; the flag itself changes at once.
+    #[test]
+    fn test_cli_delays_irq_inhibition_by_one_instruction() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x58, 0xEA, 0xEA, 0xEA]); // CLI, NOP…
+        bus.write_mem(0xFFFE, 0x00);
+        bus.write_mem(0xFFFF, 0x90); // IRQ vector
+        cpu.pc = 0x0600;
+        cpu.status.insert(StatusFlags::I);
+        bus.set_irq(true);
+
+        // CLI runs; its own poll saw I set, so no IRQ yet.
+        assert_eq!(cpu.execute_instruction(&mut bus, 0x58), 2);
+        assert!(
+            !cpu.status.contains(StatusFlags::I),
+            "the flag itself clears immediately"
+        );
+
+        // The instruction after CLI still runs before the IRQ is taken.
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 2);
+        assert_eq!(cpu.pc(), 0x0602, "the NOP after CLI executed");
+
+        // Now the IRQ gets through.
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 7);
+        assert_eq!(cpu.pc(), 0x9000);
+    }
+
+    /// RTI is the exception: it changes inhibition at once, so an IRQ that was
+    /// held back while I was set is taken immediately after the RTI.
+    #[test]
+    fn test_rti_lets_an_irq_through_immediately() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.write_mem(0xFFFE, 0x00);
+        bus.write_mem(0xFFFF, 0x90);
+        bus.set_irq(true);
+
+        // The stack RTI pops: status with I clear, then the return address.
+        cpu.sp = 0xFD;
+        bus.write_mem(0x01FE, 0x20); // status: U set, I clear
+        bus.write_mem(0x01FF, 0x00); // PC low
+        bus.write_mem(0x0100, 0x80); // PC high (the stack wraps to $0100)
+        cpu.pc = 0x0600;
+        cpu.status.insert(StatusFlags::I);
+
+        assert_eq!(cpu.execute_instruction(&mut bus, 0x40), 6); // RTI
+        assert!(!cpu.status.contains(StatusFlags::I));
+        // The next poll takes the IRQ: no extra instruction runs.
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 7);
+        assert_eq!(cpu.pc(), 0x9000);
+    }
+
+    /// A taken branch that does not cross a page skips the interrupt poll its
+    /// last cycle would have made, so one more instruction runs first.
+    #[test]
+    fn test_taken_branch_skips_one_interrupt_poll() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x90, 0x05, 0xEA, 0xEA]); // BCC +5
+        bus.write_mem(0xFFFE, 0x00);
+        bus.write_mem(0xFFFF, 0x90);
+        cpu.pc = 0x0600;
+        cpu.status.remove(StatusFlags::C); // BCC is taken
+        cpu.status.remove(StatusFlags::I);
+
+        assert_eq!(cpu.execute_instruction(&mut bus, 0x90), 3);
+
+        // The IRQ appears now, but the poll at the end of the branch is the one
+        // that gets skipped.
+        bus.set_irq(true);
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 2);
+        assert_eq!(cpu.pc(), 0x0608, "the NOP right after the branch executed");
+
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 7);
+        assert_eq!(cpu.pc(), 0x9000);
     }
 
     /// The SHx stores keep the page the address started in when the index

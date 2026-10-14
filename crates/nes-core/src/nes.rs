@@ -31,7 +31,7 @@ pub const BUTTON_RIGHT: u8 = 7;
 /// Magic prefix identifying a [`Nes::save_state`] blob.
 const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// Save-state format version, bumped whenever the encoding changes.
-const STATE_VERSION: u8 = 1;
+const STATE_VERSION: u8 = 2;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
@@ -214,6 +214,15 @@ struct NesBus {
     controller_strobe: bool,
     /// NMI pending flag (from PPU)
     nmi_pending: bool,
+    /// Instructions an NMI raised by a mid-frame `$2000` write still has to
+    /// wait, counted down once per instruction.
+    ///
+    /// Enabling NMI while the flag is already set raises the line during the
+    /// instruction that wrote `$2000` — after that instruction's own interrupt
+    /// poll. The CPU therefore does not see it until one more instruction has
+    /// run, which is what blargg's `04-nmi_control` checks ("immediate
+    /// occurrence should be after NEXT instruction").
+    nmi_pending_late: u8,
     /// IRQ pending flag (from APU or mapper)
     irq_pending: bool,
     /// Interleaved stereo audio waiting for the host to pull it
@@ -257,6 +266,7 @@ crate::state::state_fields!(NesBus {
     controllers,
     controller_strobe,
     nmi_pending,
+    nmi_pending_late,
     irq_pending,
     audio_accumulator,
     cpu_cycles,
@@ -287,6 +297,7 @@ impl NesBus {
             controllers: [ControllerState::new(), ControllerState::new()],
             controller_strobe: false,
             nmi_pending: false,
+            nmi_pending_late: 0,
             irq_pending: false,
             audio_buffer: VecDeque::with_capacity(audio_capacity_floats(
                 DEFAULT_SAMPLE_RATE,
@@ -811,18 +822,28 @@ impl Bus for NesBus {
     }
 
     fn on_cpu_cycle(&mut self, cycles: u8) {
+        // A mid-frame $2000 write raises the NMI line after this instruction's
+        // own poll, so it waits for one more instruction to run.
+        if self.ppu.nmi_pending() {
+            self.ppu.clear_nmi();
+            self.nmi_pending_late = 2;
+        }
+        if self.nmi_pending_late > 0 {
+            self.nmi_pending_late -= 1;
+            if self.nmi_pending_late == 0 {
+                self.nmi_pending = true;
+            }
+        }
+
         self.advance_cycles(cycles as u16);
     }
 
     fn nmi_pending(&self) -> bool {
-        // The PPU can raise the NMI on its own, without waiting for the next
-        // VBlank: enabling NMI while the flag is already set does it.
-        self.nmi_pending || self.ppu.nmi_pending()
+        self.nmi_pending
     }
 
     fn clear_nmi(&mut self) {
         self.nmi_pending = false;
-        self.ppu.clear_nmi();
     }
 
     fn irq_pending(&self) -> bool {
