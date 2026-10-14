@@ -239,6 +239,27 @@ stays because it is what the hardware does in that corner and nothing regressed,
 from the readme's (`27 36 00 …`) by a constant, so that test measures something this window
 is not - most likely its own synchronisation to the PPU.
 
+*`2-nmi_and_brk`, investigated (source read at `cpu_interrupts_v2/source/2-nmi_and_brk.s`).*
+Its report is three columns - `nmi_flag | 0x02`, `irq_flag`, `X` (`X` should be 0) - and the
+rows that should show the NMI taking BRK's vector expect `36 00 00`: the NMI handler ran with
+BRK's frame on top (`nmi_flag` = 0x34, B set) and the BRK handler never ran (`irq_flag` = 0).
+Ours is `02 36 00` in **all ten rows**: `nmi_flag` = 0 (the NMI handler never stored) and
+`irq_flag` = 0x36 (the BRK handler ran). The ten rows differ only in *when* the NMI arrives -
+one CPU clock apart - so this is not about the hijack window at all: **the NMI never arrives
+inside the ten-clock window**. It is not that NMI is off (`setb` is a plain `lda #imm` /
+`sta`, and `ppu_vbl_nmi/04-nmi_control` passes, so the NMI path itself is fine). What does not
+line up is the test's own synchronisation: `sync_vbl` tunes a `$2002`-read loop to one *PPU
+clock* over many frames ("the loop will effectively read $2002 one PPU clock later each
+frame", the frame being 29780.67 CPU clocks) and `delay 29709` then places the NMI against
+that. Our reads still happen at the instruction's start, and a read that lands on the flag's
+dot wins the race over it across the whole CPU cycle (`cycle <= 1`, up to three dots), so the
+loop can be knocked a whole frame out of phase - or swallow the very frame it is waiting for.
+
+That makes `2-nmi_and_brk` (and `3-nmi_and_irq`'s remaining rows) **step 4's work, not the
+sequence's**: nothing on the interrupt-sequence side can move it until a `$2002` read happens
+on its own dot. Its readme even warns about this test ("Occasionally fails on NES due to
+PPU-CPU synchronization").
+
 **Step 4: reads with side effects.** `$2002` reads clear the VBlank flag and `$2007` reads
 move the VRAM address; both are still performed at the instruction's start. `02-vbl_set_time`
 passes today by luck of the current granularity — `06-suppression` and `05-nmi_timing` do

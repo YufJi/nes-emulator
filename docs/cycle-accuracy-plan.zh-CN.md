@@ -208,6 +208,23 @@ cycle 内。保留它的理由是这个角落符合硬件行为、且没有回�
 我们的轨迹（`02 36 00 …`）与 readme 的（`27 36 00 …`）差的不是常量，说明该测试量的是这个窗口
 之外的东西——最可能是它自己与 PPU 的同步。
 
+*`2-nmi_and_brk` 调查结论（已读源码 `cpu_interrupts_v2/source/2-nmi_and_brk.s`）。* 它打印三列：
+`nmi_flag | 0x02`、`irq_flag`、`X`（`X` 应为 0）。应由 NMI 接管 BRK 取向量那几行的期望是
+`36 00 00`——NMI 处理程序运行时栈顶是 BRK 那一帧（`nmi_flag` = 0x34，B 位为 1），而 BRK 处理
+程序从未运行（`irq_flag` = 0）。我们**十行全是** `02 36 00`：`nmi_flag` = 0（NMI 处理程序根本
+没写过）而 `irq_flag` = 0x36（BRK 处理程序每次都跑了）。十行之间只差 NMI 到达的时刻（相隔一个
+CPU clock），所以这与抢占窗口无关：**NMI 从未落进这个十 clock 窗口**。也不是 NMI 没开（`setb`
+就是朴素的 `lda #imm` / `sta`，且 `ppu_vbl_nmi/04-nmi_control` 通过，NMI 通路本身没问题）。
+对不上的是测试自己的同步：`sync_vbl` 用一个 `$2002` 读循环，跨多帧把读取时刻调到 **1 个 PPU
+clock** 的精度（"the loop will effectively read $2002 one PPU clock later each frame"，一帧是
+29780.67 个 CPU clock），随后 `delay 29709` 再据此安排 NMI。而我们的读仍发生在指令开头，落在
+标志那一个 dot 上的读会在整个 CPU cycle 内赢得这场竞争（`cycle <= 1`，最宽三个 dot），于是这个
+循环可能整体偏出一整帧，甚至把它正等的那一帧"吃掉"。
+
+因此 `2-nmi_and_brk`（以及 `3-nmi_and_irq` 剩下的行）属于**第 4 步**的工作，而不是序列侧：在
+`$2002` 的读能落在自己那个 dot 之前，中断序列这边做什么都推不动它。它的 readme 自己就提醒过
+（"Occasionally fails on NES due to PPU-CPU synchronization"）。
+
 **第 4 步：带副作用的读取。** `$2002` 的读会清 VBlank 标志，`$2007` 的读会推进 VRAM 地址，
 两者目前都发生在指令开头。`02-vbl_set_time` 现在靠粒度侥幸通过，而 `06-suppression` 与
 `05-nmi_timing` 不行。要把读取放到它真实的 cycle，需要把寻址阶段与数据访问拆到不同 cycle，
