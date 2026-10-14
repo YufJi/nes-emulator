@@ -141,7 +141,8 @@ crates/nes-core/   emulator core: CPU / PPU / APU / bus / mappers / save-state e
 crates/nes-wasm/   wasm-bindgen bindings (Nes), a thin wrapper over the core
 crates/nes-uniffi/ UniFFI bindings, for iOS / macOS (Swift) and Android (Kotlin)
 web/               React + Vite + TypeScript front end
-docs/              architecture notes (docs/architecture.md) and UI screenshots (docs/img/)
+docs/              architecture notes (docs/architecture.md), the cycle-accuracy plan
+                   (docs/cycle-accuracy-plan.md), UI screenshots (docs/img/)
 roms/              local test ROMs (optional; tests that need them are skipped when absent)
 ```
 

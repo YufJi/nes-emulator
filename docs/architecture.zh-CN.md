@@ -916,6 +916,10 @@ flowchart LR
    sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。它们几乎都归结为同一件
    事：让 CPU 与中断序列按 cycle 步进，而不是按指令步进。
 
+cycle 精度这件事另有一份带各阶段实测数据的方案文档：
+[`cycle-accuracy-plan.zh-CN.md`](./cycle-accuracy-plan.zh-CN.md)。下次动手时从它开始；
+本节只保留"模拟器目前处于什么状态"的摘要。
+
 ---
 
 ## 16. 参考

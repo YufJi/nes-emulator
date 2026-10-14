@@ -1027,6 +1027,10 @@ backlog, so they are written down here to stop them being re-litigated:
    PAL dot ratio. Almost all of them come down to one thing: stepping the CPU and its
    interrupt sequence by cycle instead of by instruction.
 
+The cycle-granularity work has its own plan, with the measurements each phase produced:
+[`cycle-accuracy-plan.md`](./cycle-accuracy-plan.md). It is the document to pick up when this
+list is next worked on; this section stays the summary of where the emulator stands.
+
 ---
 
 ## 16. References
