@@ -1,5 +1,9 @@
 target/
 pkg/
+# Test ROMs are downloaded locally and never committed (`nestest.nes` is the
+# one exception, kept because the nestest log tests depend on it).
+roms/blargg/
+roms/accuracycoin/
 # UniFFI bindings are generated, not committed.
 crates/nes-uniffi/out/
 ios/Artifacts/

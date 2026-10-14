@@ -1443,59 +1443,11 @@ fn test_full_sprite_evaluation() {
 // ============================================================================
 // Test ROM Integration (if available)
 // ============================================================================
-
-/// Check if PPU test ROMs are available
-fn get_ppu_test_rom_path(name: &str) -> Option<std::path::PathBuf> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let mut path = std::path::PathBuf::from(manifest_dir);
-    path.pop();
-    path.pop();
-    path.pop();
-    path.push("roms");
-    path.push("ppu");
-    path.push(name);
-
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-#[test]
-#[ignore = "Requires PPU test ROMs"]
-fn test_ppu_vbl_nmi() {
-    // This test would run the ppu_vbl_nmi.nes test ROM
-    // if it's available in the roms/ppu/ directory
-
-    if let Some(_path) = get_ppu_test_rom_path("ppu_vbl_nmi.nes") {
-        // Load and run the test ROM
-        // Verify results
-        println!("Found ppu_vbl_nmi.nes - would run test");
-    } else {
-        println!("ppu_vbl_nmi.nes not found - skipping");
-    }
-}
-
-#[test]
-#[ignore = "Requires PPU test ROMs"]
-fn test_ppu_open_bus() {
-    if let Some(_path) = get_ppu_test_rom_path("ppu_open_bus.nes") {
-        println!("Found ppu_open_bus.nes - would run test");
-    } else {
-        println!("ppu_open_bus.nes not found - skipping");
-    }
-}
-
-#[test]
-#[ignore = "Requires PPU test ROMs"]
-fn test_scanline_timing() {
-    if let Some(_path) = get_ppu_test_rom_path("scanline.nes") {
-        println!("Found scanline.nes - would run test");
-    } else {
-        println!("scanline.nes not found - skipping");
-    }
-}
+//
+// The PPU test ROMs (blargg's `ppu_vbl_nmi`, `blargg_ppu_tests`, `oam_read`,
+// `oam_stress`, `ppu_open_bus`, `sprite_hit_tests`, `sprite_overflow_tests`)
+// run for real in `tests/rom_tests.rs` — stubs that only printed "would run
+// test" told nobody anything. Add PPU ROMs there, with the suite's baseline.
 
 // ============================================================================
 // Background Renderer State Tests
@@ -1756,5 +1708,4 @@ fn test_grayscale_mode() {
 // To run these tests:
 //   cargo test ppu -- --nocapture
 //
-// Some tests are marked with #[ignore] and require test ROMs to be present
-// in the roms/ppu/ directory.
+// Real PPU test ROMs are driven from tests/rom_tests.rs, not from here.

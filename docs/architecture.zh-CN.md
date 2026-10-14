@@ -8,7 +8,8 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：742 个测试（739 通过 / 3 忽略），含 3 个基于真实 ROM 的 nestest 测试
+- 测试规模：779 个测试（776 通过 / 3 忽略），含 nestest、blargg、AccuracyCoin
+  真实 ROM 套件（`roms/` 为空时自动跳过）
 
 ---
 
@@ -683,8 +684,66 @@ flowchart TB
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 51 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
+| `tests/rom_tests.rs` | 11 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
 | `crates/nes-uniffi` 单元测试 | 8 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
+
+### 13.1 测试 ROM：精度基线
+
+单元测试只能说明代码按写法在跑，测试 ROM 才能说明**模拟得对不对**。
+`tests/rom_tests.rs` 跑的是业界标准套件，也是此后每一处精度改动的衡量基准。
+ROM 不入库，所以只要 `roms/` 下没有对应目录，套件就打一行 skip 说明：
+
+| 套件 | `roms/` 下的路径 | 钉住的东西 |
+| --- | --- | --- |
+| blargg `instr_test-v5` | `blargg/instr_test-v5/rom_singles/` | 各寻址模式的指令语义 |
+| blargg `instr_timing` | `blargg/instr_timing/rom_singles/` | 逐指令周期数，含跨页 |
+| blargg `branch_timing_tests` | `blargg/branch_timing_tests/` | 分支命中/未命中与跨页周期 |
+| blargg `cpu_interrupts_v2` | `blargg/cpu_interrupts_v2/rom_singles/` | IRQ/NMI 延迟、`CLI` 延迟、IRQ 与 DMA 的相互影响 |
+| blargg `ppu_vbl_nmi` | `blargg/ppu_vbl_nmi/rom_singles/` | `$2002` VBlank 置位/清除时序、NMI 生成与抑制、奇数帧跳点 |
+| blargg `blargg_ppu_tests` | `blargg/blargg_ppu_tests_2005.09.15b/` | 调色板/VRAM/OAM 访问 |
+| blargg `oam_read` / `oam_stress` | `blargg/oam_read/`、`blargg/oam_stress/` | OAM 寻址细节、持续 OAM 写入 |
+| blargg `ppu_open_bus` | `blargg/ppu_open_bus/` | PPU 数据总线锁存与衰减 |
+| blargg `sprite_hit_tests` | `blargg/sprite_hit_tests_2005.10.05/` | sprite 0 命中位置与边界情形 |
+| blargg `sprite_overflow_tests` | `blargg/sprite_overflow_tests/` | sprite 溢出标志，含硬件 bug 行为 |
+| blargg `mmc3_test_2` | `blargg/mmc3_test_2/rom_singles/` | MMC3 IRQ 计数器与 A12 计数 |
+| blargg `apu_test` | `blargg/apu_test/rom_singles/` | 长度计数器、帧 IRQ 时序、DMC |
+| AccuracyCoin | `accuracycoin/AccuracyCoin.nes` | 146 项综合精度测试，结果从 RAM 读取 |
+
+来源：blargg 的 ROM 镜像在 <https://github.com/christopherpow/nes-test-roms>，
+AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自由分发，但本仓库不入库）。
+
+套件用 blargg 的通用协议上报结果：测试进行中 `$6000` 为 `0x80`，结束后写入结果码
+（`0` 为通过），`$6004` 起是 ASCII 报告——所以失败信息里能直接看到是哪个 ROM、
+哪一项检查失败。AccuracyCoin 是菜单式 ROM：harness 会按 Start 跑完全部测试，
+再读它留在 `$0400` 页的结果表（`$FF` = 跳过，bit0 置位 = 通过，否则该值就是错误码）。
+
+2026-10-14 在本机的基线：
+
+| 套件 | 结果 |
+| --- | --- |
+| `instr_test-v5` | 15/16（只差 `07-abs_xy`，即 `SHX`/`SHY` 跨页取址/取值的破坏行为） |
+| `instr_timing` | 0/2（`1-instr_timing`：跨页的变址读多算了 1 个周期） |
+| `branch_timing_tests` | 3/3 |
+| `cpu_interrupts_v2` | 0/5 |
+| `ppu_vbl_nmi` | 1/10（只有 `01-vbl_basics`） |
+| `blargg_ppu_tests` | 5/5 |
+| `oam_read` | 1/1 |
+| `oam_stress` | 1/1 |
+| `ppu_open_bus` | 0/1（数据总线锁存不会衰减） |
+| `sprite_hit_tests` | 11/11 |
+| `sprite_overflow_tests` | 5/5 |
+| `mmc3_test_2` | 0/6 |
+| `apu_test` | 3/8 |
+| AccuracyCoin | 146 项全部跑到，78 通过、0 跳过、50 失败 |
+
+这些失败不是谜团，就是路线图：`mmc3_test_2` 需要 A12/PPU 总线钩子，
+`ppu_vbl_nmi` 与 `cpu_interrupts` 需要 VBlank/NMI 细节与奇数帧跳点，
+两处 CPU 失败则是 ROM 已经精确定位到具体指令的周期计数 bug。
+
+失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
+清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。
+这样在消化欠账的过程中 `cargo test --workspace` 仍能保持绿色，基线也不会悄悄漂移。
 
 约定：
 

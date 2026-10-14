@@ -40,6 +40,12 @@
   every fix. Integration suites live in `crates/nes-core/tests/`
   (`ppu.rs`, `apu.rs`, `mappers.rs`, `nestest.rs`).
 - ROM-dependent tests are skipped or marked `#[ignore]` when `roms/` is empty.
+- `crates/nes-core/tests/rom_tests.rs` is the accuracy baseline: it runs the
+  blargg suites under `roms/blargg/` and `roms/accuracycoin/AccuracyCoin.nes`
+  (layout and download sources in `docs/architecture.md` §13.1). ROMs are never
+  committed, and each suite carries a baseline of the ROMs it is known not to
+  pass yet — a new failure is a regression, and a baseline entry that starts
+  passing must be removed from the list.
 - For emulator changes, verify determinism (rewind/replay produces identical
   frames). For web changes, run `npm run build`.
 

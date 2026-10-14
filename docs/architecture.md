@@ -9,7 +9,8 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 742 tests (739 passing / 3 ignored), including the 3 nestest real-ROM tests
+- Test suite: 779 tests (776 passing / 3 ignored), including the nestest, blargg and
+  AccuracyCoin real-ROM suites (which skip without ROMs in `roms/`)
 
 ---
 
@@ -744,8 +745,71 @@ Key points:
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 51 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
+| `tests/rom_tests.rs` | 11 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
 | `crates/nes-uniffi` unit tests | 8 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
 | Doc tests | 1 | `FrameClock` usage example |
+
+### 13.1 Test ROMs: the accuracy baseline
+
+Unit tests say the code does what it was written to do; test ROMs say the *emulation* is
+right. `tests/rom_tests.rs` runs the standard suites and is the yardstick every accuracy
+change is measured against. ROMs are never committed, so each suite prints a skip note
+unless its directory exists under `roms/`:
+
+| Suite | Path under `roms/` | What it pins down |
+| --- | --- | --- |
+| blargg `instr_test-v5` | `blargg/instr_test-v5/rom_singles/` | Instruction semantics per addressing mode |
+| blargg `instr_timing` | `blargg/instr_timing/rom_singles/` | Per-instruction cycle counts, including page crossings |
+| blargg `branch_timing_tests` | `blargg/branch_timing_tests/` | Branch taken/not-taken and page-cross cycles |
+| blargg `cpu_interrupts_v2` | `blargg/cpu_interrupts_v2/rom_singles/` | IRQ/NMI latency, `CLI` latency, IRQ vs DMA |
+| blargg `ppu_vbl_nmi` | `blargg/ppu_vbl_nmi/rom_singles/` | `$2002` VBlank set/clear timing, NMI generation and suppression, odd-frame skip |
+| blargg `blargg_ppu_tests` | `blargg/blargg_ppu_tests_2005.09.15b/` | Palette/VRAM/OAM access |
+| blargg `oam_read` / `oam_stress` | `blargg/oam_read/`, `blargg/oam_stress/` | OAM addressing quirks, sustained OAM traffic |
+| blargg `ppu_open_bus` | `blargg/ppu_open_bus/` | The PPU data bus latch and its decay |
+| blargg `sprite_hit_tests` | `blargg/sprite_hit_tests_2005.10.05/` | Sprite 0 hit position and edge cases |
+| blargg `sprite_overflow_tests` | `blargg/sprite_overflow_tests/` | Sprite overflow flag, including the hardware bug |
+| blargg `mmc3_test_2` | `blargg/mmc3_test_2/rom_singles/` | MMC3 IRQ counter and A12 clocking |
+| blargg `apu_test` | `blargg/apu_test/rom_singles/` | Length counters, frame IRQ timing, DMC |
+| AccuracyCoin | `accuracycoin/AccuracyCoin.nes` | 146 assorted accuracy tests, results read from RAM |
+
+Sources: blargg's ROMs are mirrored at
+<https://github.com/christopherpow/nes-test-roms>, AccuracyCoin at
+<https://github.com/100thCoin/AccuracyCoin> (both are freely redistributable test ROMs, but
+this repository does not commit them).
+
+The suites use the usual blargg protocol for a result — `$6000` holds `0x80` while the test
+runs and the result code afterwards (`0` = passed), with an ASCII report at `$6004` — so a
+failure message names the ROM and the exact check that failed. AccuracyCoin is menu-driven:
+the harness drives Start to run all tests, then reads the result table it leaves in page
+`$0400` (`$FF` = skipped, bit 0 set = passed, otherwise the value is an error code).
+
+Baseline as of 2026-10-14, measured on this checkout:
+
+| Suite | Result |
+| --- | --- |
+| `instr_test-v5` | 15/16 (only `07-abs_xy`, i.e. `SHX`/`SHY` page-cross corruption) |
+| `instr_timing` | 0/2 (`1-instr_timing`: page-crossed indexed reads cost one cycle too many) |
+| `branch_timing_tests` | 3/3 |
+| `cpu_interrupts_v2` | 0/5 |
+| `ppu_vbl_nmi` | 1/10 (only `01-vbl_basics`) |
+| `blargg_ppu_tests` | 5/5 |
+| `oam_read` | 1/1 |
+| `oam_stress` | 1/1 |
+| `ppu_open_bus` | 0/1 (the data bus latch does not decay) |
+| `sprite_hit_tests` | 11/11 |
+| `sprite_overflow_tests` | 5/5 |
+| `mmc3_test_2` | 0/6 |
+| `apu_test` | 3/8 |
+| AccuracyCoin | 146 ran, 78 passed, 0 skipped, 50 failing |
+
+The failures are the roadmap, not a mystery: `mmc3_test_2` needs the A12/PPU-bus hook, the
+`ppu_vbl_nmi` and `cpu_interrupts` suites need the VBlank/NMI subtleties and the odd-frame
+skip, and the two CPU failures are cycle-count bugs the ROMs localise precisely.
+
+The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
+asserted in both directions: a failure outside it is a regression, and an entry that starts
+passing fails the suite until it is removed. So `cargo test --workspace` stays green while
+the backlog is worked through, and the baseline cannot silently drift.
 
 Conventions:
 
