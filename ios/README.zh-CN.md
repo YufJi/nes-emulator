@@ -27,9 +27,11 @@ ios/
 ## 跑起来
 
 ```bash
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim   # 一次性
-open ios/NesApp.xcodeproj                                   # 选模拟器/真机，Run
+open ios/NesApp.xcodeproj   # 选模拟器/真机，Run
 ```
+
+两个 Apple target 已在根目录的 `rust-toolchain.toml` 里声明，rustup 会随固定版工具链
+一起装好，不需要再手工 `rustup target add`。
 
 工程里有一个 **Build Rust core** 构建阶段，每次构建都会调用 `ios/build-core.sh`：
 它按 `$PLATFORM_NAME` / `$ARCHS` 挑 Rust target、`cargo build`、生成 Swift 绑定、

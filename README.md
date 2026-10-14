@@ -147,7 +147,9 @@ roms/              local test ROMs (optional; tests that need them are skipped w
 
 ## Requirements
 
-- Rust 1.70+ (edition 2021)
+- Rust, pinned to 1.97.0 by `rust-toolchain.toml` (with `rustfmt`, `clippy` and the
+  WASM/iOS targets). rustup installs all of it on the first cargo command, so there is
+  nothing to do by hand; the crates still keep a 1.70 MSRV.
 - Node.js 18+
 - `wasm-pack` (only needed when regenerating the WASM bindings)
 

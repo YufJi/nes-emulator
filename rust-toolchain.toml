@@ -1,0 +1,18 @@
+# Pins the Rust toolchain this repository is developed and tested with, so every
+# checkout — yours, a contributor's, CI — uses the same `rustc`, `cargo`,
+# `rustfmt` and `clippy`. rustup installs everything declared here the first time
+# a cargo/rustup command runs inside the repository; there is no step to run by
+# hand and no version to keep in sync elsewhere.
+#
+# This pin is deliberately newer than the `rust-version = "1.70"` MSRV in the
+# workspace `Cargo.toml`: the pin is the version we actually build with, the
+# MSRV is the oldest version the crates still promise to compile on.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = [
+    "wasm32-unknown-unknown", # crates/nes-wasm, for the web front end
+    "aarch64-apple-ios",      # ios/build-core.sh, device
+    "aarch64-apple-ios-sim",  # ios/build-core.sh, Apple Silicon simulator
+]

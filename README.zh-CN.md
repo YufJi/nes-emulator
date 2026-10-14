@@ -111,7 +111,8 @@ roms/              本地测试 ROM（可选；缺失时相关测试会跳过）
 
 ## 环境要求
 
-- Rust 1.70+（edition 2021）
+- Rust，由 `rust-toolchain.toml` 固定为 1.97.0（含 `rustfmt`、`clippy` 与 WASM/iOS target）。
+  首次执行 cargo 命令时 rustup 会自动装好，无需手工操作；各 crate 自身仍保留 1.70 MSRV。
 - Node.js 18+
 - `wasm-pack`（仅在重新生成 WASM 绑定时需要）
 

@@ -8,7 +8,9 @@ React + Vite 前端，驱动 `crates/nes-wasm` 编译出的 Rust/WASM NES 内核
 ## 环境要求
 
 - Node.js 18+
-- 重新编译 WASM 内核时需要 Rust 工具链与 [`wasm-pack`](https://drager.github.io/wasm-pack/)
+- 重新编译 WASM 内核时需要 Rust 工具链（版本由 `rust-toolchain.toml` 固定，rustup 首次
+  使用时会自动装好）与 [`wasm-pack`](https://drager.github.io/wasm-pack/) 0.14.x（CI 固定用
+  0.14.0）
 
 ## 命令
 

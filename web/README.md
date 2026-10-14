@@ -9,8 +9,9 @@ playing.
 ## Requirements
 
 - Node.js 18+
-- A Rust toolchain and [`wasm-pack`](https://drager.github.io/wasm-pack/) when recompiling
-  the WASM core
+- The pinned Rust toolchain (`rust-toolchain.toml`, installed by rustup on first use) and
+  [`wasm-pack`](https://drager.github.io/wasm-pack/) 0.14.x when recompiling the WASM core
+  (CI installs exactly 0.14.0)
 
 ## Commands
 

@@ -29,9 +29,11 @@ what a host should.
 ## Running it
 
 ```bash
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim   # once
-open ios/NesApp.xcodeproj                                   # pick a simulator/device, Run
+open ios/NesApp.xcodeproj   # pick a simulator/device, Run
 ```
+
+The two Apple targets are declared in the root `rust-toolchain.toml`, so rustup installs
+them together with the pinned toolchain — there is no `rustup target add` step to remember.
 
 The project has a **Build Rust core** build phase that calls `ios/build-core.sh` on every
 build: it picks the Rust target from `$PLATFORM_NAME` / `$ARCHS`, runs `cargo build`,

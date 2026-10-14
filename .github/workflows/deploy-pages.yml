@@ -40,9 +40,12 @@ jobs:
           echo "PAGES_BASE=${base}/" >> "$GITHUB_ENV"
           echo "Building for ${base}/"
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      # The toolchain, its components (`rustfmt`/`clippy`) and its targets are
+      # pinned in the repository's `rust-toolchain.toml`. `rustup show` installs
+      # exactly what that file asks for, so no version is repeated here and CI
+      # builds with the same compiler the project is developed on.
+      - name: Install the pinned Rust toolchain
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
           # The Cargo workspace (and its `target/`) lives at the repository root,
@@ -50,7 +53,10 @@ jobs:
           workspaces: .
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          # Pinned like the Rust toolchain: the wasm-pack version decides the
+          # generated bindings, so the site must not be built by whatever is
+          # the latest release on the day CI happens to run.
+          tool: wasm-pack@0.14.0
 
       - uses: actions/setup-node@v7
         with:

@@ -28,8 +28,10 @@
 
 ## Coding Style & Naming Conventions
 
-- Rust: rustfmt defaults (4 spaces), edition 2021, MSRV 1.70. Use `snake_case`
-  functions/fields, `CamelCase` types, `SCREAMING_SNAKE_CASE` consts.
+- Rust: rustfmt defaults (4 spaces), edition 2021, MSRV 1.70. The toolchain itself
+  is pinned in `rust-toolchain.toml` (1.97.0 + `rustfmt`/`clippy`); don't rely on
+  a newer compiler than that pin. Use `snake_case` functions/fields, `CamelCase`
+  types, `SCREAMING_SNAKE_CASE` consts.
 - TypeScript/React: 2-space indent, `camelCase` values, `PascalCase.tsx`
   components. Keep comments explaining *why*, matching the surrounding style.
 - Prefer minimal, focused diffs; do not reformat unrelated code.
