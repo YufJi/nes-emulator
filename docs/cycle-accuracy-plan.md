@@ -26,6 +26,7 @@ the baselines:
 | L2 | `49d9d29` | Interrupt lines sampled on the penultimate cycle of each instruction; the seven-cycle vector sequence (two discarded reads, three pushes, two vector halves) driven cycle by cycle | Baselines unchanged in count, four failing tests' timing traces moved toward the expected patterns; AccuracyCoin 78 → 79 passing |
 | L3 step 1 | `a2b13e9` | Writes to `$2000-$401F` land on the cycle the chip drives them — the last cycle of a store, the cycle before it for a read-modify-write's discarded write — and the NMI a `$2000` write raises is taken up on that cycle | No ROM count change (57 pass / 17 known and AccuracyCoin 79/49 identical); `4-irq_and_dma`'s trace moved from the wrong shape to the documented one with the L3a offset (`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`, CRC `5FA88FED` → `218E154C`); `3-nmi_and_irq`'s CRC moved `90BC9498` → `7E5D001A`; two AccuracyCoin error codes changed (`$0468`/`$0469` 0x06 → 0x0A, still failing); frame cost unchanged (1.033 → 1.034 ms, release, 600 frames of nestest) |
 | L3 step 2 | (this change) | The write also lands on a *dot* inside that cycle: the PPU's per-dot view sees it from the cycle's first dot, and the APU tick at the end of the cycle sees it | ROM baseline 57 pass / 17 known → **58 / 16** (`apu_test/5-len_timing`); AccuracyCoin 79/49 → **81 / 47** (`Frame Counter 4-step`, `Frame Counter 5-step`); `4-irq_and_dma`'s CRC moved `218E154C` → `7DE0C30F`, `5-branch_delays_irq`'s `BE443B12` → `29BB6E90`, `6-irq_flag_timing` moved a sub-test ("Flag first set too late" → "Flag last set too soon"); nothing that was green regressed; frame cost unchanged (1.034 → 1.032 ms, release, 600 frames of nestest); the dot itself is not discriminated by any suite (0, 1 and 2 are byte-identical) |
+| L3 step 3a | (this change) | An NMI asserted during an interrupt sequence, before its status push, takes the vector over: the frame pushed stays the sequence's, the handler is the NMI's | No test flips and nothing regresses (58 pass / 16 known, AccuracyCoin 81/47); `3-nmi_and_irq`'s second column comes in line with its readme for the five "NMI occurs after CLC, interrupting IRQ" rows (`23` → `00`), and its first column there moves `27` → `23` against a documented `20` |
 
 Current state: `cargo test --workspace` 820 green, ROM baseline **58 pass / 16 known**,
 AccuracyCoin **81 passed / 47 failing**, `STATE_VERSION` 4.
@@ -205,6 +206,27 @@ from it and the AccuracyCoin test at `$0452` no longer loses. If it still does, 
 the thing to understand before landing the patch: it is a "Dummy Read Cycles"-family test
 (it uses `Clockslide_29780` to park on a frame boundary and then exercises `$2002` reads), so
 it is itself a dot-timing test and may simply be waiting for step 1 and 2 to be right.
+
+*Half done: the IRQ side is in.* An NMI asserted while a sequence is still on its way to the
+status push takes its vector over (`Cpu::nmi_hijack`, sampled on the sequence's first four
+cycles); the pushes stay the IRQ's, so the frame on the stack has B clear, and an NMI that
+arrives after the push waits for the next instruction's poll as before. Both sides of that
+window have a unit test. Measured: **no test flips, nothing regresses**, and
+`3-nmi_and_irq`'s trace moves toward its readme for the five "NMI occurs after CLC,
+interrupting IRQ" rows, whose second column goes from `23` to `00` - the documented value:
+
+```
+readme   23 00  21 00  21 00  20 00  20 00  20 00  20 00  20 00  20 00  25 20  25 20
+before   22 00  22 00  23 00  23 00  27 23  27 23  27 23  27 23  27 23  27 23  27 23
+after    22 00  22 00  23 00  23 00  23 00  23 00  23 00  23 00  23 00  27 23  27 23
+```
+
+*Still open: the BRK side.* `2-nmi_and_brk` (and AccuracyCoin's `$0462` "NMI Overlap BRK")
+need BRK's own vector read to be hijackable, and BRK pushes *and* reads its vector inside the
+instruction, at the instruction's start - so its vector has to move onto the instruction's
+last cycles the way a register write did in step 1, which is the same "an instruction is not
+atomic" work step 4 is about. The readme's expected rows are `27 36 00` / `26 36 00` /
+`26 36 00` / `36 00 00` ×5 / `27 36 00` ×2.
 
 **Step 4: reads with side effects.** `$2002` reads clear the VBlank flag and `$2007` reads
 move the VRAM address; both are still performed at the instruction's start. `02-vbl_set_time`

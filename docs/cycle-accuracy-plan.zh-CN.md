@@ -23,6 +23,7 @@ one PPU clock"（`ppu_vbl_nmi/readme.txt`）。`docs/architecture.md` §13.1 里
 | L2 | `49d9d29` | 中断线在每条指令的倒数第二个 cycle 采样；7 cycle 的向量过程（2 次丢弃读、3 次压栈、2 次取向量）逐 cycle 执行 | 基线数量不变，但四个失败项的时序轨迹向期望值移动；AccuracyCoin 78 → 79 通过 |
 | L3 第 1 步 | `a2b13e9` | 对 `$2000-$401F` 的写入落在芯片真正驱动的那个 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个 cycle），`$2000` 写入抬起的 NMI 也在该 cycle 被接收 | ROM 数量零变化（57 pass / 17 known 与 AccuracyCoin 79/49 逐条一致）；`4-irq_and_dma` 的轨迹从错误形状变成 L3a 那份"与文档期望一致、只差常量偏移"的形状（`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`，CRC `5FA88FED` → `218E154C`）；`3-nmi_and_irq` 的 CRC 从 `90BC9498` 变为 `7E5D001A`；AccuracyCoin 两项错误码变化（`$0468`/`$0469` 由 0x06 变 0x0A，仍为失败）；帧耗时不变（1.033 → 1.034 ms，release，nestest 连续 600 帧） |
 | L3 第 2 步 | （本次改动） | 写入还落在该 cycle 内的一个 **dot** 上：PPU 的逐 dot 视图从该 cycle 的第一个 dot 起就能看到它，cycle 末尾的 APU tick 也看得到 | ROM 基线 57 pass / 17 known → **58 / 16**（`apu_test/5-len_timing`）；AccuracyCoin 79/49 → **81 / 47**（`Frame Counter 4-step`、`Frame Counter 5-step`）；`4-irq_and_dma` 的 CRC 从 `218E154C` 变为 `7DE0C30F`，`5-branch_delays_irq` 的 `BE443B12` → `29BB6E90`，`6-irq_flag_timing` 的子项前进（"Flag first set too late" → "Flag last set too soon"）；原本全绿的没有任何回退；帧耗时不变（1.034 → 1.032 ms，release，nestest 连续 600 帧）；dot 本身不被任何套件区分（0、1、2 结果逐字节相同） |
+| L3 第 3a 步 | （本次改动） | 中断序列在压栈之前被 NMI 抬起时，NMI 接管取向量：压栈内容仍属原序列，处理程序换成 NMI 的 | 无一项翻绿、无任何回退（58 pass / 16 known、AccuracyCoin 81/47）；`3-nmi_and_irq` 在 "NMI occurs after CLC, interrupting IRQ" 五行上第二列与 readme 对齐（`23` → `00`），该处第一列由 `27` → `23`（文档值 `20`） |
 
 当前状态：`cargo test --workspace` 820 全绿、ROM 基线 **58 pass / 16 known**、
 AccuracyCoin **81 通过 / 47 失败**、`STATE_VERSION` 为 4。
@@ -179,6 +180,25 @@ mask 的生效时间点也跟着移动了），以及 `apu_test/2-len_table`、`
 如果仍然掉，那就要先弄懂它再落地补丁：它属 "Dummy Read Cycles" 一类（用 `Clockslide_29780`
 停在一帧边界，然后围绕 `$2002` 读做文章），本身就是一个 dot 时序测试，很可能只是等第 1、2
 步做对。
+
+*已完成一半：IRQ 侧已落地。* 序列在走到压栈之前被 NMI 抬起时，NMI 接管取向量
+（`Cpu::nmi_hijack`，在序列前四个 cycle 采样）；压栈内容仍属原来那个序列，所以栈上的
+状态字 B 位为 0，而压栈之后才到的 NMI 依旧要等下一条指令的采样点。这个窗口的两侧各有一个
+单测钉住。实测：**没有任何一项翻绿，也没有任何回退**；`3-nmi_and_irq` 的轨迹在
+"NMI occurs after CLC, interrupting IRQ" 那五行上向 readme 靠拢——第二列由 `23` 变成 `00`
+（文档值）：
+
+```
+readme   23 00  21 00  21 00  20 00  20 00  20 00  20 00  20 00  20 00  25 20  25 20
+改前     22 00  22 00  23 00  23 00  27 23  27 23  27 23  27 23  27 23  27 23  27 23
+改后     22 00  22 00  23 00  23 00  23 00  23 00  23 00  23 00  23 00  27 23  27 23
+```
+
+*仍未完成：BRK 侧。* `2-nmi_and_brk`（以及 AccuracyCoin 的 `$0462` "NMI Overlap BRK"）
+需要 BRK 自己那次取向量也能被接管，而 BRK 是在指令内部、指令开头就完成"压栈 + 取向量"的，
+所以它的取向量得像第 1 步的寄存器写入那样搬到指令最后几个 cycle——正是第 4 步要解决的
+"指令不是原子"那件工作。readme 记录的期望行是 `27 36 00` / `26 36 00` / `26 36 00` /
+`36 00 00` ×5 / `27 36 00` ×2。
 
 **第 4 步：带副作用的读取。** `$2002` 的读会清 VBlank 标志，`$2007` 的读会推进 VRAM 地址，
 两者目前都发生在指令开头。`02-vbl_set_time` 现在靠粒度侥幸通过，而 `06-suppression` 与

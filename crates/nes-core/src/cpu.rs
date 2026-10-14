@@ -89,6 +89,13 @@ pub struct Cpu {
     /// cycles have run.
     interrupt_source: Option<InterruptSource>,
     interrupt_step: u8,
+    /// Set when an NMI asserted during a sequence takes its vector over.
+    ///
+    /// The pushes the sequence already made stay what they were - an IRQ's
+    /// status has B clear - and only the address the last two cycles fetch
+    /// changes. Written and read inside one sequence, so it stays out of save
+    /// states.
+    nmi_hijack: bool,
     /// Low half of the vector, fetched on the sequence's sixth cycle and used
     /// on the seventh.
     vector_low: u8,
@@ -168,6 +175,7 @@ impl Cpu {
             skip_interrupt_poll: false,
             interrupt_source: None,
             interrupt_step: 0,
+            nmi_hijack: false,
             vector_low: 0,
         }
     }

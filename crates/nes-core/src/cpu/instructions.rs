@@ -744,6 +744,7 @@ impl Cpu {
     pub(crate) fn start_interrupt(&mut self, source: InterruptSource) {
         self.interrupt_source = Some(source);
         self.interrupt_step = 0;
+        self.nmi_hijack = false;
         self.halted = false;
     }
 
@@ -757,6 +758,22 @@ impl Cpu {
             return;
         };
         self.interrupt_step += 1;
+
+        // An NMI asserted while the sequence is still on its way to the status
+        // push takes its vector over: the frame it pushes stays the one the
+        // sequence was building - an IRQ's status has B clear - and only the
+        // address the last two cycles fetch changes. blargg's `3-nmi_and_irq`
+        // measures this window; an NMI that arrives later has to wait for the
+        // instruction after the sequence, which is what leaves the line pending.
+        if self.interrupt_step <= 4 && bus.nmi_pending() {
+            bus.clear_nmi();
+            self.nmi_hijack = true;
+        }
+        let vector = if self.nmi_hijack {
+            InterruptSource::Nmi
+        } else {
+            source
+        };
 
         match self.interrupt_step {
             // Cycles 1 and 2 read the next instruction byte and throw it away.
@@ -777,13 +794,14 @@ impl Cpu {
                 self.status.insert(StatusFlags::I);
                 self.irq_inhibit = true;
                 self.skip_interrupt_poll = false;
-                self.vector_low = bus.read(Self::interrupt_vector(source));
+                self.vector_low = bus.read(Self::interrupt_vector(vector));
             }
             _ => {
-                let high = bus.read(Self::interrupt_vector(source).wrapping_add(1)) as u16;
+                let high = bus.read(Self::interrupt_vector(vector).wrapping_add(1)) as u16;
                 self.pc = (high << 8) | u16::from(self.vector_low);
                 self.interrupt_source = None;
                 self.interrupt_step = 0;
+                self.nmi_hijack = false;
             }
         }
 
@@ -3803,6 +3821,63 @@ mod tests {
             );
             assert!(cpu.is_halted());
         }
+    }
+    /// An NMI asserted while an IRQ sequence is still before its status push
+    /// takes the vector over: the CPU pushes the IRQ's frame - status with B
+    /// clear - and enters the NMI handler.
+    #[test]
+    fn test_nmi_hijacks_an_irq_sequence() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.write_mem(0xFFFE, 0x00); // IRQ -> $9000
+        bus.write_mem(0xFFFF, 0x90);
+        bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
+        bus.write_mem(0xFFFB, 0x80);
+
+        cpu.start_interrupt(InterruptSource::Irq);
+        for _ in 0..2 {
+            cpu.interrupt_cycle(&mut bus);
+        }
+
+        // The line goes low while the sequence is still two cycles short of its
+        // status push, which is in time to take the vector.
+        bus.set_nmi(true);
+        for _ in 0..5 {
+            cpu.interrupt_cycle(&mut bus);
+        }
+
+        assert_eq!(cpu.pc(), 0x8000, "the NMI vector took the sequence over");
+        assert!(!bus.nmi_pending(), "taking it over acknowledges the line");
+        assert_eq!(
+            bus.read(0x01FB) & StatusFlags::B.bits(),
+            0,
+            "the frame on the stack is the IRQ's, so its B flag is clear"
+        );
+    }
+
+    /// An NMI that arrives after the status push misses the sequence: it lands
+    /// in the IRQ vector and the line stays pending for the next poll.
+    #[test]
+    fn test_nmi_after_the_status_push_waits_for_the_next_instruction() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.write_mem(0xFFFE, 0x00); // IRQ -> $9000
+        bus.write_mem(0xFFFF, 0x90);
+        bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
+        bus.write_mem(0xFFFB, 0x80);
+
+        cpu.start_interrupt(InterruptSource::Irq);
+        for _ in 0..5 {
+            cpu.interrupt_cycle(&mut bus);
+        }
+
+        bus.set_nmi(true);
+        for _ in 0..2 {
+            cpu.interrupt_cycle(&mut bus);
+        }
+
+        assert_eq!(cpu.pc(), 0x9000, "the sequence finished in the IRQ vector");
+        assert!(bus.nmi_pending(), "the NMI is still waiting for a poll");
     }
 
     /// Run one instruction the way the machine does: sample the interrupt lines
