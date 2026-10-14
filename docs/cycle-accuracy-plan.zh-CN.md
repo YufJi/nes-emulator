@@ -231,6 +231,23 @@ clock** 的精度（"the loop will effectively read $2002 one PPU clock later ea
 也就是把 `Cpu::execute_instruction` 拆成"取操作数"与"执行访问与操作"两段，中间由机器推进
 寻址 cycle。可以先只覆盖能碰 `$2000-$3FFF` 与 `$4015-$4017` 的指令。
 
+**第 4 步第一次尝试（已量、已撤回）。** 把 `$2002` 读的**清除**搬到读自己的 cycle，而值仍在指令
+要的地方返回——拆成 `Ppu::read_ppustatus` / `Ppu::clear_ppustatus`，清除落在指令最后一个 cycle——
+正好移动了上文调查所预言的东西，而且不需要完整的"指令非原子"改造：
+
+- `2-nmi_and_brk` 从十行 `02 36 00`（NMI 从未到达）变成 `27 36 00` ×5、`26 36 00` ×2、
+  `36 00 00` ×3——即文档记录的形状，含接管那些行。
+- `06-suppression` 第 04 行由 `- -` 变为 `- N`（CRC `2F686C63` → `3FE15516`）。
+- AccuracyCoin `$0406`（Dummy read cycles）错误码 0x12 → 0x06。
+- 其余不动；58 pass / 16 known 与 81/47 保持不变。
+
+但它打断了一条全绿的线：`ppu_vbl_nmi/02-vbl_set_time` 的轨迹变成 `00 - - …`，而它的 readme 记的是
+`00 - V …`——对它量测的那一对读来说，清除晚了一个 cycle。故撤回、没有落地。不过两个端点现在都有
+实测：清除在指令开头时 `02-vbl_set_time` 全绿而 `2-nmi_and_brk` 全死；清除在最后一个 cycle 时正好
+相反。所以下一步是在这两个位置之间**二分**"清除落在哪个 cycle"（若还不够，再定它在该 cycle 内的
+dot），尺子就是 `02-vbl_set_time`、`06-suppression` 与 `2-nmi_and_brk`。另一处 `02-vbl_set_time`
+敏感的地方是 `Ppu::clear_ppustatus` 里的 `cycle <= 1` 竞争窗口（最宽三个 dot）。
+
 ### 4.3 L4——DMA 与渲染器（在 L3 之后）
 
 - **`4-irq_and_dma`**：*这里原本的猜测——"停顿期间继续轮询"与"哪一 cycle 把 CPU 交还"——已经

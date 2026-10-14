@@ -268,6 +268,28 @@ cycles, i.e. splitting `Cpu::execute_instruction` into "fetch operands" and "per
 access and the operation", with the machine ticking the addressing cycles in between. Scope
 it to the instructions that can touch `$2000-$3FFF` and `$4015-$4017` first.
 
+**Step 4, first try (measured, reverted).** Putting a `$2002` read's *clearing* on the read's
+own cycle while the value is still reported where the instruction asks for it - the split into
+`Ppu::read_ppustatus` / `Ppu::clear_ppustatus`, with the clear applied on the instruction's
+last cycle - moves exactly what the investigation above predicted, without the whole
+instructions-are-not-atomic split:
+
+- `2-nmi_and_brk` goes from ten rows of `02 36 00` (the NMI never arriving) to `27 36 00` x5,
+  `26 36 00` x2, `36 00 00` x3 - the documented shapes, hijack rows included.
+- `06-suppression`'s row 04 goes from `- -` to `- N` (CRC `2F686C63` -> `3FE15516`).
+- AccuracyCoin's `$0406` "Dummy read cycles" error code moves 0x12 -> 0x06.
+- Nothing else moves; 58 pass / 16 known and 81/47 still hold.
+
+But it breaks one green line: `ppu_vbl_nmi/02-vbl_set_time`, whose trace becomes `00 - - ...`
+where its readme documents `00 - V ...` - the clear is a cycle late for the pair of reads it
+measures. Reverted, not landed. Both endpoints are now measured, though: with the clear at the
+instruction's start `02-vbl_set_time` is green and `2-nmi_and_brk` is dead; with the clear on
+the instruction's last cycle it is the other way round. So the next move is to bisect the
+*cycle* the deferred clear lands on (and, if that is not enough, the dot inside it), with
+`02-vbl_set_time`, `06-suppression` and `2-nmi_and_brk` as the yardsticks. The `cycle <= 1`
+race window in `Ppu::clear_ppustatus` (up to three dots wide) is the other thing
+`02-vbl_set_time` is sensitive to.
+
 ### 4.3 L4 — DMA and the renderer (after L3)
 
 - **`4-irq_and_dma`**: *the guess that stood here — "keep polling while the CPU is stalled, and
