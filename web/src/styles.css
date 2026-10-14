@@ -614,25 +614,31 @@ dd {
  */
 
 /*
- * Nothing on the phone pages is meant to be selected: a long press on a row, a
- * key or a picture should not drag out the selection magnifier or raise iOS's
- * callout menu. The class sits on `body` (set from `src/App.tsx`), so the
- * portalled drawer and dialogs are covered too; the wide-screen page keeps
- * selection as it always had it.
+ * Nothing on these pages is meant to be selected: a long press on a row, a key
+ * or a picture should not drag out the selection magnifier or raise iOS's
+ * callout menu. The class is put on `html` by `src/App.tsx` — for the phone
+ * routes, and for any device whose only pointer is a finger — so the portalled
+ * drawer and dialogs are covered too.
+ *
+ * On the root rather than on `body`: a long press is resolved against the
+ * nearest element that allows selection, so with only `body` covered that
+ * element was `html` itself and the magnifier came back, with a selection
+ * spanning the page. Covering the root as well leaves the gesture nothing to
+ * start from.
  *
  * Text fields are left selectable: a URL that cannot be selected or have its
  * caret moved would be worse than the occasional accidental selection.
  */
-body.phone-ui,
-body.phone-ui * {
+html.phone-ui,
+html.phone-ui * {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
 
-body.phone-ui input,
-body.phone-ui textarea,
-body.phone-ui [contenteditable='true'] {
+html.phone-ui input,
+html.phone-ui textarea,
+html.phone-ui [contenteditable='true'] {
   user-select: text;
   -webkit-user-select: text;
   -webkit-touch-callout: default;
@@ -984,7 +990,7 @@ body.phone-ui [contenteditable='true'] {
  * the library exposes no prop for the notification wrapper, so it is matched by
  * its class prefix — that prefix is stable, the hash after it is not.
  */
-body.phone-ui [class*='animal-position-'] {
+html.phone-ui [class*='animal-position-'] {
   padding: var(--safe-area-top, env(safe-area-inset-top, 0px))
     var(--safe-area-right, env(safe-area-inset-right, 0px))
     var(--safe-area-bottom, env(safe-area-inset-bottom, 0px))

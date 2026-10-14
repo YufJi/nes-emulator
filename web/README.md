@@ -221,10 +221,15 @@ picture tiny, so the mobile version is two separate routes:
   the DOM directly inside `pointerup` would make that following `click` land on the newly
   appeared overlay and instantly close the toolbar drawer it just opened.
 - The mobile page disables text selection and the long-press callout wholesale
-  (`body.phone-ui`, attached to `body` by `src/App.tsx` per route, so portaled drawers and
+  (`html.phone-ui`, put on the root element by `src/App.tsx` — for the phone routes *and*
+  for any device whose only pointer is a finger, since a phone that has already been through
+  `/m` is served the wide page and long-presses there just the same — so portaled drawers and
   dialogs are covered too): rows, buttons, and the picture never drag out a selection
   magnifier or the iOS menu; **text inputs are the exception**, so the search box and the
-  ROM URL field still allow selecting text and moving the caret. The wide page is unchanged.
+  ROM URL field still allow selecting text and moving the caret. It is the root rather than
+  `body` because a long press is resolved against the nearest element that allows selection:
+  with only `body` covered, that element was `html` and the magnifier came back with a
+  selection spanning the page. A device with a pointer keeps selection as before.
 - The picture may be scaled by non-integer multiples on the mobile page: on a phone, "1×
   crisp but a third of the screen" is worse than "fills the screen". The window itself is
   the picture's aspect-ratio box, taking the ratio from the frame size the core exports
