@@ -114,6 +114,29 @@ the immediate-NMI detection and, later, the mask's dot phase - move with it. Mea
 parking alone (step 1) reproduces L3a's `4-irq_and_dma` trace **and** keeps all four lines
 L3a had broken: baseline identical, 57 pass / 17 known, AccuracyCoin 79/49.
 
+**L4a — polling the interrupt lines during a DMA stall.** §4.3's diagnosis for
+`4-irq_and_dma` says its remaining offset is the IRQ poll during the OAM/DMC DMA stall "and
+which cycle the DMA releases the CPU on". Both halves were implemented on top of step 2 -
+the lines polled on every stalled cycle, so a request asserted during the DMA is latched and
+its sequence starts the moment the CPU is released, plus the 513/514 parity read from the
+other side of the write's cycle - and all four combinations were measured. `4-irq_and_dma`'s
+head, the part its readme documents as `0 1 1 2 2 4 4 7 7 7 7 8 …`, is **byte-identical in
+every combination**: ours (`0 0 0 0 0 1 1 2 2 4 4 7 7 …`, CRC `7DE0C30F`) does not depend on
+the DMA at all. The only entry that moves is the trace's last one, `8` → `7` where the readme
+documents `9` — away from it. Nothing else in any suite moved and no test flipped, so the
+change is reverted (it was never committed).
+
+What that leaves: the head's lag is the *interrupt source*'s phase, not the CPU's answer to
+DMA — the frame counter, i.e. the `6-irq_flag_timing` item below, which the same change left
+exactly where it was ("Flag last set too soon"). §4.3's bullet for `4-irq_and_dma` is
+corrected accordingly.
+
+**The ROMs document themselves.** `roms/blargg/*/readme.txt` comes with the downloads, and
+`cpu_interrupts_v2/source/` with it: the expected trace of every failing case in §3.1 can be
+read next to ours. The table under L3a above was built from one of those readmes, and the
+`4-irq_and_dma` expected values above from another. Compare against the documented trace
+rather than against the shape of ours.
+
 ### 4.2 L3 — put register writes on their cycle, and take their dependents along
 
 **Step 1 (done): writes land on their cycle, and the immediate NMI is detected there.**
@@ -193,11 +216,13 @@ it to the instructions that can touch `$2000-$3FFF` and `$4015-$4017` first.
 
 ### 4.3 L4 — DMA and the renderer (after L3)
 
-- **`4-irq_and_dma`**: the IRQ poll during OAM/DMC DMA stalls. The DMA stall is already a
-  cycle count; it needs to keep polling while the CPU is stalled, and to know which cycle the
-  DMA releases the CPU on.
+- **`4-irq_and_dma`**: *the guess that stood here — "keep polling while the CPU is stalled, and
+  know which cycle the DMA releases the CPU on" — was implemented and measured, and neither
+  half moves the documented head of the trace (§4.1's L4a).* The lag tracks the IRQ source's
+  phase, so this case belongs with the frame-counter item below.
 - **`7-dmc_basics`, `8-dmc_rates`, `4-jitter`, `6-irq_flag_timing`**: DMC fetch timing and the
-  frame counter's exact phase relative to CPU cycles.
+  frame counter's exact phase relative to CPU cycles — which is also where `4-irq_and_dma`'s
+  remaining offset lives.
 - **sprite 0 hit to the dot**: the renderer draws a whole scanline at once; the hit is
   detected at the render point, not at the pixel. Fixing it means per-dot rendering, which is
   the same machinery the MMC5 split was declined for — so it should be decided explicitly.
