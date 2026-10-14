@@ -2,8 +2,18 @@
 //!
 //! Used by games like Castlevania III, Just Breed, Uncharted Waters, Metal Slader Glory.
 //! The most complex Nintendo mapper. Flexible PRG/CHR banking (up to 1 MB each),
-//! expansion audio (2 pulse + PCM), 8x8 hardware multiplier, 1 KB ExRAM for extended
-//! nametable attributes, vertical split screen, and scanline-counting IRQ.
+//! expansion audio (2 pulse + PCM), 8x8 hardware multiplier, 1 KB ExRAM, and a
+//! scanline-counting IRQ.
+//!
+//! ExRAM is wired to the renderer through the `$5105` nametable mapping, so ExRAM
+//! nametables and fill mode work. Two things are deliberately not supported:
+//! extended-attribute mode (`$5104` = 3, whose own byte layout would have to be
+//! decoded) and the hardware vertical split (`$5100`-`$5202`), which few games use
+//! and which needs a per-scanline nametable *and* scroll override in the renderer -
+//! the same change full dot-granularity rendering would need. In split mode the
+//! mapping still resolves ExRAM windows, so such a game gets a static split rather
+//! than the scrolled one it asked for.
+//!
 //! See https://www.nesdev.org/wiki/MMC5
 
 use super::Mapper;

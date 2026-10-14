@@ -901,11 +901,10 @@ clone needs `npm run build:wasm` before building the front end.
   the exact dot the first rise of a frame lands on (`4-scanline_timing`), the "alternate"
   NEC IRQ revision that needs mapper-4 submapper 4 (`6-MMC3_alt`), and the fine detail of
   which sprite fetch raises A12 with 8x16 sprites.
-- **MMC5's ExRAM is wired, its split is not**: `$5105` nametable mapping now reaches the
-  renderer through `nametable_read`/`nametable_write`, so ExRAM nametables and fill mode
-  work. Still missing: extended-attribute mode's own byte layout, and the hardware
-  vertical-split view (which needs the renderer to take a per-scanline nametable *and*
-  scroll from the cartridge — the same shape of change the render-timing item in section 15.7 describes).
+- **MMC5's ExRAM is wired; extended attributes and the split are not**: `$5105` nametable
+  mapping reaches the renderer through `nametable_read`/`nametable_write`, so ExRAM
+  nametables and fill mode work. Extended-attribute mode (`$5104` = 3) would need its own
+  byte layout decoded, and the vertical split is out of scope by decision (§15.6).
 - **Raster effects get a compatibility switch, not a fix**: because a whole scanline is
   drawn at once (§3.2), a write made during line *N* either does or does not affect line *N*,
   and `RenderTiming` chooses which. That is a knob for games whose splits sit a line high or
@@ -987,7 +986,7 @@ clone needs `npm run build:wasm` before building the front end.
 
 ### 15.6 What is deliberately out of scope
 
-Two things were considered and turned down; both decisions live in the code rather than in a
+Three things were considered and turned down; the decisions live in the code rather than in a
 backlog, so they are written down here to stop them being re-litigated:
 
 - **NES 2.0 headers.** The parser handles classic iNES only (§4.2). NES 2.0's submapper
@@ -999,6 +998,11 @@ backlog, so they are written down here to stop them being re-litigated:
   `Nes::peek`/`peek`-style access and deterministic runs, so a host can patch ROM bytes
   itself. The one thing the core would have to own — patching *after* the mapper has banked
   the ROM — is not worth the interface for a study project.
+- **MMC5's vertical split.** Few games use it (Just Breed, Uchuu Keibitai SDF, Bandit Kings
+  of Ancient China), and emulating it means the renderer has to take a per-scanline nametable
+  *and* scroll from the cartridge — the same machinery full dot-granularity rendering needs.
+  The owner decided against it, so a game that asks for a split gets a static one: the `$5105`
+  mapping still resolves the ExRAM windows, the split's own scroll offset is ignored.
 
 ### 15.7 Suggested order of work
 
@@ -1008,10 +1012,11 @@ backlog, so they are written down here to stop them being re-litigated:
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **The accuracy backlog the test ROMs now name**: dot-exact A12 and NMI timing (the five
-   `ppu_vbl_nmi` and MMC3 cases in §13.1), MMC5's extended attributes and vertical split,
-   the five mappers §8 defers, sprite 0 hit timing, and the PAL dot ratio — plus a front end
-   that exposes `RenderTiming` when a game needs it.
+5. **The accuracy backlog the test ROMs now name**: `cpu_interrupts_v2`'s five cases, `SHX`/
+   `SHY` page-cross corruption, dot-exact A12 and NMI timing (the remaining `ppu_vbl_nmi` and
+   MMC3 cases in §13.1), MMC5's extended attributes, sprite 0 hit timing, the five mappers §8
+   defers, and the PAL dot ratio — plus a front end that exposes `RenderTiming` when a game
+   needs it.
 
 ---
 
