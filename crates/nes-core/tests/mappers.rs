@@ -1152,3 +1152,373 @@ fn test_chr_ram_upload_through_ppu() {
         );
     }
 }
+
+
+// ============================================================================
+// Mappers added with the accuracy baseline (6, 8, 16, 18, 30, 87, 95, 112,
+// 113, 114, 117, 133, 152, 178, 206, 227, 244)
+//
+// The helper fills each 8 KB PRG bank with its own bank number and each 1 KB
+// CHR bank with `0x80 + bank`, so a read says exactly which bank the address
+// landed in: a 16 KB bank N shows as N*2, a 32 KB bank N as N*4.
+// ============================================================================
+
+fn banked_mapper(number: u16, prg_8k: usize, chr_1k: usize) -> Box<dyn Mapper> {
+    let mut prg: Vec<u8> = Vec::with_capacity(prg_8k * 0x2000);
+    for bank in 0..prg_8k {
+        prg.extend(std::iter::repeat(bank as u8).take(0x2000));
+    }
+    let mut chr: Vec<u8> = Vec::with_capacity(chr_1k * 0x400);
+    for bank in 0..chr_1k {
+        chr.extend(std::iter::repeat(((bank + 0x80) & 0xFF) as u8).take(0x400));
+    }
+    create_mapper(number, prg, chr).unwrap_or_else(|e| panic!("mapper {number}: {e:?}"))
+}
+
+#[test]
+fn test_mapper6_prg_chr_and_irq() {
+    let mut mapper = banked_mapper(6, 16, 16); // 128 KB PRG, 16 KB CHR
+    assert_eq!(mapper.read(0x8000), 0);
+    assert_eq!(mapper.read(0xC000), 14, "$C000 is fixed to the last 16 KB bank");
+
+    // One register picks both: bits 2-5 = 16 KB PRG bank, bits 0-1 = 8 KB CHR.
+    mapper.write(0x8000, 0x08);
+    assert_eq!(mapper.read(0x8000), 4, "16 KB bank 2 starts at 8 KB bank 4");
+    assert_eq!(mapper.read(0x0000), 0x80);
+
+    // The IRQ counts 133 per rendered scanline and fires when it wraps.
+    mapper.write(0x4502, 0x00);
+    mapper.write(0x4503, 0x00);
+    assert!(!mapper.irq_pending());
+    for _ in 0..600 {
+        mapper.on_scanline(0, true);
+    }
+    assert!(mapper.irq_pending(), "the counter should wrap after enough scanlines");
+    mapper.write(0x4501, 0x00);
+    assert!(!mapper.irq_pending(), "writing $4501 acknowledges the IRQ");
+}
+
+#[test]
+fn test_mapper8_prg_window() {
+    let mut mapper = banked_mapper(8, 16, 4);
+    assert_eq!(mapper.read(0x8000), 0);
+    assert_eq!(mapper.read(0xC000), 14, "$C000 is fixed to the last 16 KB bank");
+
+    mapper.write(0x8000, 0x28); // bits 3-7 = 5
+    assert_eq!(mapper.read(0x8000), 10, "16 KB bank 5 starts at 8 KB bank 10");
+    assert_eq!(mapper.read(0xC000), 14, "the fixed window must not move");
+}
+
+#[test]
+fn test_mapper16_registers_by_low_nibble() {
+    let mut mapper = banked_mapper(16, 16, 8);
+    assert_eq!(mapper.read(0x8000), 0);
+
+    // $8008 selects the 16 KB PRG bank at $8000.
+    mapper.write(0x8008, 3);
+    assert_eq!(mapper.read(0x8000), 6);
+    assert_eq!(mapper.read(0xC000), 14, "$C000 stays on the last 16 KB bank");
+
+    // $8009 selects mirroring; 2 is one-screen lower, 1 horizontal.
+    mapper.write(0x8009, 2);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::SingleScreen));
+    mapper.write(0x8009, 1);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::Horizontal));
+
+    // The CHR banks are 1 KB and addressed by the low nibble.
+    mapper.write(0x8000, 5);
+    assert_eq!(mapper.read(0x0000), 0x85);
+    assert_eq!(mapper.read(0x0400), 0x81, "each window keeps its own bank");
+}
+
+#[test]
+fn test_mapper18_nibble_pairs_and_irq() {
+    let mut mapper = banked_mapper(18, 64, 8);
+    // Each bank register takes a low nibble first, then a high nibble.
+    mapper.write(0x8000, 0x05);
+    mapper.write(0x8001, 0x00);
+    assert_eq!(mapper.read(0x8000), 5);
+    mapper.write(0x8000, 0x00);
+    mapper.write(0x8001, 0x02); // bank 0x20
+    assert_eq!(mapper.read(0x8000), 0x20, "the high nibble lands in bits 4-7");
+
+    // $F002 picks the nametable arrangement.
+    mapper.write(0xF002, 0x00);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::Horizontal));
+    mapper.write(0xF002, 0x01);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::Vertical));
+
+    // The IRQ counts CPU cycles down from the latch, which takes four nibbles.
+    mapper.write(0xE000, 0x04);
+    mapper.write(0xE001, 0x00);
+    mapper.write(0xE002, 0x00);
+    mapper.write(0xE003, 0x00);
+    mapper.write(0xF000, 0x00); // reload from the latch
+    mapper.write(0xF001, 0x01); // mode 0, enabled
+    assert!(!mapper.irq_pending());
+    mapper.on_cpu_cycles(4);
+    assert!(mapper.irq_pending(), "mode 0 fires when the counter hits zero");
+
+    // Mode 1 watches the top nibble instead of the whole counter, so the IRQ
+    // only arrives when the count walks across a $1000 boundary.
+    mapper.clear_irq();
+    mapper.write(0xE000, 0x00);
+    mapper.write(0xE001, 0x00);
+    mapper.write(0xE002, 0x08);
+    mapper.write(0xE003, 0x02); // latch = $2800
+    mapper.write(0xF000, 0x00);
+    mapper.write(0xF001, 0x03); // mode 1, enabled
+    mapper.on_cpu_cycles(4);
+    assert!(!mapper.irq_pending(), "only the top nibble matters in mode 1");
+    for _ in 0..9 {
+        mapper.on_cpu_cycles(255); // walk the counter down past $2000
+    }
+    assert!(mapper.irq_pending(), "the top nibble walked past the latch");
+}
+
+#[test]
+fn test_mapper30_unrom512() {
+    let mut mapper = banked_mapper(30, 16, 0); // CHR is RAM on this board
+    assert_eq!(mapper.read(0x8000), 0);
+    assert_eq!(mapper.read(0xC000), 14);
+
+    // Bits 0-4: PRG bank; bits 5-6: CHR-RAM bank; bit 7: nametable.
+    mapper.write(0x8000, 0b1000_0101);
+    assert_eq!(mapper.read(0x8000), 10, "16 KB bank 5 starts at 8 KB bank 10");
+    assert_eq!(
+        mapper.mirroring(),
+        Some(nes_core::ppu::rendering::Mirroring::SingleScreenUpper)
+    );
+
+    // The PPU's uploads must stick, and bank separately.
+    mapper.write(0x0000, 0x11);
+    assert_eq!(mapper.read(0x0000), 0x11);
+    mapper.write(0x8000, 0b0010_0000); // CHR bank 1
+    assert_eq!(mapper.read(0x0000), 0x00, "a different 8 KB of CHR-RAM");
+}
+
+#[test]
+fn test_mapper87_chr_bank_bits_are_swapped() {
+    let mut mapper = banked_mapper(87, 4, 32); // four 8 KB CHR banks
+    assert_eq!(mapper.read(0x8000), 0);
+    // The 32 KB PRG image is fixed in place, so the second 16 KB is its own.
+    assert_eq!(mapper.read(0xC000), 2);
+
+    mapper.write(0x6000, 0x02); // bit 1 -> bank 1
+    assert_eq!(mapper.read(0x0000), 0x88);
+    mapper.write(0x6000, 0x01); // bit 0 -> bank 2
+    assert_eq!(mapper.read(0x0000), 0x90);
+    assert_eq!(mapper.read(0xC000), 2, "the PRG window must not move");
+}
+
+#[test]
+fn test_mapper95_nametable_bit() {
+    let mut mapper = banked_mapper(95, 16, 8);
+    assert_eq!(mapper.read(0x8000), 0);
+
+    mapper.write(0x8000, 7);
+    mapper.write(0x8001, 2);
+    assert_eq!(mapper.read(0xA000), 2, "the second PRG window moves on its own");
+
+    // On the CHR registers bit 5 is the nametable bit, not part of the bank.
+    mapper.write(0x8000, 0);
+    mapper.write(0x8001, 0x21);
+    assert_eq!(
+        mapper.mirroring(),
+        Some(nes_core::ppu::rendering::Mirroring::SingleScreenUpper)
+    );
+    assert_eq!(mapper.read(0x0000), 0x82, "the bank is only the low five bits");
+}
+
+#[test]
+fn test_mapper112_split_registers() {
+    let mut mapper = banked_mapper(112, 16, 8);
+    // $8000 selects the register, $A000 loads it.
+    mapper.write(0x8000, 0x00);
+    mapper.write(0xA000, 0x06);
+    assert_eq!(mapper.read(0x8000), 6);
+    mapper.write(0x8000, 0x01);
+    mapper.write(0xA000, 0x07);
+    assert_eq!(mapper.read(0xA000), 7);
+    assert_eq!(mapper.read(0xC000), 14, "the top half stays fixed");
+
+    // CHR: registers 2/3 are 2 KB banks, 4-7 are 1 KB banks.
+    mapper.write(0x8000, 0x02);
+    mapper.write(0xA000, 0x02);
+    assert_eq!(mapper.read(0x0000), 0x84);
+    assert_eq!(mapper.read(0x0400), 0x85, "a 2 KB bank covers two windows");
+    mapper.write(0x8000, 0x04);
+    mapper.write(0xA000, 0x05);
+    assert_eq!(mapper.read(0x1000), 0x85);
+}
+
+#[test]
+fn test_mapper113_register_aliases() {
+    let mut mapper = banked_mapper(113, 16, 64); // eight 8 KB CHR banks
+    assert_eq!(mapper.read(0x8000), 0);
+
+    // The same byte is decoded at several aliases: bits 3-7 are the 32 KB PRG
+    // bank, bit 3 of that plus bits 0-2 the 8 KB CHR bank.
+    mapper.write(0x4100, 0x1A);
+    assert_eq!(mapper.read(0x8000), 12, "32 KB bank 3 starts at 8 KB bank 12");
+    assert_eq!(mapper.read(0x0000), 0x90, "8 KB CHR bank 2");
+
+    mapper.write(0x8008, 0x08);
+    assert_eq!(mapper.read(0x8000), 4, "32 KB bank 1 starts at 8 KB bank 4");
+
+    // $8E66/$8E67 pick between CHR banks 0 and 1 by the low nibble.
+    mapper.write(0x8E66, 0x00);
+    assert_eq!(mapper.read(0x0000), 0x88, "8 KB CHR bank 1");
+    mapper.write(0x8E67, 0x07);
+    assert_eq!(mapper.read(0x0000), 0x80);
+
+    // $E00A switches to one-screen mirroring.
+    mapper.write(0xE00A, 0x00);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::SingleScreen));
+}
+
+#[test]
+fn test_mapper114_handshake_and_irq() {
+    let mut mapper = banked_mapper(114, 16, 8);
+    // $A000 names a register, $C000 loads it: register 4 is the $8000 window.
+    mapper.write(0xA000, 4);
+    mapper.write(0xC000, 5);
+    assert_eq!(mapper.read(0x8000), 5);
+    mapper.write(0xA000, 5);
+    mapper.write(0xC000, 6);
+    assert_eq!(mapper.read(0xA000), 6);
+
+    // Register 0 is the 2 KB CHR bank at $0000.
+    mapper.write(0xA000, 0);
+    mapper.write(0xC000, 0x02);
+    assert_eq!(mapper.read(0x0000), 0x82, "the register is a 2 KB bank number");
+    assert_eq!(mapper.read(0x0400), 0x83);
+
+    // $8000 picks mirroring.
+    mapper.write(0x8000, 0x01);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::Horizontal));
+
+    // $E003 reloads a counter that ticks once per rendered scanline.
+    mapper.write(0xE003, 2);
+    mapper.on_scanline(0, true);
+    assert!(!mapper.irq_pending());
+    mapper.on_scanline(1, true);
+    assert!(mapper.irq_pending());
+    mapper.write(0xE002, 0x00);
+    assert!(!mapper.irq_pending());
+}
+
+#[test]
+fn test_mapper117_irq_matches_scanline() {
+    let mut mapper = banked_mapper(117, 16, 8);
+    mapper.write(0x8000, 1);
+    assert_eq!(mapper.read(0x8000), 1);
+    assert_eq!(mapper.read(0xE000), 15, "the last PRG window is fixed");
+    mapper.write(0xA007, 3);
+    assert_eq!(mapper.read(0x1C00), 0x83);
+
+    // The counter holds the scanline the IRQ should fire on.
+    mapper.write(0xC000, 100);
+    mapper.write(0xE000, 1);
+    mapper.on_scanline(50, true);
+    assert!(!mapper.irq_pending());
+    mapper.on_scanline(100, true);
+    assert!(mapper.irq_pending());
+}
+
+#[test]
+fn test_mapper133_register_in_the_ram_window() {
+    let mut mapper = banked_mapper(133, 8, 32);
+    mapper.write(0x4120, 0x02); // CHR bank 2, PRG bank 0
+    assert_eq!(mapper.read(0x0000), 0x90);
+    mapper.write(0x4120, 0x06); // bit 2 -> PRG 32 KB bank 1
+    assert_eq!(mapper.read(0x8000), 4, "32 KB bank 1 starts at 8 KB bank 4");
+
+    // The rest of the window is work RAM.
+    mapper.write(0x6000, 0x5A);
+    assert_eq!(mapper.read(0x6000), 0x5A);
+}
+
+#[test]
+fn test_mapper152_one_register_for_everything() {
+    let mut mapper = banked_mapper(152, 16, 32);
+    // `MPPP CCCC`: CHR bits 0-3, PRG bits 4-6, mirroring bit 7.
+    mapper.write(0x8000, 0b1011_0010);
+    assert_eq!(mapper.read(0x0000), 0x90);
+    assert_eq!(mapper.read(0x8000), 6, "16 KB bank 3 starts at 8 KB bank 6");
+    assert_eq!(mapper.read(0xC000), 14, "$C000 stays fixed");
+    assert_eq!(
+        mapper.mirroring(),
+        Some(nes_core::ppu::rendering::Mirroring::SingleScreenUpper)
+    );
+}
+
+#[test]
+fn test_mapper178_outer_prg_registers() {
+    let mut mapper = banked_mapper(178, 32, 16);
+    // $4801 supplies PRG bits 1-4, $4802 supplies bits 5-8.
+    mapper.write(0x4801, 0x02); // (2 >> 1) = 1
+    assert_eq!(mapper.read(0x8000), 4, "32 KB bank 1 starts at 8 KB bank 4");
+    mapper.write(0x4802, 0x01); // |= 1 << 2
+    assert_eq!(mapper.read(0x8000), 20, "bank 1 | 4 = 5");
+
+    // $4800 picks the nametable arrangement.
+    mapper.write(0x4800, 1);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::Horizontal));
+    mapper.write(0x4800, 0);
+    assert_eq!(mapper.mirroring(), Some(nes_core::ppu::rendering::Mirroring::Vertical));
+
+    // $6000-$7FFF is a full 32 KB of work RAM.
+    mapper.write(0x7FFF, 0x42);
+    assert_eq!(mapper.read(0x7FFF), 0x42);
+}
+
+#[test]
+fn test_mapper206_registers_without_irqs() {
+    let mut mapper = banked_mapper(206, 16, 8);
+    // The same register pair as MMC3, but only the low three bits select.
+    mapper.write(0x8000, 6);
+    mapper.write(0x8001, 3);
+    assert_eq!(mapper.read(0x8000), 3);
+    mapper.write(0x8000, 7);
+    mapper.write(0x8001, 4);
+    assert_eq!(mapper.read(0xA000), 4);
+    assert_eq!(mapper.read(0xC000), 14, "the top two banks never move");
+
+    // CHR is always two 2 KB banks then four 1 KB banks.
+    mapper.write(0x8000, 0);
+    mapper.write(0x8001, 2);
+    assert_eq!(mapper.read(0x0000), 0x84);
+    assert_eq!(mapper.read(0x0400), 0x85);
+    mapper.write(0x8000, 2);
+    mapper.write(0x8001, 6);
+    assert_eq!(mapper.read(0x1000), 0x86);
+
+    // There is no IRQ on this board.
+    assert!(!mapper.irq_pending());
+}
+
+#[test]
+fn test_mapper227_address_encoded_banks() {
+    let mut mapper = banked_mapper(227, 128, 1);
+    // The bank number comes from the address, not the data: bits 8,6..3. Bit 7
+    // set keeps the top 16 KB independent of the outer bank.
+    mapper.write(0x8181, 0x00); // bank 16, 32 KB mode
+    assert_eq!(mapper.read(0x8000), 64, "32 KB bank 16 starts at 8 KB bank 64");
+    assert_eq!(mapper.read(0xA000), 65);
+    assert_eq!(mapper.read(0xC000), 66);
+
+    // Without bit 0 the two 16 KB halves repeat; bit 2 swaps which comes first.
+    mapper.write(0x8004, 0x00);
+    assert_eq!(mapper.read(0x8000), 2, "bit 2 puts the high pair first");
+    assert_eq!(mapper.read(0xC000), 0, "bit 7 clear makes the top follow the outer bank");
+}
+
+#[test]
+fn test_mapper244_banks_from_addresses() {
+    let mut mapper = banked_mapper(244, 16, 64); // four 32 KB banks, eight CHR
+    mapper.write(0x8067, 0x00);
+    assert_eq!(mapper.read(0x8000), 8, "32 KB bank 2 starts at 8 KB bank 8");
+    mapper.write(0x80A9, 0xFF);
+    assert_eq!(mapper.read(0x0000), 0xA0, "8 KB CHR bank 4");
+}

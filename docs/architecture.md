@@ -9,7 +9,7 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 779 tests (776 passing / 3 ignored), including the nestest, blargg and
+- Test suite: 806 tests (all passing), including the nestest, blargg and
   AccuracyCoin real-ROM suites (which skip without ROMs in `roms/`)
 
 ---
@@ -457,6 +457,38 @@ up front.
 | 140 | `mapper140` | Jaleco JF-11/14 |
 | 180 | `mapper180` | UNROM (Crazy Climber variant) |
 | 240 / 241 | `mapper240` / `mapper241` | Chinese PCB / BxROM variant |
+| 6 | `mapper6` | FFE F4 (Front Fareast) |
+| 8 | `mapper8` | FFE F3 (Front Fareast) |
+| 16 | `mapper16` | Bandai FCG (the barcode EEPROM is not emulated) |
+| 18 | `mapper18` | Jaleco SS88006 |
+| 30 | `mapper30` | UNROM 512 |
+| 87 | `mapper87` | Jaleco J87 |
+| 95 | `mapper95` | Namcot 3425 (the nametable bit is approximated globally) |
+| 112 | `mapper112` | Asder |
+| 113 | `mapper113` | HES / NTDEC |
+| 114 | `mapper114` | Asder / Waixing MMC3 clone |
+| 117 | `mapper117` | Future Media |
+| 133 | `mapper133` | Sachen 8259 |
+| 152 | `mapper152` | Bandai 74161/32 |
+| 178 | `mapper178` | Waixing FS004 |
+| 206 | `mapper206` | Namcot 118 / Tengen MIMIC-1 (DxROM) |
+| 227 | `mapper227` | "1200-in-1" multicarts |
+| 244 | `mapper244` | C&E (Decathlon) |
+
+Not implemented, and why:
+
+- **116** (Gouder SOMARI-P) and **176** (8025 multicarts) pick their behaviour — which ASIC
+  they simulate, how big the banks are — from NES 2.0 submappers, and this project
+  deliberately does not parse NES 2.0: guessing would be a coin flip on real dumps.
+- **158** (Tengen 800037) is a RAMBO-1 board with CIRAM A10 wired to CHR A17. RAMBO-1 is a
+  mapper in its own right (sixteen registers, its own CHR layout), so it should be added as
+  mapper 64 first and 158 derived from it.
+- **185**'s defining feature is a CHR window that points at nametable RAM, which needs the
+  PPU to ask the cartridge where pattern data comes from — the same hook section 15.1's A12
+  work needs, so 185 lands with it.
+- **115** (Ka Sheng / Waixing MMC3 clone) adds an extended bank switch at $6000/$6001 on
+  top of the MMC3 register pair, plus its own IRQ. It is a bigger job than the other MMC3
+  variants and deserves its own pass rather than a rushed one.
 
 **Steps to add a mapper** (current convention):
 
@@ -739,11 +771,11 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 548 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 564 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
 | `tests/ppu.rs` | 85 (3 ignored) | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI |
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
-| `tests/mappers.rs` | 51 | Bank switching, IRQ, mirroring, battery RAM |
+| `tests/mappers.rs` | 68 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
 | `tests/rom_tests.rs` | 11 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
 | `crates/nes-uniffi` unit tests | 8 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
@@ -864,7 +896,8 @@ clone needs `npm run build:wasm` before building the front end.
   direction is second-order/linear interpolation or a half-band filter, done inside
   `fill_audio`.
 - **Unsupported mappers**: cartridges outside `supported_mappers()` are rejected outright.
-  See section 8 for the list and how to extend.
+  Section 8 lists what is missing and why (NES 2.0 submapper-driven boards, RAMBO-1, and
+  the CHR-from-VRAM window that needs the PPU hook below).
 - **An undefined opcode hangs the CPU; it no longer panics**: every one of the 256 opcode
   bytes has a handler in `crates/nes-core/src/cpu/instructions.rs` — the documented
   instructions, the undocumented ones the 2A03 really executes (LAX/SAX/DCP/ISC/SLO/RLA/SRE/

@@ -8,7 +8,7 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：779 个测试（776 通过 / 3 忽略），含 nestest、blargg、AccuracyCoin
+- 测试规模：806 个测试（全部通过），含 nestest、blargg、AccuracyCoin
   真实 ROM 套件（`roms/` 为空时自动跳过）
 
 ---
@@ -430,6 +430,34 @@ classDiagram
 | 140 | `mapper140` | Jaleco JF-11/14 |
 | 180 | `mapper180` | UNROM（Crazy Climber 变体） |
 | 240 / 241 | `mapper240` / `mapper241` | 国产 PCB / BxROM 变体 |
+| 6 | `mapper6` | FFE F4（Front Fareast） |
+| 8 | `mapper8` | FFE F3（Front Fareast） |
+| 16 | `mapper16` | Bandai FCG（条码 EEPROM 未模拟） |
+| 18 | `mapper18` | Jaleco SS88006 |
+| 30 | `mapper30` | UNROM 512 |
+| 87 | `mapper87` | Jaleco J87 |
+| 95 | `mapper95` | Namcot 3425（命名表位按全局近似） |
+| 112 | `mapper112` | Asder |
+| 113 | `mapper113` | HES / NTDEC |
+| 114 | `mapper114` | Asder / Waixing MMC3 克隆 |
+| 117 | `mapper117` | Future Media |
+| 133 | `mapper133` | Sachen 8259 |
+| 152 | `mapper152` | Bandai 74161/32 |
+| 178 | `mapper178` | Waixing FS004 |
+| 206 | `mapper206` | Namcot 118 / Tengen MIMIC-1（DxROM） |
+| 227 | `mapper227` | "1200-in-1" 多合一卡带 |
+| 244 | `mapper244` | C&E（Decathlon） |
+
+未实现及原因：
+
+- **116**（Gouder SOMARI-P）与 **176**（8025 多合一）靠 NES 2.0 submapper 决定行为——模拟哪种
+  ASIC、银行多大——而本项目明确不解析 NES 2.0：猜 submapper 等于在真实 dump 上抛硬币。
+- **158**（Tengen 800037）是 RAMBO-1 板卡，CIRAM A10 接在 CHR A17 上。RAMBO-1 本身就是一个
+  独立 Mapper（16 个寄存器、自己的 CHR 布局），值得先补 mapper 64，再由它派生 158。
+- **185** 的核心特性是"CHR 窗口指向命名表 RAM"，需要 PPU 向卡带询问图案数据来源。这个钩子
+  与 §15.1 中 A12 的工作是同一个，因此 185 与它一起落地。
+- **115**（Ka Sheng / Waixing 的 MMC3 克隆）在 MMC3 寄存器对之外还有 $6000/$6001 的扩展
+  银行切换和自己的 IRQ，工作量明显大于其它 MMC3 变体，值得单独一轮认真做。
 
 **新增一个 Mapper 的步骤**（当前约定）：
 
@@ -678,11 +706,11 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 548 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 564 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
 | `tests/ppu.rs` | 85（3 忽略） | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI |
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
-| `tests/mappers.rs` | 51 | 银行切换、IRQ、镜像、电池 RAM |
+| `tests/mappers.rs` | 68 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
 | `tests/rom_tests.rs` | 11 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
 | `crates/nes-uniffi` 单元测试 | 8 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
@@ -787,7 +815,8 @@ flowchart LR
   这是主流取舍，但对少数依赖精确 A12 计时的游戏会有差异。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
-- **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。清单与扩展方式见第 8 节。
+- **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，
+  见第 8 节（依赖 NES 2.0 submapper 的板卡、RAMBO-1、以及需要 PPU 钩子的 CHR-取-自-VRAM 窗口）。
 - **未定义 opcode 让 CPU 停机，不再 panic**：256 个 opcode 字节全部有实现
   （`crates/nes-core/src/cpu/instructions.rs`）——文档化指令、2A03 实际会执行的未文档
   指令（LAX/SAX/DCP/ISC/SLO/RLA/SRE/RRA 等）、NOP 变体，以及 12 个 KIL/JAM。

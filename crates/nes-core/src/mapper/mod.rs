@@ -123,8 +123,9 @@ impl crate::state::StateField for Option<Box<dyn Mapper>> {
 /// discovering [`crate::NesError::UnsupportedMapper`] afterwards.
 pub fn supported_mappers() -> &'static [u16] {
     &[
-        0, 1, 2, 3, 4, 5, 7, 9, 10, 11, 21, 22, 23, 24, 25, 26, 32, 33, 34, 38, 48, 65, 66, 69,
-        71, 74, 79, 94, 118, 119, 140, 180, 240, 241,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 18, 21, 22, 23, 24, 25, 26, 30, 32, 33, 34,
+        38, 48, 65, 66, 69, 71, 74, 79, 87, 94, 95, 112, 113, 114, 117, 118, 119, 133, 140,
+        152, 178, 180, 206, 227, 240, 241, 244,
     ]
 }
 
@@ -168,6 +169,23 @@ pub fn create_mapper(
         180 => Ok(Box::new(mapper180::Mapper180::new(prg_rom, chr_rom))),
         240 => Ok(Box::new(mapper240::Mapper240::new(prg_rom, chr_rom))),
         241 => Ok(Box::new(mapper241::Mapper241::new(prg_rom, chr_rom))),
+        6 => Ok(Box::new(mapper6::Mapper6::new(prg_rom, chr_rom))),
+        8 => Ok(Box::new(mapper8::Mapper8::new(prg_rom, chr_rom))),
+        16 => Ok(Box::new(mapper16::Mapper16::new(prg_rom, chr_rom))),
+        18 => Ok(Box::new(mapper18::Mapper18::new(prg_rom, chr_rom))),
+        30 => Ok(Box::new(mapper30::Mapper30::new(prg_rom, chr_rom))),
+        87 => Ok(Box::new(mapper87::Mapper87::new(prg_rom, chr_rom))),
+        95 => Ok(Box::new(mapper95::Mapper95::new(prg_rom, chr_rom))),
+        112 => Ok(Box::new(mapper112::Mapper112::new(prg_rom, chr_rom))),
+        113 => Ok(Box::new(mapper113::Mapper113::new(prg_rom, chr_rom))),
+        114 => Ok(Box::new(mapper114::Mapper114::new(prg_rom, chr_rom))),
+        117 => Ok(Box::new(mapper117::Mapper117::new(prg_rom, chr_rom))),
+        133 => Ok(Box::new(mapper133::Mapper133::new(prg_rom, chr_rom))),
+        152 => Ok(Box::new(mapper152::Mapper152::new(prg_rom, chr_rom))),
+        178 => Ok(Box::new(mapper178::Mapper178::new(prg_rom, chr_rom))),
+        206 => Ok(Box::new(mapper206::Mapper206::new(prg_rom, chr_rom))),
+        227 => Ok(Box::new(mapper227::Mapper227::new(prg_rom, chr_rom))),
+        244 => Ok(Box::new(mapper244::Mapper244::new(prg_rom, chr_rom))),
         _ => Err(crate::NesError::UnsupportedMapper(mapper_number)),
     }
 }
@@ -176,28 +194,45 @@ pub mod mapper0;
 pub mod mapper1;
 pub mod mapper10;
 pub mod mapper11;
+pub mod mapper112;
+pub mod mapper113;
+pub mod mapper114;
+pub mod mapper117;
 pub mod mapper118;
 pub mod mapper119;
+pub mod mapper133;
 pub mod mapper140;
+pub mod mapper152;
+pub mod mapper16;
+pub mod mapper178;
+pub mod mapper18;
 pub mod mapper180;
 pub mod mapper2;
 pub mod mapper21;
 pub mod mapper240;
 pub mod mapper241;
+pub mod mapper244;
 pub mod mapper24;
+pub mod mapper206;
+pub mod mapper227;
 pub mod mapper3;
+pub mod mapper30;
 pub mod mapper32;
 pub mod mapper33;
 pub mod mapper34;
 pub mod mapper38;
 pub mod mapper4;
 pub mod mapper5;
+pub mod mapper6;
 pub mod mapper65;
 pub mod mapper66;
 pub mod mapper69;
 pub mod mapper7;
 pub mod mapper71;
 pub mod mapper74;
+pub mod mapper8;
+pub mod mapper87;
+pub mod mapper95;
 pub mod mapper79;
 pub mod mapper9;
 pub mod mapper94;

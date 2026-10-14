@@ -17,7 +17,8 @@ drag a `.nes` file onto the page, or paste a ROM URL, and start playing.
 - **PPU**: background and sprite rendering, sprite 0 hit, scanline timing, OAM DMA,
   nametable mirroring.
 - **APU**: five channels — two pulses, triangle, noise, DMC — with frame-sequencer IRQ.
-- **Mappers**: 34 supported numbers (NROM, MMC1/2/3/4/5, the VRC family, Sunsoft, Irem, …).
+- **Mappers**: 51 supported numbers (NROM, MMC1/2/3/4/5, the VRC family, Namcot, Sunsoft,
+  Irem, Bandai, the FFE and Waixing boards, several MMC3 variants, …).
 - **Expansion audio**: VRC6, MMC5, Sunsoft 5B.
 - **Saves**: battery-backed saves (persisted per ROM name) and save states
   (full-machine snapshots, 4 slots).

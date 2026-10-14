@@ -12,7 +12,8 @@
 - **CPU**：6502（Ricoh 2A03）指令集——含未文档指令与硬件一致的 KIL/JAM 停机——附 nestest 集成校验。
 - **PPU**：背景与精灵渲染、sprite 0 命中、扫描线时序、OAM DMA、nametable 镜像。
 - **APU**：2 个脉冲、三角、噪声、DMC 五个通道，支持帧序列器 IRQ。
-- **Mapper**：34 个编号（NROM、MMC1/2/3/4/5、VRC 系列、Sunsoft、Irem 等）。
+- **Mapper**：51 个编号（NROM、MMC1/2/3/4/5、VRC 系列、Namcot、Sunsoft、Irem、Bandai、
+  FFE 与 Waixing 板卡、若干 MMC3 变体等）。
 - **扩展音频**：VRC6、MMC5、Sunsoft 5B。
 - **存档**：电池存档（按 ROM 名持久化）与即时存档（整机快照，4 个槽位）。
 - **可移植内核**：`nes-core` 不依赖任何宿主绑定，默认 `std`，也可
