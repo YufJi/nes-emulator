@@ -5,8 +5,31 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/CPU_instructions
 
-use super::{Cpu, InterruptSource, StatusFlags};
+use super::{Cpu, InterruptSource, PendingAccess, StatusFlags};
 use crate::Bus;
+
+/// Where an instruction's handler touches the effective address the addressing
+/// mode resolved.
+///
+/// The machine runs the handler on the cycle the chip performs the access on,
+/// and it has to know that cycle *before* the handler runs: the plan is
+/// expressed as "the access is on the instruction's last cycle" or "two cycles
+/// before it", which is what the handler's own cycle count cannot tell until it
+/// is too late.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// The handler makes no access of its own: a store (the bus already parks
+    /// and places its write), a branch, a register transfer, a jump.
+    None,
+    /// The handler reads the effective address on the instruction's last
+    /// cycle. The flag marks the opcodes whose handler also reports the
+    /// addressing mode's page-crossing penalty - the loads - which is what
+    /// puts the read one cycle later.
+    Read { penalised: bool },
+    /// The read-modify-write pattern - read, write the old value back, write
+    /// the new one - so the read is two cycles before the instruction's end.
+    ReadModifyWrite,
+}
 
 /// Opcode table entry - defines instruction metadata
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +79,59 @@ pub enum AddressingMode {
 pub type InstructionHandler = fn(&mut Cpu, &mut dyn Bus, u16, u8) -> u8;
 
 impl Cpu {
+    /// What the opcode's handler does with the effective address.
+    ///
+    /// The mnemonics in [`OPCODE_TABLE`] are the classification: a name is used
+    /// with one handler throughout, and the two groups below are the handlers
+    /// that read the effective address. Everything else is `None` - the stores
+    /// (whose write the bus already parks and places), the branches, the jumps,
+    /// the stack operations and the register transfers - and runs in one piece.
+    fn access_of(mnemonic: &str) -> Access {
+        match mnemonic {
+            // Read, write the old value back, write the new one.
+            "INC" | "DEC" | "ASL" | "LSR" | "ROL" | "ROR" | "SLO" | "SRE" | "RRA" | "RLA"
+            | "ISC" | "DCP" => Access::ReadModifyWrite,
+            // The loads. Their handlers report the addressing mode's
+            // page-crossing penalty, which is what puts the read a cycle later.
+            // `IGN` is a read whose value goes nowhere, and pays it all the
+            // same.
+            "LDA" | "LDX" | "LDY" | "LAX" | "LAE" | "AND" | "ORA" | "EOR" | "ADC" | "SBC"
+            | "CMP" | "IGN" => Access::Read { penalised: true },
+            // Reads that always take their full cycle count, the immediate-mode
+            // ones included: an immediate operand is fetched on the last cycle
+            // too.
+            "BIT" | "CPX" | "CPY" | "ANC" | "ALR" | "ARR" | "AXS" | "ANE" | "LXA" => {
+                Access::Read { penalised: false }
+            }
+            _ => Access::None,
+        }
+    }
+
+    /// Plan the cycle the instruction's access lands on, if its handler makes
+    /// one of its own.
+    ///
+    /// Returns the access for the machine to run, and the instruction's total
+    /// cycle count - which the read handler's page-crossing penalty is part of,
+    /// so it has to be settled before the handler runs: a read is on the last
+    /// cycle, one past the penalty, and a read-modify-write's read is two
+    /// cycles before the end, with the two writes after it.
+    fn plan_access(op: &Opcode, addr: u16, extra_cycles: u8) -> Option<(PendingAccess, u8)> {
+        let (trailing, handler_cycles) = match Self::access_of(op.mnemonic) {
+            Access::None => return None,
+            Access::Read { penalised } => (0, if penalised { extra_cycles } else { 0 }),
+            Access::ReadModifyWrite => (2, 0),
+        };
+        let total_cycles = op.base_cycles + handler_cycles;
+        let access = PendingAccess {
+            handler: op.handler,
+            addr,
+            extra_cycles,
+            at_cycle: total_cycles - trailing,
+            expected_handler_cycles: handler_cycles,
+        };
+        Some((access, total_cycles))
+    }
+
     /// Execute a single instruction
     ///
     /// This is the main instruction execution entry point. It fetches the opcode,
@@ -219,6 +295,24 @@ impl Cpu {
                 (0, 0)
             }
         };
+
+        // A read of a PPU register belongs on the dot the chip performs it, not
+        // where the instruction asks for it: a `$2002` read takes the VBlank
+        // flag with it, so it decides the frame's NMI, and a read that lands on
+        // the dot before the flag is set takes the flag away entirely. The
+        // machine drives the instruction's cycles, so the handler waits for the
+        // cycle its access belongs to. Everything else runs in one piece below.
+        if self.defer_register_reads && (0x2000..=0x3FFF).contains(&addr) {
+            if let Some((pending, total_cycles)) = Self::plan_access(op, addr, extra_cycles) {
+                self.pending_access = Some(pending);
+                // Nothing that defers its access touches the I flag - they all
+                // read a memory operand - so the interrupt decision the next
+                // instruction's poll makes is already settled.
+                self.irq_inhibit = self.status.contains(StatusFlags::I);
+                self.cycles += total_cycles as u64;
+                return total_cycles;
+            }
+        }
 
         // Execute the instruction handler
         let handler_cycles = (op.handler)(self, bus, addr, extra_cycles);

@@ -17,37 +17,44 @@ which *CPU cycle*.
 
 ## 2. Where the emulator stands
 
-Two phases are committed and the third sits in the working tree; none of the three regressed
-the baselines:
+The work has landed in steps. The table is the record of what each one did and what it
+measured; none of them regressed the baselines:
 
 | Phase | Commit | What it did | Measured effect |
 | --- | --- | --- | --- |
 | L1 | `4018bba` | The machine advances one CPU cycle at a time: three PPU dots, an APU tick, the cartridge's view of the bus — interleaved, instead of batched per instruction | No ROM change at all (57 pass / 17 known, identical); frame cost 1.075 → 1.046 ms (release, 600 frames of nestest) |
 | L2 | `49d9d29` | Interrupt lines sampled on the penultimate cycle of each instruction; the seven-cycle vector sequence (two discarded reads, three pushes, two vector halves) driven cycle by cycle | Baselines unchanged in count, four failing tests' timing traces moved toward the expected patterns; AccuracyCoin 78 → 79 passing |
 | L3 step 1 | `a2b13e9` | Writes to `$2000-$401F` land on the cycle the chip drives them — the last cycle of a store, the cycle before it for a read-modify-write's discarded write — and the NMI a `$2000` write raises is taken up on that cycle | No ROM count change (57 pass / 17 known and AccuracyCoin 79/49 identical); `4-irq_and_dma`'s trace moved from the wrong shape to the documented one with the L3a offset (`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`, CRC `5FA88FED` → `218E154C`); `3-nmi_and_irq`'s CRC moved `90BC9498` → `7E5D001A`; two AccuracyCoin error codes changed (`$0468`/`$0469` 0x06 → 0x0A, still failing); frame cost unchanged (1.033 → 1.034 ms, release, 600 frames of nestest) |
-| L3 step 2 | (this change) | The write also lands on a *dot* inside that cycle: the PPU's per-dot view sees it from the cycle's first dot, and the APU tick at the end of the cycle sees it | ROM baseline 57 pass / 17 known → **58 / 16** (`apu_test/5-len_timing`); AccuracyCoin 79/49 → **81 / 47** (`Frame Counter 4-step`, `Frame Counter 5-step`); `4-irq_and_dma`'s CRC moved `218E154C` → `7DE0C30F`, `5-branch_delays_irq`'s `BE443B12` → `29BB6E90`, `6-irq_flag_timing` moved a sub-test ("Flag first set too late" → "Flag last set too soon"); nothing that was green regressed; frame cost unchanged (1.034 → 1.032 ms, release, 600 frames of nestest); the dot itself is not discriminated by any suite (0, 1 and 2 are byte-identical) |
-| L3 step 3a | (this change) | An NMI asserted during an interrupt sequence, before its status push, takes the vector over: the frame pushed stays the sequence's, the handler is the NMI's | No test flips and nothing regresses (58 pass / 16 known, AccuracyCoin 81/47); `3-nmi_and_irq`'s second column comes in line with its readme for the five "NMI occurs after CLC, interrupting IRQ" rows (`23` → `00`), and its first column there moves `27` → `23` against a documented `20` |
+| L3 step 2 | `d4bf4ce` | The write also lands on a *dot* inside that cycle: the PPU's per-dot view sees it from the cycle's first dot, and the APU tick at the end of the cycle sees it | ROM baseline 57 pass / 17 known → **58 / 16** (`apu_test/5-len_timing`); AccuracyCoin 79/49 → **81 / 47** (`Frame Counter 4-step`, `Frame Counter 5-step`); `4-irq_and_dma`'s CRC moved `218E154C` → `7DE0C30F`, `5-branch_delays_irq`'s `BE443B12` → `29BB6E90`, `6-irq_flag_timing` moved a sub-test ("Flag first set too late" → "Flag last set too soon"); nothing that was green regressed; frame cost unchanged (1.034 → 1.032 ms, release, 600 frames of nestest); the dot itself is not discriminated by any suite (0, 1 and 2 are byte-identical) |
+| L3 step 3a | `32864f1` | An NMI asserted during an interrupt sequence, before its status push, takes the vector over: the frame pushed stays the sequence's, the handler is the NMI's | No test flips and nothing regresses (58 pass / 16 known, AccuracyCoin 81/47); `3-nmi_and_irq`'s second column comes in line with its readme for the five "NMI occurs after CLC, interrupting IRQ" rows (`23` → `00`), and its first column there moves `27` → `23` against a documented `20` |
+| L3 step 4 | (this change) | `$2000-$3FFF` reads land on their own cycle *and dot* - the machine runs the handler two dots into the cycle the chip performs the access on - the VBlank suppression window moves to the dot before the flag, and the NMI line is sampled once per CPU cycle instead of being set at the dot the flag rises on | ROM baseline 58 pass / 16 known → **62 / 12** (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing`); AccuracyCoin 81/47 → **82 / 46**; `2-nmi_and_brk`'s first four rows are the readme's (`27 26 26 36`), `3-nmi_and_irq`'s second column matches its readme for the whole first half; frame cost 1.11 → 1.16 ms (release, 600 frames of nestest, both measured in one sitting), almost all of it the per-cycle line sample |
 
-Current state: `cargo test --workspace` 820 green, ROM baseline **58 pass / 16 known**,
-AccuracyCoin **81 passed / 47 failing**, `STATE_VERSION` 4.
+Current state: `cargo test --workspace` 826 green, ROM baseline **62 pass / 12 known**,
+AccuracyCoin **82 passed / 46 failing**, `STATE_VERSION` 4.
 
-Two experiments were implemented, measured and **reverted**; their evidence is the starting
-point for what follows (§4). L3a's bus-side parking has since come back as L3 step 1, with
-the dependents its revert was about moved along with it.
+Three experiments were implemented, measured and **reverted**; their evidence is the
+starting point for what follows (§4). L3a's bus-side parking has since come back as L3 step
+1, with the dependents its revert was about moved along with it, and the step-4 read
+experiment is now step 4 itself (the bisect it produced is what pinned the read's dot down).
 
 ## 3. What is left
 
 ### 3.1 The accuracy backlog the ROM suites name
 
-Fifteen cases remain. They are not all the same kind of problem:
+Eleven cases remain. They are not all the same kind of problem:
 
 | Suite | Cases | What they need |
 | --- | --- | --- |
-| `cpu_interrupts_v2` | `2-nmi_and_brk`, `3-nmi_and_irq`, `4-irq_and_dma`, `5-branch_delays_irq` | An NMI to take over an interrupt sequence in flight, and the exact CPU cycle the handler starts on — i.e. §4's work |
-| `ppu_vbl_nmi` | `05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing`, `10-even_odd_timing` | One-PPU-dot accuracy for `$2002` reads and `$2000`/`$2001` writes — §4's work |
+| `cpu_interrupts_v2` | `2-nmi_and_brk`, `3-nmi_and_irq`, `4-irq_and_dma`, `5-branch_delays_irq` | The interrupt sequence's own cycle, now that the reads and writes around it are placed: `4-irq_and_dma`'s remaining offset tracks the frame counter's phase (§4.3), and the other three are down to one or two instructions |
+| `ppu_vbl_nmi` | `10-even_odd_timing` | The dot the odd-frame clock skip is decided on — the same per-dot rendering `4-scanline_timing` waits for |
 | `mmc3_test_2` | `4-scanline_timing` | The exact dot the first A12 rise of a frame lands on — §4, plus the existing dot-level A12 model |
 | `ppu_open_bus` | the whole ROM | PPU data-bus decay, a **separate feature**, nothing to do with cycles |
 | `apu_test` | `4-jitter`, `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates` | Frame-counter and DMC timing; `5-len_timing` turned out **not** to be a length-counter bug but a write-phase one, and step 2 fixed it |
+
+Four more have left the list: §4.2 steps 1-4 placed the register writes and the `$2002`
+reads on their own cycles and dots and gave the NMI line its sampling, which is what
+`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing` and `08-nmi_off_timing` were
+waiting for.
 
 `4-irq_and_dma` is the closest to green and the most useful yardstick: the plan's first
 step - implemented - moved its trace to the documented shape with a constant offset (§4.2).
@@ -81,7 +88,7 @@ discrete boards (2/3/7 and friends); FDS and NSF.
 
 ## 4. The plan
 
-### 4.1 What the two reverted experiments taught
+### 4.1 What the reverted experiments taught
 
 **L2b — letting an NMI take over a sequence.** Implemented `poll_hijack` plus a
 hijack-aware vector: `3-nmi_and_irq`'s trace moved further toward the documented pattern
@@ -191,6 +198,11 @@ rather than against the shape of ours.
   the reads an instruction performs before its cycles. Revisit it when a test that reads
   the dot appears - `10-even_odd_timing` and `4-scanline_timing` still fail for reasons
   this step did not touch.
+- **Step 4 moved that convention to dot 2**, the point in the cycle the chip performs an
+  access — the same dot the `$2002` reads landed on once their own placement was measured
+  against the tests. The write's own dot is still not discriminated by anything (dot 0 and
+  dot 2 measure identically), but the two accesses now sit at the same point in the cycle
+  by construction rather than by accident.
 - **A later dot costs a frame rate, not just tidiness.** Placing the write *inside* the
   cycle means stepping that cycle's three dots one at a time, which needs a second
   dot-stepping path next to `advance_one_cpu_cycle`; measured, its mere presence took the
@@ -198,7 +210,8 @@ rather than against the shape of ours.
   moving at all. Disabling the parking entirely still cost 1.11 ms, so the price is the
   optimiser giving up on the hot cycle loop, not the write handling. The landed shape keeps
   the loop as it was - one extra `Option` in an inlined helper - and lands the write on the
-  cycle's first dot, which needs no per-dot stepping at all.
+  cycle's first dot, which needs no per-dot stepping at all. (Step 4 moved it two dots in,
+  to the point in the cycle the chip performs an access; see below.)
 
 **Step 3: retry the NMI hijack (L2b) on top.** With writes and their dependents in place,
 re-apply the parked hijack patch and measure: the expectation is that `3-nmi_and_irq` gains
@@ -260,35 +273,63 @@ sequence's**: nothing on the interrupt-sequence side can move it until a `$2002`
 on its own dot. Its readme even warns about this test ("Occasionally fails on NES due to
 PPU-CPU synchronization").
 
-**Step 4: reads with side effects.** `$2002` reads clear the VBlank flag and `$2007` reads
-move the VRAM address; both are still performed at the instruction's start. `02-vbl_set_time`
-passes today by luck of the current granularity — `06-suppression` and `05-nmi_timing` do
-not. Placing reads needs the addressing phase and the data access to happen on different
-cycles, i.e. splitting `Cpu::execute_instruction` into "fetch operands" and "perform the
-access and the operation", with the machine ticking the addressing cycles in between. Scope
-it to the instructions that can touch `$2000-$3FFF` and `$4015-$4017` first.
+**Step 4 (done): reads with side effects, and the NMI line.** `$2002` reads clear the VBlank
+flag and `$2007` reads move the VRAM address; both used to happen at the instruction's start,
+three cycles early and blind to the dot. `02-vbl_set_time` passed by luck of that
+granularity; `06-suppression` and `05-nmi_timing` did not. Three things moved, and each was
+measured on its own.
 
-**Step 4, first try (measured, reverted).** Putting a `$2002` read's *clearing* on the read's
-own cycle while the value is still reported where the instruction asks for it - the split into
-`Ppu::read_ppustatus` / `Ppu::clear_ppustatus`, with the clear applied on the instruction's
-last cycle - moves exactly what the investigation above predicted, without the whole
-instructions-are-not-atomic split:
+*The read lands on its own cycle and dot.* The obvious way in was to split
+`Cpu::execute_instruction` into "fetch operands" and "perform the access"; the landed shape
+is smaller, and does not need the split: the CPU still does all the addressing in one go,
+and a read of the PPU window is left to the machine the way a write is. `Cpu::plan_access`
+works out which cycle
+of the instruction the handler's access belongs to — the last cycle for a load (one later
+for one that pays a page-crossing penalty), two before the end for a read-modify-write's
+read, which is what `Access` encodes from the opcode's mnemonic — and `PendingAccess` hands
+the handler over. The machine runs it two dots into that cycle
+(`NesBus::advance_one_cpu_cycle_with_read`).
 
-- `2-nmi_and_brk` goes from ten rows of `02 36 00` (the NMI never arriving) to `27 36 00` x5,
-  `26 36 00` x2, `36 00 00` x3 - the documented shapes, hijack rows included.
-- `06-suppression`'s row 04 goes from `- -` to `- N` (CRC `2F686C63` -> `3FE15516`).
-- AccuracyCoin's `$0406` "Dummy read cycles" error code moves 0x12 -> 0x06.
-- Nothing else moves; 58 pass / 16 known and 81/47 still hold.
+*Two dots is measured, not chosen.* The step-4 first try — clearing on the read's own cycle
+but leaving the value where the instruction asked for it — put the clear a cycle late for
+`02-vbl_set_time`'s pair of reads (`00 - -` where the readme has `00 - V`) and was reverted;
+it also showed the read's *value* has to move with its clearing, which no amount of
+re-scheduling the clear can do. Bisecting the read's dot instead, with `05-nmi_timing`,
+`06-suppression` and `02-vbl_set_time` as the yardsticks, gave a clean one-row-per-dot
+gradient: at the cycle's start the NMI boundary falls two rows early, at its end three rows
+late, and the truth is in the middle. The same window is what the VBlank suppression race
+became: one dot wide, a read standing on dot 0 of scanline 241, whose successor is the dot
+the flag is set on.
 
-But it breaks one green line: `ppu_vbl_nmi/02-vbl_set_time`, whose trace becomes `00 - - ...`
-where its readme documents `00 - V ...` - the clear is a cycle late for the pair of reads it
-measures. Reverted, not landed. Both endpoints are now measured, though: with the clear at the
-instruction's start `02-vbl_set_time` is green and `2-nmi_and_brk` is dead; with the clear on
-the instruction's last cycle it is the other way round. So the next move is to bisect the
-*cycle* the deferred clear lands on (and, if that is not enough, the dot inside it), with
-`02-vbl_set_time`, `06-suppression` and `2-nmi_and_brk` as the yardsticks. The `cycle <= 1`
-race window in `Ppu::clear_ppustatus` (up to three dots wide) is the other thing
-`02-vbl_set_time` is sensitive to.
+*The NMI line is sampled once per cycle.* `NesBus::nmi_pending` used to be set on the dot the
+flag rose on, which made `06-suppression`'s `05`/`06` rows fire an NMI the hardware does not
+(the read that cleared the flag in the same cycle could not take the line back). It is now a
+latch that a sample at the end of every CPU cycle leaves behind: a line that comes and goes
+inside one cycle is never seen, and a line that is seen stays latched until the CPU services
+it. That is what separates `05 V -` from `07 V N` in `06-suppression`, and it is also why
+`07-nmi_on_timing`'s rows 02-04 keep their NMI - a `$2000` write raised the line in a cycle
+whose end the sample saw it high at, and the `$2002` read that cleared the flag later in the
+same instruction cannot take that back.
+
+*The window is the PPU's.* `$2000-$3FFF` is deferred; the APU's `$4015` is not, yet: blargg's
+`apu_test` synchronises through it and the frame-counter phase it measures is a cycle or two
+out anyway (§4.3), so moving that read now only moves that error around. It is the one thing
+left to revisit here.
+
+Measured: ROM baseline 58 pass / 16 known → **62 / 12** (`05-nmi_timing`,
+`06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing` — blargg's `ppu_vbl_nmi` is 9/10,
+with only the odd-frame skip left); AccuracyCoin 81 passed / 47 failing → **82 / 46**;
+nothing that was green regressed, `02-vbl_set_time`, `04-nmi_control`, `3-A12_clocking`,
+`5-len_timing` and `oam_stress` included. `2-nmi_and_brk`'s first four rows are now the
+readme's (`27 26 26 36` against the documented `27 26 26 36 00 …`) and `3-nmi_and_irq`'s
+second column matches its readme's `00` for the whole first half; both are still short of
+the full table, which is the hijack work of step 3 meeting the test's own frame-by-frame
+drift rather than anything the read's placement can reach. Cost: the per-cycle sample
+is worth about 4% of the frame (1.11 → 1.16 ms/frame, both measured in one sitting, 600
+frames of nestest in release); placing the read is free, and moving the *write* from the
+cycle's first dot to the same dot as the read costs nothing measurable - it is what makes
+the two accesses symmetric, and `5-len_timing` and AccuracyCoin's frame-counter tests stay
+green with it.
 
 ### 4.3 L4 — DMA and the renderer (after L3)
 
@@ -316,13 +357,17 @@ race window in `Ppu::clear_ppustatus` (up to three dots wide) is the other thing
    move at all: step 1 had already taken `10-even_odd_timing` from "skipped too late" to
    "skipped too soon" and the dot does not shift it, so both now look like they wait for the
    per-dot PPU work §6 decision 2 is about rather than for the write's placement.
-3. L3 step 3 — `2-nmi_and_brk`, `3-nmi_and_irq`.
-4. L3 step 4 — `05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing`.
+3. L3 step 3 — **done for the IRQ side and the BRK vector, blocked on the read side**: the
+   hijack itself was landed in 3a/3b, and the rows still failing in `2-nmi_and_brk` and
+   `3-nmi_and_irq` turned out to be the test's own `$2002` synchronisation, which is step 4.
+4. L3 step 4 — **done**: all four `ppu_vbl_nmi` cases turned green. The two `cpu_interrupts_v2`
+   cases step 3 was waiting on moved closer with it (step 4's measurements above) but are not
+   there yet; what is left of them is the interrupt sequence's own cycle, not the read.
 5. L4 — the DMA/frame-counter group, then sprite 0 timing.
 
 Each step is one commit, and each is only kept if the ROM baseline does not regress: the
 suites carry an expected-fail list and assert *both* directions (`tests/rom_tests.rs`), and
-AccuracyCoin carries a failing-count ratchet (currently 49).
+AccuracyCoin carries a failing-count ratchet (currently 46).
 
 ## 5. Verification protocol (used by every phase so far)
 

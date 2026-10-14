@@ -216,8 +216,19 @@ struct NesBus {
     controllers: [ControllerState; 2],
     /// Controller strobe/latch state
     controller_strobe: bool,
-    /// NMI pending flag (from PPU)
+    /// NMI pending: the latch the CPU's poll reads.
+    ///
+    /// Set when a sample of the NMI line finds it high where the sample before
+    /// found it low, and taken away by [`Bus::clear_nmi`] when the CPU services
+    /// the interrupt.
     nmi_pending: bool,
+    /// The NMI line's level when it was last sampled.
+    ///
+    /// The line is sampled once per CPU cycle and only latches when a sample
+    /// finds it high where the one before found it low, so this is the other
+    /// half of that edge. It is derived from the PPU again at a state load, and
+    /// so stays out of save states.
+    nmi_was_high: bool,
     /// Register writes the CPU parked while executing an instruction, oldest
     /// first.
     ///
@@ -311,6 +322,7 @@ impl NesBus {
             controllers: [ControllerState::new(), ControllerState::new()],
             controller_strobe: false,
             nmi_pending: false,
+            nmi_was_high: false,
             deferred_writes: [None; 2],
             deferred_count: 0,
             defer_writes: false,
@@ -477,11 +489,14 @@ impl NesBus {
     fn step_instruction(&mut self, cpu: &mut Cpu) -> u8 {
         // Fetch and execute one instruction. Register writes it makes are
         // parked rather than applied where the CPU asked for them; they land on
-        // the cycles the chip really drives them, in the loop below.
+        // the cycles the chip really drives them, in the loop below. The same
+        // goes for a read of a PPU or APU register: the CPU hands the access to
+        // the loop rather than performing it where the instruction asked.
         let opcode = self.read(cpu.pc());
         self.defer_writes = true;
+        cpu.set_defer_register_reads(true);
         let cycles = cpu.execute_instruction(self, opcode);
-        self.defer_writes = false;
+        cpu.set_defer_register_reads(false);
 
         // Mappers whose IRQ counter runs at the CPU clock rate.
         if let Some(ref mut mapper) = self.mapper {
@@ -502,14 +517,23 @@ impl NesBus {
         let poll_at = cycles.saturating_sub(1);
         for cycle in 1..=cycles {
             let write = self.take_deferred_write(cycles - cycle);
-            self.advance_one_cpu_cycle_with(write);
+            if cpu.pending_access_cycle() == Some(cycle) {
+                self.advance_one_cpu_cycle_with_read(write, cpu);
+            } else {
+                self.advance_one_cpu_cycle_with(write);
+            }
             if cycle == poll_at {
                 cpu.poll_interrupts(self);
             }
         }
+        self.defer_writes = false;
         debug_assert_eq!(
             self.deferred_count, 0,
             "every parked write lands inside the instruction's own cycles"
+        );
+        debug_assert!(
+            cpu.pending_access_cycle().is_none(),
+            "the machine runs every access the instruction held back"
         );
 
         // Then the interrupt sequence itself, one cycle at a time, so its
@@ -822,9 +846,6 @@ impl NesBus {
                 // neither the flag nor the NMI appears.
                 if !self.ppu.take_vblank_suppression() {
                     self.ppu.status.insert(PpuStatus::VBLANK);
-                    if self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE) {
-                        self.nmi_pending = true;
-                    }
                 }
             }
         } else if scanline == pre_render {
@@ -938,22 +959,15 @@ impl NesBus {
                 }
             }
         }
-
-        self.latch_nmi_line();
     }
 
-    /// Take up the NMI line a `$2000` write has just raised.
+    /// The NMI line the PPU drives.
     ///
-    /// Writing `$2000` with NMI off while the VBlank flag is set raises the
-    /// line on that cycle. The instruction's own interrupt poll ran on the
-    /// cycle before - the penultimate one - so the CPU sees the interrupt after
-    /// the *next* instruction has run, which is what blargg's `04-nmi_control`
-    /// measures ("immediate occurrence should be after NEXT instruction").
-    fn latch_nmi_line(&mut self) {
-        if self.ppu.nmi_pending() {
-            self.ppu.clear_nmi();
-            self.nmi_pending = true;
-        }
+    /// It is high while the VBlank flag is set *and* NMI is enabled, which is
+    /// the level the CPU's poll samples - and the reason a `$2002` read that
+    /// takes the flag away takes the frame's NMI with it.
+    fn nmi_line(&self) -> bool {
+        self.ppu.vblank_flag_set() && self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE)
     }
 
     /// Address the PPU drives for the dot it is on.
@@ -1045,26 +1059,72 @@ impl NesBus {
     /// suites measure when they line a frame-counter IRQ up against a PPU flag,
     /// and it is the tick the cycle-accurate interrupt work hangs off.
     fn advance_one_cpu_cycle(&mut self) {
-        // Three PPU dots per CPU cycle.
-        for _ in 0..3 {
-            self.advance_one_ppu_dot();
-        }
+        self.advance_one_ppu_dot();
+        self.advance_one_ppu_dot();
+        self.advance_one_ppu_dot();
+        self.finish_cpu_cycle();
+    }
 
+    /// The tail of a CPU cycle: the APU tick, the interrupt-line sample, and
+    /// the cycle counter.
+    fn finish_cpu_cycle(&mut self) {
         // The APU runs one tick per CPU cycle.
         self.tick_apu_cycle();
-
+        // The CPU's interrupt inputs are sampled at the end of the cycle: the
+        // NMI line is high while the VBlank flag is set with NMI enabled, and
+        // the latch it drives is what the poll reads.
+        let high = self.nmi_line();
+        if high != self.nmi_was_high {
+            self.nmi_was_high = high;
+            self.nmi_pending |= high;
+        }
         self.cpu_cycles += 1;
     }
 
     /// One CPU cycle, with the parked register write that belongs on it, if any.
     ///
-    /// The write lands on the cycle's first dot, which is why it is applied
-    /// before the cycle is stepped at all.
+    /// The write lands two dots into the cycle, the same point in it the chip
+    /// performs a read: `$2001` therefore reaches the PPU's per-dot views (the
+    /// address it drives for the cartridge) from that dot on, and the APU tick
+    /// at the end of the same cycle sees it.
     fn advance_one_cpu_cycle_with(&mut self, write: Option<(u16, u8)>) {
+        self.advance_one_ppu_dot();
+        self.advance_one_ppu_dot();
         if let Some((addr, value)) = write {
             self.write_now(addr, value);
         }
-        self.advance_one_cpu_cycle();
+        self.advance_one_ppu_dot();
+        self.finish_cpu_cycle();
+    }
+
+    /// One CPU cycle with the instruction's register read inside it.
+    ///
+    /// The read sits two dots into the cycle, where the chip performs it: late
+    /// enough to see a VBlank flag an earlier dot of the cycle set, early
+    /// enough to take away one the next dot is about to set, and early enough
+    /// that clearing the flag also takes the line down before the machine
+    /// samples it at the end of the cycle. Blargg's `06-suppression`,
+    /// `05-nmi_timing` and `02-vbl_set_time` pin that dot down (§4.2 step 4 of
+    /// the cycle plan); moving the read to the cycle's start or its end shifts
+    /// every one of those boundaries by the same number of dots.
+    fn advance_one_cpu_cycle_with_read(&mut self, write: Option<(u16, u8)>, cpu: &mut Cpu) {
+        // The instruction's own read and a parked write never share a cycle: a
+        // read-modify-write reads two cycles before its two writes. This is a
+        // backstop, not a case.
+        debug_assert!(
+            write.is_none(),
+            "an instruction's read and a parked write never share a cycle"
+        );
+        for dot in 0..3 {
+            if dot == 2 {
+                if let Some((addr, value)) = write {
+                    self.write_now(addr, value);
+                }
+                cpu.perform_pending_access(self);
+            }
+            self.advance_one_ppu_dot();
+        }
+        self.finish_cpu_cycle();
     }
 
     /// One PPU dot: the dot counter, everything a dot triggers, and the address
@@ -1380,6 +1440,9 @@ impl Nes {
         let mut r = StateReader::new(&data[HEADER..]);
         crate::state::StateField::read(&mut self.cpu, &mut r);
         crate::state::StateField::read(&mut self.bus, &mut r);
+        // The NMI line's last sample is the level it is at now: a state is
+        // taken between instructions, with no dot left to step.
+        self.bus.nmi_was_high = self.bus.nmi_line();
     }
 }
 
@@ -2027,6 +2090,134 @@ mod tests {
         nes.step_instruction(); // LDA #$A5
         nes.step_instruction(); // STA $0011
         assert_eq!(nes.peek(0x0011), 0xA5);
+    }
+
+    /// Run one `LDA $2002` from a given point in the frame.
+    ///
+    /// The read lands two dots into the instruction's last cycle, so the dot it
+    /// acts on is the twelfth the machine steps. Returns the accumulator, the
+    /// VBlank flag it left behind, and the cycles the instruction took - the
+    /// interrupt sequence adds seven when the NMI was taken before the read.
+    fn read_ppustatus_from(scanline: u16, cycle: u16) -> (u8, bool, u8) {
+        let mut bus = NesBus::new();
+        let mut cpu = Cpu::new();
+        // `LDA $2002` at $0000: four cycles, the read on the last one.
+        bus.cpu_ram[..3].copy_from_slice(&[0xAD, 0x02, 0x20]);
+        cpu.set_pc(0x0000);
+        bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
+        bus.ppu.scanline = scanline;
+        bus.ppu.cycle = cycle;
+
+        let cycles = bus.step_instruction(&mut cpu);
+        (cpu.a(), bus.ppu.vblank_flag_set(), cycles)
+    }
+
+    /// A `$2002` read is performed two dots into its own cycle, not at the
+    /// start of the instruction: the same `LDA $2002` sees the VBlank flag or
+    /// takes the frame away from it depending on which dot of its last cycle
+    /// the flag falls on. blargg's `02-vbl_set_time` and `06-suppression` walk
+    /// that dot one PPU clock at a time.
+    #[test]
+    fn test_ppustatus_read_lands_on_its_own_dot() {
+        const LDA_ABSOLUTE: u8 = 4;
+
+        // The flag's own dot is the one just after the read: the read wins that
+        // race, and the frame never gets the flag or its NMI.
+        let (value, vblank, cycles) = read_ppustatus_from(240, 330);
+        assert_eq!(value & 0x80, 0, "the flag is not up yet");
+        assert!(!vblank, "the read takes the frame's flag away");
+        assert_eq!(cycles, LDA_ABSOLUTE, "and there is no NMI for it either");
+
+        // One dot later the flag is up before the read: the read sees it and
+        // takes it away by clearing it. The line was high for part of the
+        // cycle, but never at the end of one, so nothing latched.
+        let (value, vblank, cycles) = read_ppustatus_from(240, 331);
+        assert_eq!(value & 0x80, 0x80, "the read sees the flag");
+        assert!(!vblank, "and clears it");
+        assert_eq!(cycles, LDA_ABSOLUTE, "the sample saw a low line at the end");
+
+        // Two dots earlier still puts the flag in the cycle before the read.
+        // The sample at the end of that cycle latches the line, and the poll
+        // that comes with it takes the interrupt - seven more cycles - before
+        // the read gets to clear the flag.
+        let (value, vblank, cycles) = read_ppustatus_from(240, 333);
+        assert_eq!(value & 0x80, 0x80, "the read still sees the flag");
+        assert!(!vblank, "and still clears it");
+        assert_eq!(
+            cycles,
+            LDA_ABSOLUTE + 7,
+            "but the NMI was taken ahead of the read"
+        );
+    }
+
+    /// The NMI line is sampled once per CPU cycle, so it has to be high at a
+    /// sample to be seen: a VBlank flag that a `$2002` read takes away inside
+    /// the cycle it was set in never reaches the CPU, while one that survives
+    /// to the end of its cycle latches.
+    #[test]
+    fn test_nmi_line_is_sampled_once_a_cycle() {
+        /// A bus with NMI enabled, sitting on the first dot of vertical
+        /// blanking's first scanline.
+        fn waiting_bus() -> NesBus {
+            let mut bus = NesBus::new();
+            bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
+            bus.ppu.scanline = 241;
+            bus.ppu.cycle = 0;
+            bus
+        }
+
+        // The flag is set on the cycle's first dot and a read two dots in takes
+        // it away before the sample at the end of the same cycle.
+        let mut bus = waiting_bus();
+        bus.advance_one_ppu_dot();
+        assert!(bus.ppu.vblank_flag_set(), "dot 1 sets the flag");
+        bus.advance_one_ppu_dot();
+        bus.read_ppu_register(0x2002);
+        assert!(!bus.ppu.vblank_flag_set(), "and the read takes it away");
+        bus.advance_one_ppu_dot();
+        bus.finish_cpu_cycle();
+        assert!(!bus.nmi_pending, "the sample never saw the line high");
+
+        // Without that read the line is still high when the cycle ends, so the
+        // latch is taken...
+        let mut bus = waiting_bus();
+        for _ in 0..3 {
+            bus.advance_one_ppu_dot();
+        }
+        bus.finish_cpu_cycle();
+        assert!(bus.nmi_pending, "the sample latched the line");
+
+        // ...and stays taken until the CPU services it: the line going low
+        // again does not take it back, which is what lets a game leave the
+        // VBlank flag set for the whole of vertical blanking.
+        bus.ppu.status.remove(PpuStatus::VBLANK);
+        bus.advance_one_cpu_cycle();
+        assert!(bus.nmi_pending, "the latch is the CPU's, not the line's");
+    }
+
+    /// The NMI latch is taken by the CPU when it services the interrupt, and
+    /// only a fresh rising edge of the line puts it back.
+    #[test]
+    fn test_servicing_the_nmi_does_not_relatch_a_held_line() {
+        let mut bus = NesBus::new();
+        bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
+        bus.ppu.scanline = 241;
+        bus.ppu.cycle = 0;
+        for _ in 0..3 {
+            bus.advance_one_ppu_dot();
+        }
+        bus.finish_cpu_cycle();
+        assert!(bus.nmi_pending);
+
+        // The CPU takes the interrupt: the latch is its own, and the line is
+        // still high.
+        bus.clear_nmi();
+        bus.advance_one_cpu_cycle();
+        bus.advance_one_cpu_cycle();
+        assert!(
+            !bus.nmi_pending,
+            "a line that never went low has no second edge to latch"
+        );
     }
 
     #[test]

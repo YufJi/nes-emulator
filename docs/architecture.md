@@ -9,7 +9,7 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 814 tests (all passing), including the nestest, blargg and
+- Test suite: 826 tests (all passing), including the nestest, blargg and
   AccuracyCoin real-ROM suites (which skip without ROMs in `roms/`)
 
 ---
@@ -827,8 +827,8 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 1/5 (`2`/`3`/`4`/`5` need cycle-exact vectoring) |
-| `ppu_vbl_nmi` | 5/10 |
+| `cpu_interrupts_v2` | 1/5 (`2`/`3`/`5` differ by one or two instructions; `4`'s offset tracks the frame counter's phase) |
+| `ppu_vbl_nmi` | 9/10 (only the odd-frame skip is left: it needs the dot the clock is skipped on) |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -837,12 +837,13 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
 | `apu_test` | 4/8 |
-| AccuracyCoin | 81 passed, 0 skipped, 47 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
+| AccuracyCoin | 82 passed, 0 skipped, 46 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 
-The failures are the roadmap, not a mystery: `mmc3_test_2` needs the A12/PPU-bus hook, the
-`ppu_vbl_nmi` and `cpu_interrupts` suites need the VBlank/NMI subtleties and the odd-frame
-skip, the `apu_test` ones are frame-counter and DMC timing, and the two remaining CPU
-failures are cycle-count bugs the ROMs localise precisely.
+The failures are the roadmap, not a mystery: `mmc3_test_2` and `ppu_vbl_nmi`'s last case need
+the exact dot a PPU event lands on - the A12 hook and the odd-frame skip, both of which want
+per-dot rendering; `cpu_interrupts_v2`'s four are down to one or two instructions each and
+track the frame counter's phase, which is also what the `apu_test` failures are; and the two
+remaining CPU failures are cycle-count bugs the ROMs localise precisely.
 
 The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
 asserted in both directions: a failure outside it is a regression, and an entry that starts
@@ -911,14 +912,19 @@ clone needs `npm run build:wasm` before building the front end.
   and `RenderTiming` chooses which. That is a knob for games whose splits sit a line high or
   low; making the choice unnecessary means drawing at dot granularity, which is the same
   work as §6's pipeline and is not on this list yet.
-- **The VBlank flag's neighbours are close but not exact**: the odd-frame dot skip, the
-  `$2002` read race (a read on the flag's own dot suppresses the flag *and* the NMI for that
-  frame) and the NMI that appears the moment NMI is enabled while the flag is set are all
-  implemented — blargg's `ppu_vbl_nmi` went from 1/10 to 4/10 on them. The register write
-  that enables NMI lands on the cycle the chip drives it, so the one-instruction delay
-  before the CPU answers that NMI falls out of the cycle order rather than needing a
-  stand-in. Still missing: the dot-exact suppression windows, and the exact dot the
-  odd-frame skip is decided on.
+- **The VBlank flag's neighbours are dot-exact, except the odd-frame skip**: a `$2002` read
+  is performed two dots into its own cycle, where the chip performs it, so a read on the dot
+  just before the flag is set takes the frame's flag *and* its NMI away, and one on the
+  flag's own dot reads it and clears it. The VBlank suppression window is that one dot wide.
+  The NMI line is the level the flag and the enable make up (`vblank && NMI enable`), sampled
+  once per CPU cycle: a line that comes and goes inside one cycle never reaches the CPU, and
+  one that does stays latched until the handler is entered — which is what keeps a long
+  vertical blanking from re-entering the handler on every poll, and what lets a `$2000` write
+  that raises the line be answered after the *next* instruction, its own instruction's poll
+  having already happened. blargg's `ppu_vbl_nmi` went from 1/10 to 9/10 on this; its last
+  case, `10-even_odd_timing`, and `mmc3_test_2/4-scanline_timing` both still need the exact
+  dot the odd-frame clock skip and a frame's first A12 rise are decided on, which is per-dot
+  rendering.
 - **The interrupt sequence runs cycle by cycle**: the lines are sampled on the penultimate
   cycle of each instruction, and the seven cycles that follow (two discarded reads, three
   pushes, two halves of the vector) are driven one cycle at a time, with the PPU and APU
@@ -926,12 +932,16 @@ clone needs `npm run build:wasm` before building the front end.
   (RTI does not), and a taken branch that stays in its page skips that poll. A write to
   `$2000-$401F` now lands on its own cycle - the last cycle of a store, the one before it
   for a read-modify-write's discarded write - instead of at the instruction's start, and on a
-  dot inside that cycle: the PPU's per-dot view sees it from the cycle's first dot, and the
-  APU's tick at the end of the cycle sees it too. That last point is what fixed blargg's
-  length-counter table and AccuracyCoin's two frame-counter tests, which were a cycle out of
-  phase before. Reads with side effects (`$2002`, `$2007`, `$4015`) are still performed at
-  the instruction's start, and the remaining `cpu_interrupts_v2`/`ppu_vbl_nmi` cases still
-  differ by one or two instructions - those tests measure to one PPU clock.
+  dot inside that cycle, the one the chip drives the bus on: the PPU's per-dot view sees it
+  from there on, and the APU's tick at the end of the same cycle sees it too. That last point
+  is what fixed blargg's length-counter table and AccuracyCoin's two frame-counter tests,
+  which were a cycle out of phase before. Reads with side effects are placed the same way -
+  a `$2002`/`$2007` read of `$2000-$3FFF` is performed two dots into the cycle the chip
+  performs it on, so the addressing phase and the access no longer share a cycle. The APU's
+  `$4015` read is the one still at the instruction's start: blargg's `apu_test` synchronises
+  through it, and the frame-counter phase it measures is a cycle or two out anyway, so moving
+  the read would only move that error. What is left of `cpu_interrupts_v2` is the interrupt
+  sequence's own cycle - those tests measure to one PPU clock.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
@@ -1029,12 +1039,13 @@ backlog, so they are written down here to stop them being re-litigated:
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **The accuracy backlog the test ROMs now name**: the fifteen remaining cases in §13.1 —
-   `cpu_interrupts_v2`'s four, `apu_test`'s four, `ppu_vbl_nmi`'s five, `mmc3_test_2`'s two —
-   plus MMC5's extended attributes, sprite 0 hit timing, the five mappers §8 defers, and the
-   PAL dot ratio. Almost all of them come down to one thing: knowing *which PPU dot* a CPU
-   action lands on, which means moving the rest of the CPU's bus accesses (reads with side
-   effects, DMA, the renderer) onto the cycles they really happen on.
+5. **The accuracy backlog the test ROMs now name**: the eleven remaining cases in §13.1 —
+   `cpu_interrupts_v2`'s four, `apu_test`'s four, `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s
+   two — plus MMC5's extended attributes, sprite 0 hit timing, the five mappers §8 defers, and
+   the PAL dot ratio. The register writes and the `$2002`/`$2007` reads are on their cycles
+   and dots now; what is left mostly comes down to the same thing one level down: the
+   interrupt sequence's own cycle, the frame counter's phase, DMA, and a renderer that draws
+   dot by dot rather than a scanline at a time.
 
 The cycle-granularity work has its own plan, with the measurements each phase produced:
 [`cycle-accuracy-plan.md`](./cycle-accuracy-plan.md). It is the document to pick up when this

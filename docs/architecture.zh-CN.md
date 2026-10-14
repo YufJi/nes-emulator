@@ -8,7 +8,7 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：814 个测试（全部通过），含 nestest、blargg、AccuracyCoin
+- 测试规模：826 个测试（全部通过），含 nestest、blargg、AccuracyCoin
   真实 ROM 套件（`roms/` 为空时自动跳过）
 
 ---
@@ -757,8 +757,8 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 1/5（`2`/`3`/`4`/`5` 需要 cycle 级精确的中断向量过程） |
-| `ppu_vbl_nmi` | 5/10 |
+| `cpu_interrupts_v2` | 1/5（`2`/`3`/`5` 只差一到两条指令；`4` 的偏移与帧计数器相位一致） |
+| `ppu_vbl_nmi` | 9/10（只剩奇数帧跳点：它需要"时钟在哪一个 dot 被跳过"） |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -767,12 +767,12 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
 | `apu_test` | 4/8 |
-| AccuracyCoin | 81 通过、0 跳过、47 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
+| AccuracyCoin | 82 通过、0 跳过、46 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
-这些失败不是谜团，就是路线图：`mmc3_test_2` 需要 A12/PPU 总线钩子，
-`ppu_vbl_nmi` 与 `cpu_interrupts` 需要 VBlank/NMI 细节与奇数帧跳点，
-`apu_test` 那几项是帧计数器与 DMC 时序，剩下的两处 CPU 失败则是 ROM 已经精确定位到具体
-指令的周期计数 bug。
+这些失败不是谜团，就是路线图：`mmc3_test_2` 与 `ppu_vbl_nmi` 最后一项需要 PPU 事件落在
+哪个 dot 上（A12 钩子与奇数帧跳点，两者都要逐 dot 渲染）；`cpu_interrupts_v2` 那四项
+每一项都只差一到两条指令，且都与帧计数器相位有关，`apu_test` 那几项也是；剩下的两处
+CPU 失败则是 ROM 已经精确定位到具体指令的周期计数 bug。
 
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。
@@ -829,20 +829,28 @@ flowchart LR
   要么影响第 *N* 行、要么影响第 *N+1* 行，由 `RenderTiming` 决定。这是给"分屏高/低一行"
   的游戏准备的旋钮；要让这个选择变得不必要，就得改成按 dot 渲染，那与 §6 的管线改造是
   同一件事，目前还不在清单里。
-- **VBlank 标志周边已经接近但不精确**：奇数帧跳点、`$2002` 读竞争（在标志置位那一 dot 读取会
-  同时抹掉该帧的标志与 NMI）、以及"VBlank 期间写 $2000 打开 NMI 立即触发"都已实现——
-  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 4/10。打开 NMI 的那次寄存器写入现在落在芯片
-  真正驱动的那个 cycle 上，所以"CPU 延后一条指令才响应"是 cycle 顺序自然的结果，不再需要
-  专门的代偿标记。仍缺：抑制窗口的 dot 级精度、以及奇数帧跳点判定所依据的确切 dot。
+- **VBlank 标志周边已经精确到 dot，只剩奇数帧跳点**：`$2002` 的读在它自己那个 cycle 的第二个
+  dot 之后执行，也就是芯片真正做这次访问的位置；因此"在标志置位前一个 dot 读取"会同时抹掉
+  这一帧的标志与 NMI，而"正好在标志置位那个 dot 读取"会读到标志并清掉它——抑制窗口就是
+  这一个 dot。NMI 线是"标志与使能"共同构成的电平（`vblank && NMI enable`），每个 CPU cycle
+  末尾采样一次：一个 cycle 内起落的电平不会被看到，而被看到的电平会一直锁存到 CPU 取走
+  这次中断为止——这既保证长时间 VBlank 下不会每次采样都重入处理程序，也让"打开 NMI 的
+  `$2000` 写入要到下一条指令之后才被响应"（它自己那条指令的采样周期已经过去了）自然成立。
+  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 9/10；最后一项 `10-even_odd_timing` 与
+  `mmc3_test_2/4-scanline_timing` 都需要"奇数帧跳点/一帧首个 A12 上升沿落在哪个 dot"，
+  也就是逐 dot 渲染。
 - **中断向量过程按 cycle 执行**：中断线在每条指令的倒数第二个 cycle 采样，随后的七个 cycle
   （两次丢弃读、三次压栈、两次取向量）逐个 cycle 推进，PPU 与 APU 交错在其间。CLI/SEI/PLP
   对中断使能的影响延后一条指令（RTI 不延后），未跨页的已跳转分支跳过那一次采样。对
   `$2000-$401F` 的写入现在落在它自己的 cycle 上（store 是最后一个 cycle，读改写的丢弃写
   提前一个 cycle），而不是指令开头；并且落在该 cycle 内的一个 dot 上——PPU 的逐 dot 视图
-  从该 cycle 的第一个 dot 起就能看到新值，而 cycle 末尾的 APU tick 也看得到。后面这一点正是
+  从那里开始就能看到新值，而同一个 cycle 末尾的 APU tick 也看得到。后面这一点正是
   blargg 长度计数器表与 AccuracyCoin 两项帧计数器测试从"差一个 cycle"变成通过的原因。
-  带副作用的读（`$2002`、`$2007`、`$4015`）仍在指令开头执行；剩下的
-  `cpu_interrupts_v2`/`ppu_vbl_nmi` 各项仍差一到两条指令——这些测试的精度是一 PPU clock。
+  带副作用的读也按同样的方式摆放——`$2000-$3FFF` 的 `$2002`/`$2007` 读取在芯片真正做这次
+  访问的那个 cycle 的第二个 dot 之后执行，于是寻址阶段与访问不再共用一个 cycle。仍在指令
+  开头执行的只有 APU 的 `$4015` 读：blargg 的 `apu_test` 用它做同步，而它测的帧计数器相位
+  本来还差一两个 cycle，现在挪这次读只会把误差挪个地方。`cpu_interrupts_v2` 剩下的部分
+  是中断向量过程自身的 cycle——这些测试的精度是一 PPU clock。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，
@@ -917,11 +925,11 @@ flowchart LR
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 15 项——`cpu_interrupts_v2` 的 4 项、
-   `apu_test` 的 4 项、`ppu_vbl_nmi` 的 5 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展属性、
-   sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。它们几乎都归结为同一件
-   事：要知道某个 CPU 动作落在**哪个 PPU dot** 上——也就是把 CPU 其余的总线访问（带副作用的
-   读、DMA、渲染器）也搬到它们真实发生的 cycle 上。
+5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 11 项——`cpu_interrupts_v2` 的 4 项、
+   `apu_test` 的 4 项、`ppu_vbl_nmi` 的最后 1 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展
+   属性、sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。寄存器写入与
+   `$2002`/`$2007` 读现在已经落在各自 cycle 的 dot 上；剩下的多半是同一件事再往下一层：
+   中断向量过程自身的 cycle、帧计数器相位、DMA，以及"整行渲染改成逐 dot 渲染"。
 
 cycle 精度这件事另有一份带各阶段实测数据的方案文档：
 [`cycle-accuracy-plan.zh-CN.md`](./cycle-accuracy-plan.zh-CN.md)。下次动手时从它开始；

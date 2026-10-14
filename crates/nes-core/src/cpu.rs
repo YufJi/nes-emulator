@@ -9,6 +9,38 @@ pub mod addressing;
 pub mod instructions;
 
 pub use addressing::AddressingResult;
+use instructions::InstructionHandler;
+
+/// A read the CPU leaves for the machine to place, on the dot the chip
+/// performs it.
+///
+/// The PPU's registers, `$2000-$3FFF`, are what the window is for: a `$2002`
+/// read clears the VBlank flag and takes the frame's NMI with it, and a `$2007`
+/// read moves the VRAM address, so *when* in its cycle the read happens is
+/// observable. The APU's `$4015` is deliberately not in the window yet: blargg's
+/// `apu_test` synchronises through it, and the frame-counter phase it measures
+/// is a cycle or two out anyway (§4.3 of the cycle plan), so moving the read
+/// now would only move that error around.
+///
+/// Written and read inside a single instruction, so it stays out of save
+/// states: the machine runs it before [`Cpu::execute_instruction`] returns.
+#[derive(Debug)]
+pub(crate) struct PendingAccess {
+    /// The handler that performs the access, held back until its cycle.
+    handler: InstructionHandler,
+    /// Effective address the addressing mode resolved.
+    addr: u16,
+    /// The page-crossing penalty the addressing mode reported.
+    extra_cycles: u8,
+    /// 1-based cycle of the instruction the handler runs on.
+    pub(crate) at_cycle: u8,
+    /// The cycle count the plan expects the handler to report.
+    ///
+    /// Read handlers return the addressing mode's page-crossing penalty and
+    /// the rest return zero; the plan's cycle arithmetic depends on which, so
+    /// a mismatch means the access is on the wrong cycle.
+    expected_handler_cycles: u8,
+}
 
 /// Which interrupt the CPU is in the middle of taking.
 ///
@@ -104,6 +136,16 @@ pub struct Cpu {
     /// Cleared at the start of every instruction, so it never outlives the one
     /// that set it.
     brk_vector_pending: bool,
+    /// Set while the machine is driving the cycles of one instruction.
+    ///
+    /// With it set, a read of `$2000-$401F` is left to the machine rather than
+    /// performed where the instruction asks for it: the machine runs the
+    /// handler on the cycle the chip performs the access on. A bus used on its
+    /// own - the CPU's unit tests - leaves it clear and gets the whole
+    /// instruction executed in one piece.
+    defer_register_reads: bool,
+    /// The access the instruction has left for the machine, if any.
+    pending_access: Option<PendingAccess>,
     /// Low half of the vector, fetched on the sequence's sixth cycle and used
     /// on the seventh.
     vector_low: u8,
@@ -185,6 +227,8 @@ impl Cpu {
             interrupt_step: 0,
             nmi_hijack: false,
             brk_vector_pending: false,
+            defer_register_reads: false,
+            pending_access: None,
             vector_low: 0,
         }
     }
@@ -257,6 +301,41 @@ impl Cpu {
     /// * `pc` - The program counter value to set
     pub fn set_pc(&mut self, pc: u16) {
         self.pc = pc;
+    }
+
+    /// Tell the CPU the machine is driving this instruction's cycles.
+    ///
+    /// See [`Cpu::defer_register_reads`]: the machine places a read of the
+    /// PPU/APU registers on the cycle the chip performs it, so it has to be the
+    /// one that runs the handler.
+    pub(crate) fn set_defer_register_reads(&mut self, defer: bool) {
+        self.defer_register_reads = defer;
+    }
+
+    /// The cycle of the instruction being run on which its handler has to run,
+    /// if it left one for the machine.
+    pub(crate) fn pending_access_cycle(&self) -> Option<u8> {
+        self.pending_access.as_ref().map(|access| access.at_cycle)
+    }
+
+    /// Run the handler the instruction held back, on the cycle its access
+    /// belongs to.
+    ///
+    /// The machine calls this once, on the cycle
+    /// [`Cpu::pending_access_cycle`] names; any register write the handler
+    /// makes is parked by the bus as usual, which is how a read-modify-write's
+    /// two writes still land on the two cycles after the read.
+    pub(crate) fn perform_pending_access(&mut self, bus: &mut dyn Bus) {
+        let pending = self
+            .pending_access
+            .take()
+            .expect("the machine only runs an access it was told about");
+        let handler_cycles = (pending.handler)(self, bus, pending.addr, pending.extra_cycles);
+        debug_assert_eq!(
+            handler_cycles, pending.expected_handler_cycles,
+            "the handler's cycle count has to match the cycle the access was placed on",
+        );
+        let _ = handler_cycles;
     }
 }
 

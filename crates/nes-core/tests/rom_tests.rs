@@ -60,15 +60,10 @@ fn blargg_ppu_vbl_nmi() {
     common::check_blargg_directory(
         "blargg/ppu_vbl_nmi/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // VBlank set/clear timing, NMI suppression and the odd-frame skip are
-        // all still approximate (§15.1).
-        &[
-            "05-nmi_timing.nes",
-            "06-suppression.nes",
-            "07-nmi_on_timing.nes",
-            "08-nmi_off_timing.nes",
-            "10-even_odd_timing.nes",
-        ],
+        // The VBlank flag's dot, the NMI line and the `$2002` reads that race
+        // them are placed per dot now; what is left needs per-dot rendering -
+        // the odd-frame skip, which is decided at pre-render dot 340 (§15.1).
+        &["10-even_odd_timing.nes"],
     );
 }
 
@@ -151,7 +146,7 @@ fn blargg_apu() {
 #[test]
 fn accuracy_coin_matches_its_baseline() {
     /// Tests AccuracyCoin reports as failing on this checkout.
-    const BASELINE_FAILURES: usize = 47;
+    const BASELINE_FAILURES: usize = 46;
     /// The ROM runs its suite one test per frame; this is the floor that says
     /// it really got going (the counter itself is reset whenever the results
     /// screen redraws, so its final value is timing-dependent).

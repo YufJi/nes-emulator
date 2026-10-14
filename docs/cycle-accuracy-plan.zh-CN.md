@@ -15,35 +15,41 @@ one PPU clock"（`ppu_vbl_nmi/readme.txt`）。`docs/architecture.md` §13.1 里
 
 ## 2. 目前进度
 
-两个阶段已提交、第三个停在工作区里，三者都没有让基线回退：
+这些工作已经分步落地。下表记录每一步做了什么、量到了什么；没有任何一步让基线回退：
 
 | 阶段 | 提交 | 做了什么 | 实测效果 |
 | --- | --- | --- | --- |
 | L1 | `4018bba` | 机器改为逐 CPU cycle 推进：3 个 PPU dot、1 个 APU tick、卡带看到的地址，交错进行而非按指令批量补 | ROM 结果零变化（57 pass / 17 known 逐条一致）；帧耗时 1.075 → 1.046 ms（release，nestest 连续 600 帧） |
 | L2 | `49d9d29` | 中断线在每条指令的倒数第二个 cycle 采样；7 cycle 的向量过程（2 次丢弃读、3 次压栈、2 次取向量）逐 cycle 执行 | 基线数量不变，但四个失败项的时序轨迹向期望值移动；AccuracyCoin 78 → 79 通过 |
 | L3 第 1 步 | `a2b13e9` | 对 `$2000-$401F` 的写入落在芯片真正驱动的那个 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个 cycle），`$2000` 写入抬起的 NMI 也在该 cycle 被接收 | ROM 数量零变化（57 pass / 17 known 与 AccuracyCoin 79/49 逐条一致）；`4-irq_and_dma` 的轨迹从错误形状变成 L3a 那份"与文档期望一致、只差常量偏移"的形状（`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`，CRC `5FA88FED` → `218E154C`）；`3-nmi_and_irq` 的 CRC 从 `90BC9498` 变为 `7E5D001A`；AccuracyCoin 两项错误码变化（`$0468`/`$0469` 由 0x06 变 0x0A，仍为失败）；帧耗时不变（1.033 → 1.034 ms，release，nestest 连续 600 帧） |
-| L3 第 2 步 | （本次改动） | 写入还落在该 cycle 内的一个 **dot** 上：PPU 的逐 dot 视图从该 cycle 的第一个 dot 起就能看到它，cycle 末尾的 APU tick 也看得到 | ROM 基线 57 pass / 17 known → **58 / 16**（`apu_test/5-len_timing`）；AccuracyCoin 79/49 → **81 / 47**（`Frame Counter 4-step`、`Frame Counter 5-step`）；`4-irq_and_dma` 的 CRC 从 `218E154C` 变为 `7DE0C30F`，`5-branch_delays_irq` 的 `BE443B12` → `29BB6E90`，`6-irq_flag_timing` 的子项前进（"Flag first set too late" → "Flag last set too soon"）；原本全绿的没有任何回退；帧耗时不变（1.034 → 1.032 ms，release，nestest 连续 600 帧）；dot 本身不被任何套件区分（0、1、2 结果逐字节相同） |
-| L3 第 3a 步 | （本次改动） | 中断序列在压栈之前被 NMI 抬起时，NMI 接管取向量：压栈内容仍属原序列，处理程序换成 NMI 的 | 无一项翻绿、无任何回退（58 pass / 16 known、AccuracyCoin 81/47）；`3-nmi_and_irq` 在 "NMI occurs after CLC, interrupting IRQ" 五行上第二列与 readme 对齐（`23` → `00`），该处第一列由 `27` → `23`（文档值 `20`） |
+| L3 第 2 步 | `d4bf4ce` | 写入还落在该 cycle 内的一个 **dot** 上：PPU 的逐 dot 视图从该 cycle 的第一个 dot 起就能看到它，cycle 末尾的 APU tick 也看得到 | ROM 基线 57 pass / 17 known → **58 / 16**（`apu_test/5-len_timing`）；AccuracyCoin 79/49 → **81 / 47**（`Frame Counter 4-step`、`Frame Counter 5-step`）；`4-irq_and_dma` 的 CRC 从 `218E154C` 变为 `7DE0C30F`，`5-branch_delays_irq` 的 `BE443B12` → `29BB6E90`，`6-irq_flag_timing` 的子项前进（"Flag first set too late" → "Flag last set too soon"）；原本全绿的没有任何回退；帧耗时不变（1.034 → 1.032 ms，release，nestest 连续 600 帧）；dot 本身不被任何套件区分（0、1、2 结果逐字节相同） |
+| L3 第 3a 步 | `32864f1` | 中断序列在压栈之前被 NMI 抬起时，NMI 接管取向量：压栈内容仍属原序列，处理程序换成 NMI 的 | 无一项翻绿、无任何回退（58 pass / 16 known、AccuracyCoin 81/47）；`3-nmi_and_irq` 在 "NMI occurs after CLC, interrupting IRQ" 五行上第二列与 readme 对齐（`23` → `00`），该处第一列由 `27` → `23`（文档值 `20`） |
+| L3 第 4 步 | （本次改动） | `$2000-$3FFF` 的读落在它自己的 cycle **与 dot** 上——机器在芯片真正做这次访问的那个 cycle 的第二个 dot 之后运行 handler；VBlank 抑制窗口移到标志置位前一个 dot；NMI 线改为每个 CPU cycle 采样一次，而不再在标志抬起的那个 dot 直接置位 | ROM 基线 58 pass / 16 known → **62 / 12**（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`）；AccuracyCoin 81/47 → **82 / 46**；`2-nmi_and_brk` 前四行与 readme 一致（`27 26 26 36`），`3-nmi_and_irq` 第二列在前半段与 readme 一致；帧耗时 1.11 → 1.16 ms（release，nestest 连续 600 帧，两者同场测量），几乎全部来自逐 cycle 的采样 |
 
-当前状态：`cargo test --workspace` 820 全绿、ROM 基线 **58 pass / 16 known**、
-AccuracyCoin **81 通过 / 47 失败**、`STATE_VERSION` 为 4。
+当前状态：`cargo test --workspace` 826 全绿、ROM 基线 **62 pass / 12 known**、
+AccuracyCoin **82 通过 / 46 失败**、`STATE_VERSION` 为 4。
 
-另有两个实验已经实现、量过、并**整体撤回**；它们的证据正是后文的起点（§4）。
-L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当初逼它撤回的依赖者一起搬了过去。
+另有三个实验已经实现、量过、并**整体撤回**；它们的证据正是后文的起点（§4）。
+L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当初逼它撤回的依赖者一起搬了过去；
+第 4 步的读实验则变成了第 4 步本身（它做出来的二分数据正是确定读落在哪个 dot 的依据）。
 
 ## 3. 还剩什么
 
 ### 3.1 测试 ROM 已经点名的欠账
 
-剩 15 项，且并非同一类问题：
+剩 11 项，且并非同一类问题：
 
 | 套件 | 项目 | 需要什么 |
 | --- | --- | --- |
-| `cpu_interrupts_v2` | `2-nmi_and_brk`、`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` | NMI 能抢占进行中的中断序列，以及处理程序开始时的精确 CPU cycle——即 §4 的工作 |
-| `ppu_vbl_nmi` | `05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`、`10-even_odd_timing` | `$2002` 读与 `$2000`/`$2001` 写到 **1 个 PPU dot** 的精度——§4 的工作 |
+| `cpu_interrupts_v2` | `2-nmi_and_brk`、`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` | 中断向量过程自身的 cycle——它前后的读/写现在已经各自落在自己的 cycle 上：`4-irq_and_dma` 剩下的偏移与帧计数器相位一致（§4.3），另外三项都只差一到两条指令 |
+| `ppu_vbl_nmi` | `10-even_odd_timing` | 奇数帧时钟跳点判定所在的 dot——与 `4-scanline_timing` 一样都在等逐 dot 渲染 |
 | `mmc3_test_2` | `4-scanline_timing` | 一帧中首个 A12 上升沿落在哪个 dot——§4，加上已有的逐 dot A12 模型 |
 | `ppu_open_bus` | 整个 ROM | PPU 数据总线衰减，**独立特性**，与 cycle 无关 |
 | `apu_test` | `4-jitter`、`6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates` | 帧计数器与 DMC 时序；`5-len_timing` 其实**不是**长度计数器 bug，而是写入相位问题，第 2 步已修好 |
+
+又有四项离开清单：§4.2 第 1-4 步把寄存器写入与 `$2002` 读放到了各自的 cycle 与 dot 上，
+并给 NMI 线加上了采样——这正是 `05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、
+`08-nmi_off_timing` 一直在等的。
 
 `4-irq_and_dma` 离通过最近，也是最有用的尺子：§4.2 的第一步（已实现）已经把它的轨迹推到
 "与文档期望形状一致、只差一个常量偏移"。
@@ -74,7 +80,7 @@ Zapper 与四人手柄、离散板卡的 bus conflict（2/3/7 等）、FDS 与 N
 
 ## 4. 方案
 
-### 4.1 两个已撤回实验的结论
+### 4.1 已撤回实验的结论
 
 **L2b——让 NMI 抢占进行中的序列。** 实现了 `poll_hijack` 与"被抢占后改取向量"：`3-nmi_and_irq`
 的轨迹进一步向文档期望靠近（CRC `90BC9498` → `14B79C72`），也有单测钉住 B 位行为，但
@@ -174,6 +180,7 @@ mask 的生效时间点也跟着移动了），以及 `apu_test/2-len_table`、`
   600 帧，约 7%），而 ROM 结果一个都没动。把停放整体关掉仍是 1.11 ms，说明代价来自优化器
   放弃了对热 cycle 循环的优化，而不是写入处理本身。最终落地的形状让循环保持原样——只多一个
   内联小助手里的 `Option`——并把写入放在该 cycle 的第一个 dot 上，这样完全不需要逐 dot 推进。
+  （第 4 步把它移到了 cycle 内第二个 dot 之后，即芯片做一次访问的那个点，见下文。）
 
 **第 3 步：在 L3 之上重试 NMI 抢占（L2b）。** 写入与其依赖者都到位后，重新应用那份搁置的
 抢占补丁并测量：预期 `3-nmi_and_irq` 从中获益，且 `$0452` 那个 AccuracyCoin 项不再掉。
@@ -225,28 +232,51 @@ clock** 的精度（"the loop will effectively read $2002 one PPU clock later ea
 `$2002` 的读能落在自己那个 dot 之前，中断序列这边做什么都推不动它。它的 readme 自己就提醒过
 （"Occasionally fails on NES due to PPU-CPU synchronization"）。
 
-**第 4 步：带副作用的读取。** `$2002` 的读会清 VBlank 标志，`$2007` 的读会推进 VRAM 地址，
-两者目前都发生在指令开头。`02-vbl_set_time` 现在靠粒度侥幸通过，而 `06-suppression` 与
-`05-nmi_timing` 不行。要把读取放到它真实的 cycle，需要把寻址阶段与数据访问拆到不同 cycle，
-也就是把 `Cpu::execute_instruction` 拆成"取操作数"与"执行访问与操作"两段，中间由机器推进
-寻址 cycle。可以先只覆盖能碰 `$2000-$3FFF` 与 `$4015-$4017` 的指令。
+**第 4 步（已完成）：带副作用的读取，以及 NMI 线。** `$2002` 的读会清 VBlank 标志，`$2007`
+的读会推进 VRAM 地址；两者过去都发生在指令开头，早三个 cycle，而且完全不看 dot。
+`02-vbl_set_time` 靠这种粒度侥幸通过，`06-suppression` 与 `05-nmi_timing` 则不行。这一
+步挪了三样东西，每样都单独量过。
 
-**第 4 步第一次尝试（已量、已撤回）。** 把 `$2002` 读的**清除**搬到读自己的 cycle，而值仍在指令
-要的地方返回——拆成 `Ppu::read_ppustatus` / `Ppu::clear_ppustatus`，清除落在指令最后一个 cycle——
-正好移动了上文调查所预言的东西，而且不需要完整的"指令非原子"改造：
+*读落在它自己的 cycle 与 dot 上。* 本来最直接的走法是把 `Cpu::execute_instruction` 拆成
+"取操作数"与"执行访问"两段；落地的形状更小，而且不需要这个拆分：CPU 仍然一次性完成全部
+寻址，只是把落在 PPU 窗口上的读像写入那样交给机器。`Cpu::plan_access` 算出 handler 的访问
+属于指令的哪个 cycle——load 是最后一个 cycle（付跨页代价的再晚一个 cycle），读改写模式的
+读是倒数第三个 cycle，这就是 `Access` 按 opcode 助记符编码出来的东西——然后由
+`PendingAccess` 把 handler 交出去；机器在该 cycle 的第二个 dot 之后运行它
+（`NesBus::advance_one_cpu_cycle_with_read`）。
 
-- `2-nmi_and_brk` 从十行 `02 36 00`（NMI 从未到达）变成 `27 36 00` ×5、`26 36 00` ×2、
-  `36 00 00` ×3——即文档记录的形状，含接管那些行。
-- `06-suppression` 第 04 行由 `- -` 变为 `- N`（CRC `2F686C63` → `3FE15516`）。
-- AccuracyCoin `$0406`（Dummy read cycles）错误码 0x12 → 0x06。
-- 其余不动；58 pass / 16 known 与 81/47 保持不变。
+*"第二个 dot"是量出来的，不是选的。* 第 4 步的第一次尝试——只在读自己的 cycle 做**清除**，
+而值仍留在指令开头返回——让 `02-vbl_set_time` 量测的那一对读的清除晚了一个 cycle
+（`00 - -`，而 readme 是 `00 - V`），因此撤回；它也证明了读的**值**必须和清除一起搬，
+再怎么重排清除的位置都做不到。改为二分读落在哪个 dot，用 `05-nmi_timing`、
+`06-suppression` 与 `02-vbl_set_time` 当尺子，得到的是一条干净的"每 dot 一行"梯度：
+放在该 cycle 开头时 NMI 边界早两行，放在末尾时晚三行，中间那个 dot 正好。同一个窗口也
+就是 VBlank 抑制竞争最终的样子：宽度一个 dot——读停在 scanline 241 的 dot 0 上，它的下一个
+dot 正是标志置位那个 dot。
 
-但它打断了一条全绿的线：`ppu_vbl_nmi/02-vbl_set_time` 的轨迹变成 `00 - - …`，而它的 readme 记的是
-`00 - V …`——对它量测的那一对读来说，清除晚了一个 cycle。故撤回、没有落地。不过两个端点现在都有
-实测：清除在指令开头时 `02-vbl_set_time` 全绿而 `2-nmi_and_brk` 全死；清除在最后一个 cycle 时正好
-相反。所以下一步是在这两个位置之间**二分**"清除落在哪个 cycle"（若还不够，再定它在该 cycle 内的
-dot），尺子就是 `02-vbl_set_time`、`06-suppression` 与 `2-nmi_and_brk`。另一处 `02-vbl_set_time`
-敏感的地方是 `Ppu::clear_ppustatus` 里的 `cycle <= 1` 竞争窗口（最宽三个 dot）。
+*NMI 线每个 cycle 采样一次。* `NesBus::nmi_pending` 过去在标志抬起的那个 dot 直接置位，
+这使 `06-suppression` 的 `05`/`06` 两行点燃了硬件不会有的 NMI（在同一个 cycle 里清掉标志
+的那次读收不回这条线）。现在它是由"每个 CPU cycle 末尾一次采样"留下的锁存：一个 cycle
+内起落的电平永远不会被看到，而被看到的电平会一直锁存到 CPU 取走这次中断。这正是
+`06-suppression` 里 `05 V -` 与 `07 V N` 的区别，也是 `07-nmi_on_timing` 第 02-04 行能
+保住 NMI 的原因——`$2000` 写入在某个 cycle 里抬起了线，而那一个 cycle 末尾的采样看到了
+它；之后同一条指令里那次清掉标志的 `$2002` 读收不回这个锁存。
+
+*窗口只覆盖 PPU。* 被延后的是 `$2000-$3FFF`；APU 的 `$4015` 暂时不在内：blargg 的
+`apu_test` 用它做同步，而它测的帧计数器相位本来还差一两个 cycle（§4.3），现在挪这次读
+只会把误差挪个地方。这是本步唯一留待回头处理的部分。
+
+实测：ROM 基线 58 pass / 16 known → **62 / 12**（`05-nmi_timing`、`06-suppression`、
+`07-nmi_on_timing`、`08-nmi_off_timing`——blargg 的 `ppu_vbl_nmi` 现在 9/10，只剩奇数帧
+跳点）；AccuracyCoin 81 通过 / 47 失败 → **82 / 46**；原本全绿的没有任何回退，
+`02-vbl_set_time`、`04-nmi_control`、`3-A12_clocking`、`5-len_timing` 与 `oam_stress` 都
+在内。`2-nmi_and_brk` 的前四行已经与 readme 一致（`27 26 26 36`，文档是
+`27 26 26 36 00 …`），`3-nmi_and_irq` 第二列在前半段与 readme 的 `00` 一致；两者距离完整
+表格还差的部分，是第 3 步的接管逻辑遇上测试自身的逐帧漂移，而不是读的摆放位置能够到的。
+代价：逐 cycle 采样约占帧耗时的 4%（1.11 → 1.16 ms/帧，两者在同一场测量，release、
+nestest 连续 600 帧）；摆放读本身是免费的，而把**写**从该 cycle 的第一个 dot 移到与读相同
+的 dot 也没有可测量的代价——这只是让两次访问在同一个点上，`5-len_timing` 与 AccuracyCoin
+的帧计数器测试依旧全绿。
 
 ### 4.3 L4——DMA 与渲染器（在 L3 之后）
 
@@ -270,12 +300,16 @@ dot），尺子就是 `02-vbl_set_time`、`06-suppression` 与 `2-nmi_and_brk`�
    第 1 步已经把 `10-even_odd_timing` 从 "skipped too late" 变成 "skipped too soon"，而 dot
    并不能推动它；因此这两项现在更像是等 §6 决策 2 所说的逐 dot PPU 工作，而不是等写入位置的
    调整。
-3. L3 第 3 步——`2-nmi_and_brk`、`3-nmi_and_irq`。
-4. L3 第 4 步——`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`。
+3. L3 第 3 步——**IRQ 侧与 BRK 取向量已完成，读侧原本卡住的部分由第 4 步解开**：抢占本身
+   已在 3a/3b 落地，而 `2-nmi_and_brk` 与 `3-nmi_and_irq` 仍失败的那些行，其实是测试自己的
+   `$2002` 同步问题，也就是第 4 步。
+4. L3 第 4 步——**已完成**：四个 `ppu_vbl_nmi` 项全部翻绿。第 3 步等的两个
+   `cpu_interrupts_v2` 项也随之前进（见第 4 步的实测），但还没到；它们剩下的是中断向量过程
+   自身的 cycle，而不是读。
 5. L4——DMA/帧计数器那一组，然后是 sprite 0 时序。
 
 每一步一个提交，且只有"ROM 基线不回退"才保留：套件本身带有"已知不通过"清单，并**双向断言**
-（`tests/rom_tests.rs`）；AccuracyCoin 带失败数 ratchet（当前 49）。
+（`tests/rom_tests.rs`）；AccuracyCoin 带失败数 ratchet（当前 46）。
 
 ## 5. 验证流程（前面每个阶段都在用）
 
