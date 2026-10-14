@@ -730,9 +730,13 @@ impl NesBus {
         } else if scanline == 241 {
             // Start of VBlank
             if cycle == 1 {
-                self.ppu.status.insert(PpuStatus::VBLANK);
-                if self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE) {
-                    self.nmi_pending = true;
+                // A $2002 read on this dot takes the frame away from the flag:
+                // neither the flag nor the NMI appears.
+                if !self.ppu.take_vblank_suppression() {
+                    self.ppu.status.insert(PpuStatus::VBLANK);
+                    if self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE) {
+                        self.nmi_pending = true;
+                    }
                 }
             }
         } else if scanline == pre_render {
@@ -808,11 +812,14 @@ impl Bus for NesBus {
     }
 
     fn nmi_pending(&self) -> bool {
-        self.nmi_pending
+        // The PPU can raise the NMI on its own, without waiting for the next
+        // VBlank: enabling NMI while the flag is already set does it.
+        self.nmi_pending || self.ppu.nmi_pending()
     }
 
     fn clear_nmi(&mut self) {
         self.nmi_pending = false;
+        self.ppu.clear_nmi();
     }
 
     fn irq_pending(&self) -> bool {
@@ -907,7 +914,20 @@ impl NesBus {
             // Advance PPU cycle
             self.ppu.cycle += 1;
 
-            if self.ppu.cycle > 340 {
+            // While anything is being rendered, the pre-render line is one dot
+            // short on odd frames: the picture runs at 60.0985 Hz instead of an
+            // even 60.1, and blargg's even/odd-frame tests measure exactly this
+            // dot.
+            let rendering = self
+                .ppu
+                .mask
+                .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+            let skip_odd_frame_dot = self.ppu.scanline == self.region.last_scanline()
+                && self.ppu.cycle == 340
+                && rendering
+                && self.ppu.frame & 1 == 1;
+
+            if self.ppu.cycle > 340 || skip_odd_frame_dot {
                 self.ppu.cycle = 0;
                 self.ppu.scanline += 1;
 

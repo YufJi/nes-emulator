@@ -188,6 +188,9 @@ pub struct Ppu {
     read_buffer: u8,
     /// Open bus latch for PPU register reads
     open_bus_latch: u8,
+    /// Set when a $2002 read wins the race against the VBlank flag, so the flag
+    /// and its NMI are skipped for this frame
+    suppress_vblank: bool,
 }
 
 crate::state::state_fields!(Ppu {
@@ -209,6 +212,7 @@ crate::state::state_fields!(Ppu {
     nmi_pending,
     read_buffer,
     open_bus_latch,
+    suppress_vblank,
 });
 
 impl Default for Ppu {
@@ -248,6 +252,7 @@ impl Ppu {
             nmi_pending: false,
             read_buffer: 0,
             open_bus_latch: 0,
+            suppress_vblank: false,
         }
     }
 
@@ -278,6 +283,7 @@ impl Ppu {
 
         // Reset internal state
         self.nmi_pending = false;
+        self.suppress_vblank = false;
         self.read_buffer = 0;
         self.open_bus_latch = 0;
     }
@@ -308,6 +314,18 @@ impl Ppu {
                 // waiting for the status bar split, so leaving it set stalls
                 // their timing loops. Bits 0-4 are not driven and read back as
                 // open bus.
+                //
+                // A read landing on the dot the VBlank flag is about to be set
+                // wins that race: the flag never appears for this frame, and
+                // neither does the NMI it would have raised. This is what the
+                // suppression tests in blargg's suite are about, and games use
+                // it to hold back the NMI for a frame.
+                // The whole CPU step is three dots wide, so a read that lands
+                // anywhere in the step containing the flag's own dot is racing
+                // it. blargg's `02-vbl_set_time` is what pins this window down.
+                if self.scanline == 241 && self.cycle <= 1 {
+                    self.suppress_vblank = true;
+                }
                 let status = self.status.bits();
                 self.status.remove(
                     PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
@@ -398,13 +416,24 @@ impl Ppu {
 
     /// Write to PPUCTRL ($2000)
     fn write_ppuctrl(&mut self, value: u8) {
+        let nmi_was_enabled = self.ctrl.contains(PpuCtrl::NMI_ENABLE);
         self.ctrl = PpuCtrl::from_bits_truncate(value);
 
         // Update temporary VRAM address bits 10-11 (nametable select)
         // t: ....BA.. ........ = d: ......BA
         self.t = (self.t & !0x0C00) | ((value as u16 & 0x03) << 10);
 
-        // TODO: NMI logic when VBlank is active
+        // The NMI line follows "NMI enabled AND VBlank flag set" while it is
+        // set, so enabling it in the middle of vertical blanking raises the
+        // interrupt at once rather than waiting for the next frame. Disabling
+        // it takes the request back.
+        let nmi_enabled = self.ctrl.contains(PpuCtrl::NMI_ENABLE);
+        let vblank = self.status.contains(PpuStatus::VBLANK);
+        if nmi_enabled && vblank && !nmi_was_enabled {
+            self.nmi_pending = true;
+        } else if !nmi_enabled && self.nmi_pending {
+            self.nmi_pending = false;
+        }
     }
 
     /// Write to PPUMASK ($2001)
@@ -617,6 +646,14 @@ impl Ppu {
         self.frame
     }
 
+    /// Take the "a $2002 read won the VBlank race" flag, if it was set.
+    ///
+    /// The bus calls this on the dot the flag would otherwise appear, so the
+    /// suppression lasts exactly the frame it was made for.
+    pub fn take_vblank_suppression(&mut self) -> bool {
+        core::mem::take(&mut self.suppress_vblank)
+    }
+
     /// Step the PPU by one dot (1/3 CPU cycle)
     pub fn step(&mut self) {
         // TODO: Implement PPU rendering logic
@@ -661,6 +698,27 @@ mod tests {
         assert_eq!(ppu.scanline, 0);
         assert_eq!(ppu.cycle, 0);
         assert_eq!(ppu.frame, 0);
+    }
+
+    /// A $2002 read landing on the VBlank flag's own dot takes the frame's flag
+    /// and NMI away, and the suppression is consumed exactly once.
+    #[test]
+    fn test_ppustatus_read_wins_the_vblank_race() {
+        let mut ppu = Ppu::new();
+        ppu.ctrl = PpuCtrl::NMI_ENABLE;
+        ppu.scanline = 241;
+        ppu.cycle = 1;
+
+        let value = ppu.read_register(0x2002);
+        assert_eq!(value & 0x80, 0, "the flag is not visible on the dot it is set");
+        assert!(ppu.take_vblank_suppression(), "the frame's VBlank is suppressed");
+        assert!(!ppu.take_vblank_suppression(), "and only for that one frame");
+
+        // A read anywhere else behaves as an ordinary status read.
+        ppu.scanline = 241;
+        ppu.cycle = 100;
+        ppu.read_register(0x2002);
+        assert!(!ppu.take_vblank_suppression());
     }
 
     #[test]

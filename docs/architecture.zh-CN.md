@@ -759,7 +759,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 0/5 |
-| `ppu_vbl_nmi` | 1/10（只有 `01-vbl_basics`） |
+| `ppu_vbl_nmi` | 4/10 |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -768,7 +768,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
 | `apu_test` | 3/8 |
-| AccuracyCoin | 146 项全部跑到，78 通过、0 跳过、50 失败 |
+| AccuracyCoin | 78 通过、0 跳过、50 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 需要 A12/PPU 总线钩子，
 `ppu_vbl_nmi` 与 `cpu_interrupts` 需要 VBlank/NMI 细节与奇数帧跳点，
@@ -830,6 +830,10 @@ flowchart LR
   要么影响第 *N* 行、要么影响第 *N+1* 行，由 `RenderTiming` 决定。这是给"分屏高/低一行"
   的游戏准备的旋钮；要让这个选择变得不必要，就得改成按 dot 渲染，那与 §6 的管线改造是
   同一件事，目前还不在清单里。
+- **VBlank 标志周边已经接近但不精确**：奇数帧跳点、`$2002` 读竞争（在标志置位那一 dot 读取会
+  同时抹掉该帧的标志与 NMI）、以及"VBlank 期间写 $2000 打开 NMI 立即触发"都已实现——
+  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 4/10。仍缺：立即触发时 CPU 要**延后一条指令**
+  才响应 NMI、抑制窗口的 dot 级精度、以及奇数帧跳点判定所依据的确切 dot。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，

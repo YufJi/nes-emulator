@@ -828,7 +828,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 0/5 |
-| `ppu_vbl_nmi` | 1/10 (only `01-vbl_basics`) |
+| `ppu_vbl_nmi` | 4/10 |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -837,7 +837,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
 | `apu_test` | 3/8 |
-| AccuracyCoin | 146 ran, 78 passed, 0 skipped, 50 failing |
+| AccuracyCoin | 78 passed, 0 skipped, 50 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2` needs the A12/PPU-bus hook, the
 `ppu_vbl_nmi` and `cpu_interrupts` suites need the VBlank/NMI subtleties and the odd-frame
@@ -911,6 +911,12 @@ clone needs `npm run build:wasm` before building the front end.
   and `RenderTiming` chooses which. That is a knob for games whose splits sit a line high or
   low; making the choice unnecessary means drawing at dot granularity, which is the same
   work as §6's pipeline and is not on this list yet.
+- **The VBlank flag's neighbours are close but not exact**: the odd-frame dot skip, the
+  `$2002` read race (a read on the flag's own dot suppresses the flag *and* the NMI for that
+  frame) and the NMI that appears the moment NMI is enabled while the flag is set are all
+  implemented — blargg's `ppu_vbl_nmi` went from 1/10 to 4/10 on them. Still missing: the
+  one-instruction delay before the CPU services that immediate NMI, the dot-exact
+  suppression windows, and the exact dot the odd-frame skip is decided on.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside

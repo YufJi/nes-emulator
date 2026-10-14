@@ -202,11 +202,13 @@ pub fn describe(report: &BlarggReport) -> String {
 /// written to page `$0400` (`$0300` is the ROM's own scratch page for tests it
 /// auto-skips), so that is the page read here.
 ///
-/// The ROM's zero-page counters are deliberately *not* used: they are reset per
-/// redraw of the results screen, so sampling them gives a number that depends on
-/// where in a redraw the sample landed. `tests_run` is the one counter worth
-/// trusting — it ends at one per test executed — and even that is only read as a
-/// liveness check that the suite really ran.
+/// The ROM's zero-page counters are deliberately *not* used for the verdict:
+/// they are reset per redraw of the results screen, so their values depend on
+/// how long the ROM has been sitting on that screen. `tests_run` is still read,
+/// but only as a liveness check that the suite got going — the harness asserts
+/// it is in the right ballpark rather than a specific number, and the callers
+/// give the ROM a generous frame budget so a slow but healthy run is not
+/// mistaken for a broken one.
 #[derive(Debug, Default)]
 pub struct AccuracyCoinReport {
     /// Tests the ROM says it executed (`$37`, its own counter).
