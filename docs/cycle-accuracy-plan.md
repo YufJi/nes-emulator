@@ -24,10 +24,11 @@ the baselines:
 | --- | --- | --- | --- |
 | L1 | `4018bba` | The machine advances one CPU cycle at a time: three PPU dots, an APU tick, the cartridge's view of the bus — interleaved, instead of batched per instruction | No ROM change at all (57 pass / 17 known, identical); frame cost 1.075 → 1.046 ms (release, 600 frames of nestest) |
 | L2 | `49d9d29` | Interrupt lines sampled on the penultimate cycle of each instruction; the seven-cycle vector sequence (two discarded reads, three pushes, two vector halves) driven cycle by cycle | Baselines unchanged in count, four failing tests' timing traces moved toward the expected patterns; AccuracyCoin 78 → 79 passing |
-| L3 step 1 | (this change) | Writes to `$2000-$401F` land on the cycle the chip drives them — the last cycle of a store, the cycle before it for a read-modify-write's discarded write — and the NMI a `$2000` write raises is taken up on that cycle | No ROM count change (57 pass / 17 known and AccuracyCoin 79/49 identical); `4-irq_and_dma`'s trace moved from the wrong shape to the documented one with the L3a offset (`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`, CRC `5FA88FED` → `218E154C`); `3-nmi_and_irq`'s CRC moved `90BC9498` → `7E5D001A`; two AccuracyCoin error codes changed (`$0468`/`$0469` 0x06 → 0x0A, still failing); frame cost unchanged (1.033 → 1.034 ms, release, 600 frames of nestest) |
+| L3 step 1 | `a2b13e9` | Writes to `$2000-$401F` land on the cycle the chip drives them — the last cycle of a store, the cycle before it for a read-modify-write's discarded write — and the NMI a `$2000` write raises is taken up on that cycle | No ROM count change (57 pass / 17 known and AccuracyCoin 79/49 identical); `4-irq_and_dma`'s trace moved from the wrong shape to the documented one with the L3a offset (`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`, CRC `5FA88FED` → `218E154C`); `3-nmi_and_irq`'s CRC moved `90BC9498` → `7E5D001A`; two AccuracyCoin error codes changed (`$0468`/`$0469` 0x06 → 0x0A, still failing); frame cost unchanged (1.033 → 1.034 ms, release, 600 frames of nestest) |
+| L3 step 2 | (this change) | The write also lands on a *dot* inside that cycle: the PPU's per-dot view sees it from the cycle's first dot, and the APU tick at the end of the cycle sees it | ROM baseline 57 pass / 17 known → **58 / 16** (`apu_test/5-len_timing`); AccuracyCoin 79/49 → **81 / 47** (`Frame Counter 4-step`, `Frame Counter 5-step`); `4-irq_and_dma`'s CRC moved `218E154C` → `7DE0C30F`, `5-branch_delays_irq`'s `BE443B12` → `29BB6E90`, `6-irq_flag_timing` moved a sub-test ("Flag first set too late" → "Flag last set too soon"); nothing that was green regressed; frame cost unchanged (1.034 → 1.032 ms, release, 600 frames of nestest); the dot itself is not discriminated by any suite (0, 1 and 2 are byte-identical) |
 
-Current state: `cargo test --workspace` 818 green, ROM baseline **57 pass / 17 known**,
-AccuracyCoin **79 passed / 49 failing**, `STATE_VERSION` 4.
+Current state: `cargo test --workspace` 820 green, ROM baseline **58 pass / 16 known**,
+AccuracyCoin **81 passed / 47 failing**, `STATE_VERSION` 4.
 
 Two experiments were implemented, measured and **reverted**; their evidence is the starting
 point for what follows (§4). L3a's bus-side parking has since come back as L3 step 1, with
@@ -37,7 +38,7 @@ the dependents its revert was about moved along with it.
 
 ### 3.1 The accuracy backlog the ROM suites name
 
-Sixteen cases remain. They are not all the same kind of problem:
+Fifteen cases remain. They are not all the same kind of problem:
 
 | Suite | Cases | What they need |
 | --- | --- | --- |
@@ -45,7 +46,7 @@ Sixteen cases remain. They are not all the same kind of problem:
 | `ppu_vbl_nmi` | `05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing`, `10-even_odd_timing` | One-PPU-dot accuracy for `$2002` reads and `$2000`/`$2001` writes — §4's work |
 | `mmc3_test_2` | `4-scanline_timing` | The exact dot the first A12 rise of a frame lands on — §4, plus the existing dot-level A12 model |
 | `ppu_open_bus` | the whole ROM | PPU data-bus decay, a **separate feature**, nothing to do with cycles |
-| `apu_test` | `4-jitter`, `5-len_timing`, `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates` | Frame-counter and DMC timing; `5-len_timing` is a length-counter bug, the rest are cycle/DMA work |
+| `apu_test` | `4-jitter`, `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates` | Frame-counter and DMC timing; `5-len_timing` turned out **not** to be a length-counter bug but a write-phase one, and step 2 fixed it |
 
 `4-irq_and_dma` is the closest to green and the most useful yardstick: the plan's first
 step - implemented - moved its trace to the documented shape with a constant offset (§4.2).
@@ -137,14 +138,43 @@ L3a had broken: baseline identical, 57 pass / 17 known, AccuracyCoin 79/49.
   cycle itself. It writes the *old* value, so today it cannot raise an NMI either way; step
   2's dot offset is where that stops being a coincidence.
 
-**Step 2: the mask's per-dot phase.**
+**Step 2 (done): the write's dot inside its cycle.**
 
 - `$2001` currently takes effect on a cycle boundary; the A12 model reads the mask per dot
   (§`NesBus::ppu_bus_address`). Decide and implement where inside the write's cycle the register
-  takes effect — i.e. give the deferred write a *dot* offset, not just a cycle.
-- This is what `mmc3_test_2/3-A12_clocking` and `10-even_odd_timing` measure.
-- Verify with `mmc3_test_2` and `ppu_vbl_nmi`, and re-check `apu_test/2-len_table` and
-  `oam_stress`, which regressed in the L3a experiment for the same reason.
+  takes effect — i.e. give the deferred write a *dot* offset, not just a cycle. *Done: the
+  parked write is applied on the write cycle's first dot, before that cycle's dots are
+  stepped (`NesBus::advance_one_cpu_cycle_with`).*
+- The planning note above was half right. The visible effect is on the PPU's per-dot view,
+  but the *ordering* that came with it is what the ROMs paid for: applying the write inside
+  its cycle also puts it before the APU tick at the end of that cycle, and step 1's parking
+  had left it after. Two things turned green on exactly that, both frame-counter/length-
+  counter writes whose phase had been one cycle late:
+  - `apu_test/5-len_timing` — filed above as a length-counter bug; it was not one.
+  - AccuracyCoin's `Frame Counter 4-step` and `Frame Counter 5-step` (the `$0468`/`$0469`
+    entries step 1 had already moved).
+- Verified: baseline 57 pass / 17 known → **58 / 16**; AccuracyCoin 79/49 → **81 / 47**;
+  `3-A12_clocking`, `2-len_table`, `oam_stress` and `04-nmi_control` all stayed green, so
+  all four lines L3a had broken are still fine. `4-irq_and_dma`'s CRC moved `218E154C` →
+  `7DE0C30F` and `5-branch_delays_irq`'s `BE443B12` → `29BB6E90`; `6-irq_flag_timing`
+  moved a sub-test, from "Flag first set too late" to "Flag last set too soon".
+- **Which dot is not measured.** With the write applied at dot 0, 1 or 2 the whole ROM
+  suite is byte-identical — every baseline, trace and AccuracyCoin result. The suites vary
+  the write's *cycle*, and a 1-2 dot shift cannot move a flip point that sits between
+  cycles, so nothing here pins the dot down. Step 2 therefore settles the ordering and
+  leaves the dot as a convention: dot 0, "the access belongs to that cycle, so everything
+  the cycle does after it sees the write", which is the order the machine already uses for
+  the reads an instruction performs before its cycles. Revisit it when a test that reads
+  the dot appears - `10-even_odd_timing` and `4-scanline_timing` still fail for reasons
+  this step did not touch.
+- **A later dot costs a frame rate, not just tidiness.** Placing the write *inside* the
+  cycle means stepping that cycle's three dots one at a time, which needs a second
+  dot-stepping path next to `advance_one_cpu_cycle`; measured, its mere presence took the
+  frame from 1.034 to 1.104 ms (release, 600 frames of nestest, ~7%) with no ROM result
+  moving at all. Disabling the parking entirely still cost 1.11 ms, so the price is the
+  optimiser giving up on the hot cycle loop, not the write handling. The landed shape keeps
+  the loop as it was - one extra `Option` in an inlined helper - and lands the write on the
+  cycle's first dot, which needs no per-dot stepping at all.
 
 **Step 3: retry the NMI hijack (L2b) on top.** With writes and their dependents in place,
 re-apply the parked hijack patch and measure: the expectation is that `3-nmi_and_irq` gains
@@ -178,8 +208,13 @@ it to the instructions that can touch `$2000-$3FFF` and `$4015-$4017` first.
 1. L3 step 1 — **done**: kept `04-nmi_control`, moved `4-irq_and_dma` to the documented
    shape. No ROM count change, as expected. The one-cycle offset L3a left is unchanged by
    this step; the DMA-side poll (§4.3, L4) is the next suspect for it.
-2. L3 step 2 — `3-A12_clocking` (already green today) must survive, `10-even_odd_timing` and
-   `4-scanline_timing` are the ones that should move.
+2. L3 step 2 — **done**, after having been aimed at the wrong thing: the write's dot inside
+   its cycle turned out not to be measurable with these ROMs, but moving the write inside
+   the cycle also moved it before that cycle's APU tick, which fixed `5-len_timing` and two
+   AccuracyCoin frame-counter tests. `10-even_odd_timing` and `4-scanline_timing` did not
+   move at all: step 1 had already taken `10-even_odd_timing` from "skipped too late" to
+   "skipped too soon" and the dot does not shift it, so both now look like they wait for the
+   per-dot PPU work §6 decision 2 is about rather than for the write's placement.
 3. L3 step 3 — `2-nmi_and_brk`, `3-nmi_and_irq`.
 4. L3 step 4 — `05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing`.
 5. L4 — the DMA/frame-counter group, then sprite 0 timing.

@@ -491,10 +491,18 @@ impl NesBus {
         // The instruction's cycles, one at a time, sampling the interrupt lines
         // on the penultimate one - the cycle the chip decides on - and landing
         // any parked register write on the cycle it belongs to.
+        //
+        // The write goes in before that cycle's dots, i.e. on its first dot, so
+        // the PPU's per-dot views (the address it drives for the cartridge, and
+        // the renderer's render point) and the APU tick at the end of the same
+        // cycle all see it. Placing it on a *later* dot means stepping the
+        // cycle's three dots one at a time, which measured ~6% off the frame
+        // rate (release, nestest) and which no ROM suite can see: 0, 1 and 2
+        // leave every suite byte-identical (§4.2 step 2 of the plan).
         let poll_at = cycles.saturating_sub(1);
         for cycle in 1..=cycles {
-            self.advance_one_cpu_cycle();
-            self.replay_deferred_writes(cycles - cycle);
+            let write = self.take_deferred_write(cycles - cycle);
+            self.advance_one_cpu_cycle_with(write);
             if cycle == poll_at {
                 cpu.poll_interrupts(self);
             }
@@ -524,8 +532,8 @@ impl NesBus {
         cycles + sequence_cycles
     }
 
-    /// Land the parked register write that belongs on the instruction's
-    /// `cycles - remaining`-th cycle.
+    /// Take the parked register write that belongs on the instruction's
+    /// `cycles - remaining`-th cycle, if there is one.
     ///
     /// The writes are drained from the end: the last one is the instruction's
     /// last cycle - a store's only write is there - and a read-modify-write's
@@ -534,10 +542,10 @@ impl NesBus {
     ///
     /// `remaining` is how many of the instruction's cycles still have to run, so
     /// write `i` of `count` lands with `count - 1 - i` cycles left.
-    fn replay_deferred_writes(&mut self, remaining: u8) {
+    fn take_deferred_write(&mut self, remaining: u8) -> Option<(u16, u8)> {
         let count = self.deferred_count;
         if count == 0 || remaining >= count {
-            return;
+            return None;
         }
 
         let index = (count - 1 - remaining) as usize;
@@ -545,9 +553,7 @@ impl NesBus {
         if remaining == 0 {
             self.deferred_count = 0;
         }
-        if let Some((addr, value)) = self.deferred_writes[index].take() {
-            self.write_now(addr, value);
-        }
+        self.deferred_writes[index].take()
     }
 
     /// Get the current frame buffer
@@ -1048,6 +1054,17 @@ impl NesBus {
         self.tick_apu_cycle();
 
         self.cpu_cycles += 1;
+    }
+
+    /// One CPU cycle, with the parked register write that belongs on it, if any.
+    ///
+    /// The write lands on the cycle's first dot, which is why it is applied
+    /// before the cycle is stepped at all.
+    fn advance_one_cpu_cycle_with(&mut self, write: Option<(u16, u8)>) {
+        if let Some((addr, value)) = write {
+            self.write_now(addr, value);
+        }
+        self.advance_one_cpu_cycle();
     }
 
     /// One PPU dot: the dot counter, everything a dot triggers, and the address
@@ -1761,7 +1778,8 @@ mod tests {
     }
 
     /// A register write inside an instruction reaches its register on the cycle
-    /// the chip drives it, not at the start of the instruction.
+    /// the chip drives it, not at the start of the instruction: a four-cycle
+    /// store parks one write, and it waits for the last cycle.
     #[test]
     fn test_register_write_lands_on_its_own_cycle() {
         let mut bus = NesBus::new();
@@ -1770,18 +1788,18 @@ mod tests {
 
         assert_eq!(bus.ppu.oam_addr, 0x00, "the write waits for its cycle");
         assert_eq!(bus.deferred_count, 1, "one write is parked");
-
-        // A four-cycle store parks one write, and it lands on the last cycle.
         for remaining in [3, 2, 1] {
-            bus.replay_deferred_writes(remaining);
-            assert_eq!(bus.ppu.oam_addr, 0x00, "cycle {remaining} is too early");
+            assert_eq!(
+                bus.take_deferred_write(remaining),
+                None,
+                "cycle {remaining} carries nothing"
+            );
         }
-        bus.replay_deferred_writes(0);
-        assert_eq!(bus.ppu.oam_addr, 0x11, "the write lands on the last cycle");
+        assert_eq!(bus.take_deferred_write(0), Some((0x2003, 0x11)));
         assert_eq!(bus.deferred_count, 0, "nothing is left to replay");
     }
 
-    /// A read-modify-write parks two writes and they drain from the end: the
+    /// A read-modify-write parks two writes, and they drain from the end: the
     /// discarded write of the old value is the penultimate cycle, the new value
     /// the last one.
     #[test]
@@ -1794,16 +1812,68 @@ mod tests {
 
         // A six-cycle read-modify-write writes on its last two cycles.
         for remaining in [5, 4, 3, 2] {
-            bus.replay_deferred_writes(remaining);
-            assert_eq!(bus.ppu.oam_addr, 0x00);
+            assert_eq!(bus.take_deferred_write(remaining), None);
         }
-        bus.replay_deferred_writes(1);
+        assert_eq!(
+            bus.take_deferred_write(1),
+            Some((0x2003, 0x11)),
+            "the discarded write is the penultimate cycle"
+        );
+        assert_eq!(
+            bus.take_deferred_write(0),
+            Some((0x2003, 0x22)),
+            "the new value is the last cycle"
+        );
+        assert_eq!(bus.deferred_count, 0);
+    }
+
+    /// The write reaches the PPU's per-dot view inside the cycle the chip drives
+    /// it on, not at the cycle's end.
+    ///
+    /// Rendering that appears on the write's own cycle already counts for the
+    /// odd-frame dot skip, which is decided at pre-render dot 340: a `$2001`
+    /// write on the cycle whose dots are 338-340 skips that clock.
+    #[test]
+    fn test_register_write_reaches_the_ppu_inside_its_cycle() {
+        let mut bus = NesBus::new();
+        bus.ppu.scanline = bus.region.last_scanline();
+        bus.ppu.cycle = 337;
+        bus.ppu.frame = 1; // odd frame, so the skip is due
+
+        bus.defer_writes = true;
+        bus.write(0x2001, PpuMask::SHOW_BG.bits());
+        let write = bus.take_deferred_write(0).expect("the write is parked");
+        bus.advance_one_cpu_cycle_with(Some(write));
+
+        assert_eq!(
+            bus.ppu.scanline, 0,
+            "dot 340 of the write's own cycle skipped the clock"
+        );
+    }
+
+    /// A write that lands earlier in the cycle is still visible to the whole
+    /// cycle when it is the cycle's first dot.
+    #[test]
+    fn test_read_modify_write_lands_its_two_writes_on_two_cycles() {
+        let mut bus = NesBus::new();
+        bus.defer_writes = true;
+        bus.write(0x2003, 0x11);
+        bus.write(0x2003, 0x22);
+
+        // A six-cycle read-modify-write: the two writes land on cycles 5 and 6,
+        // i.e. with one and then no cycles left to run.
+        let discarded = bus.take_deferred_write(1).expect("cycle 5");
+        bus.advance_one_cpu_cycle_with(Some(discarded));
         assert_eq!(
             bus.ppu.oam_addr, 0x11,
             "the discarded write is the penultimate cycle"
         );
-        bus.replay_deferred_writes(0);
-        assert_eq!(bus.ppu.oam_addr, 0x22, "the new value is the last cycle");
+        let new_value = bus.take_deferred_write(0).expect("cycle 6");
+        bus.advance_one_cpu_cycle_with(Some(new_value));
+        assert_eq!(
+            bus.ppu.oam_addr, 0x22,
+            "the new value lands on the last cycle"
+        );
         assert_eq!(bus.deferred_count, 0);
     }
 

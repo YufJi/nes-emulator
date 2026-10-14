@@ -129,11 +129,11 @@ fn blargg_apu() {
     common::check_blargg_directory(
         "blargg/apu_test/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // Frame-counter and DMC timing (jitter, length timing, IRQ flag
-        // timing, DMC rates) are approximations.
+        // Frame-counter and DMC timing (jitter, IRQ flag timing, DMC rates) are
+        // approximations. The length-counter table is exact now that a register
+        // write reaches the APU tick of its own cycle (§4.2 step 2 of the plan).
         &[
             "4-jitter.nes",
-            "5-len_timing.nes",
             "6-irq_flag_timing.nes",
             "7-dmc_basics.nes",
             "8-dmc_rates.nes",
@@ -141,7 +141,7 @@ fn blargg_apu() {
     );
 }
 
-/// AccuracyCoin's baseline: the suite runs, and 50 of its tests fail.
+/// AccuracyCoin's baseline: the suite runs, and 47 of its tests fail.
 ///
 /// The failure count is a ratchet in both directions — a *higher* one is a
 /// regression, a *lower* one means the baseline needs updating — and it doubles
@@ -151,7 +151,7 @@ fn blargg_apu() {
 #[test]
 fn accuracy_coin_matches_its_baseline() {
     /// Tests AccuracyCoin reports as failing on this checkout.
-    const BASELINE_FAILURES: usize = 49;
+    const BASELINE_FAILURES: usize = 47;
     /// The ROM runs its suite one test per frame; this is the floor that says
     /// it really got going (the counter itself is reset whenever the results
     /// screen redraws, so its final value is timing-dependent).

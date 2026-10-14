@@ -21,10 +21,11 @@ one PPU clock"（`ppu_vbl_nmi/readme.txt`）。`docs/architecture.md` §13.1 里
 | --- | --- | --- | --- |
 | L1 | `4018bba` | 机器改为逐 CPU cycle 推进：3 个 PPU dot、1 个 APU tick、卡带看到的地址，交错进行而非按指令批量补 | ROM 结果零变化（57 pass / 17 known 逐条一致）；帧耗时 1.075 → 1.046 ms（release，nestest 连续 600 帧） |
 | L2 | `49d9d29` | 中断线在每条指令的倒数第二个 cycle 采样；7 cycle 的向量过程（2 次丢弃读、3 次压栈、2 次取向量）逐 cycle 执行 | 基线数量不变，但四个失败项的时序轨迹向期望值移动；AccuracyCoin 78 → 79 通过 |
-| L3 第 1 步 | （本次改动） | 对 `$2000-$401F` 的写入落在芯片真正驱动的那个 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个 cycle），`$2000` 写入抬起的 NMI 也在该 cycle 被接收 | ROM 数量零变化（57 pass / 17 known 与 AccuracyCoin 79/49 逐条一致）；`4-irq_and_dma` 的轨迹从错误形状变成 L3a 那份"与文档期望一致、只差常量偏移"的形状（`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`，CRC `5FA88FED` → `218E154C`）；`3-nmi_and_irq` 的 CRC 从 `90BC9498` 变为 `7E5D001A`；AccuracyCoin 两项错误码变化（`$0468`/`$0469` 由 0x06 变 0x0A，仍为失败）；帧耗时不变（1.033 → 1.034 ms，release，nestest 连续 600 帧） |
+| L3 第 1 步 | `a2b13e9` | 对 `$2000-$401F` 的写入落在芯片真正驱动的那个 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个 cycle），`$2000` 写入抬起的 NMI 也在该 cycle 被接收 | ROM 数量零变化（57 pass / 17 known 与 AccuracyCoin 79/49 逐条一致）；`4-irq_and_dma` 的轨迹从错误形状变成 L3a 那份"与文档期望一致、只差常量偏移"的形状（`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`，CRC `5FA88FED` → `218E154C`）；`3-nmi_and_irq` 的 CRC 从 `90BC9498` 变为 `7E5D001A`；AccuracyCoin 两项错误码变化（`$0468`/`$0469` 由 0x06 变 0x0A，仍为失败）；帧耗时不变（1.033 → 1.034 ms，release，nestest 连续 600 帧） |
+| L3 第 2 步 | （本次改动） | 写入还落在该 cycle 内的一个 **dot** 上：PPU 的逐 dot 视图从该 cycle 的第一个 dot 起就能看到它，cycle 末尾的 APU tick 也看得到 | ROM 基线 57 pass / 17 known → **58 / 16**（`apu_test/5-len_timing`）；AccuracyCoin 79/49 → **81 / 47**（`Frame Counter 4-step`、`Frame Counter 5-step`）；`4-irq_and_dma` 的 CRC 从 `218E154C` 变为 `7DE0C30F`，`5-branch_delays_irq` 的 `BE443B12` → `29BB6E90`，`6-irq_flag_timing` 的子项前进（"Flag first set too late" → "Flag last set too soon"）；原本全绿的没有任何回退；帧耗时不变（1.034 → 1.032 ms，release，nestest 连续 600 帧）；dot 本身不被任何套件区分（0、1、2 结果逐字节相同） |
 
-当前状态：`cargo test --workspace` 818 全绿、ROM 基线 **57 pass / 17 known**、
-AccuracyCoin **79 通过 / 49 失败**、`STATE_VERSION` 为 4。
+当前状态：`cargo test --workspace` 820 全绿、ROM 基线 **58 pass / 16 known**、
+AccuracyCoin **81 通过 / 47 失败**、`STATE_VERSION` 为 4。
 
 另有两个实验已经实现、量过、并**整体撤回**；它们的证据正是后文的起点（§4）。
 L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当初逼它撤回的依赖者一起搬了过去。
@@ -33,7 +34,7 @@ L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当�
 
 ### 3.1 测试 ROM 已经点名的欠账
 
-剩 16 项，且并非同一类问题：
+剩 15 项，且并非同一类问题：
 
 | 套件 | 项目 | 需要什么 |
 | --- | --- | --- |
@@ -41,7 +42,7 @@ L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当�
 | `ppu_vbl_nmi` | `05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`、`10-even_odd_timing` | `$2002` 读与 `$2000`/`$2001` 写到 **1 个 PPU dot** 的精度——§4 的工作 |
 | `mmc3_test_2` | `4-scanline_timing` | 一帧中首个 A12 上升沿落在哪个 dot——§4，加上已有的逐 dot A12 模型 |
 | `ppu_open_bus` | 整个 ROM | PPU 数据总线衰减，**独立特性**，与 cycle 无关 |
-| `apu_test` | `4-jitter`、`5-len_timing`、`6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates` | 帧计数器与 DMC 时序；`5-len_timing` 是长度计数器 bug，其余属 cycle/DMA 工作 |
+| `apu_test` | `4-jitter`、`6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates` | 帧计数器与 DMC 时序；`5-len_timing` 其实**不是**长度计数器 bug，而是写入相位问题，第 2 步已修好 |
 
 `4-irq_and_dma` 离通过最近，也是最有用的尺子：§4.2 的第一步（已实现）已经把它的轨迹推到
 "与文档期望形状一致、只差一个常量偏移"。
@@ -123,14 +124,37 @@ mask 的生效时间点也跟着移动了），以及 `apu_test/2-len_table`、`
 - 本步留下的尾巴：读改写的丢弃写正落在采样点那个 cycle 上。它写的是**旧值**，所以目前无论
   如何都不会抬起 NMI；到第 2 步给出 dot 偏移，这一点才不再是巧合。
 
-**第 2 步：mask 的逐 dot 相位。**
+**第 2 步（已完成）：写入落在自己 cycle 内的哪个 dot。**
 
 - `$2001` 目前按 cycle 边界生效，而 A12 模型是逐 dot 读 mask 的（`NesBus::ppu_bus_address`）。
   需要决定并实现"寄存器在写入 cycle 内的哪个 dot 生效"，即给停放中的写入一个 **dot 偏移**，
-  而不只是 cycle。
-- 这决定 `mmc3_test_2/3-A12_clocking` 与 `10-even_odd_timing`。
-- 验证用 `mmc3_test_2` 与 `ppu_vbl_nmi`，并复查 `apu_test/2-len_table` 与 `oam_stress`
-  （它们在 L3a 实验里因同一原因回退）。
+  而不只是 cycle。*已完成：写入落在该 cycle 的第一个 dot 上，即在该 cycle 的三个 dot 被推进之前落地
+  （`NesBus::advance_one_cpu_cycle_with`）。*
+- 上面那段预判只对了一半。可见效果确实落在 PPU 的逐 dot 视图上，但真正被 ROM 兑现的是随之
+  而来的**顺序**：写入在自己的 cycle 内落地，也就落在该 cycle 末尾的 APU tick **之前**，
+  而第 1 步的停放把它放在了 tick 之后。恰好有两类"帧计数器/长度计数器写入"因此从"差一个
+  cycle"变成通过：
+  - `apu_test/5-len_timing`——上文曾把它归为长度计数器 bug，其实不是。
+  - AccuracyCoin 的 `Frame Counter 4-step` 与 `Frame Counter 5-step`（第 1 步已经动过
+    错误码的那两项 `$0468`/`$0469`）。
+- 验证结果：基线 57 pass / 17 known → **58 / 16**；AccuracyCoin 79/49 → **81 / 47**；
+  `3-A12_clocking`、`2-len_table`、`oam_stress`、`04-nmi_control` 全部保持全绿，即 L3a
+  当初打断的四条线依旧完好。`4-irq_and_dma` 的 CRC 从 `218E154C` 变为 `7DE0C30F`、
+  `5-branch_delays_irq` 的 `BE443B12` → `29BB6E90`；`6-irq_flag_timing` 的子项前进，
+  从 "Flag first set too late" 变成 "Flag last set too soon"。
+- **哪个 dot 测不出来。** 把写入放在 dot 0、1、2 上，整套 ROM 结果逐字节相同——所有基线、
+  轨迹与 AccuracyCoin 结果都一样。套件改变的是写入的 **cycle**，而翻转点如果在 cycle 之间，
+  1–2 个 dot 的移动根本碰不到它，所以这里没有任何东西能钉住那个 dot。第 2 步因此只把
+  **顺序**定下来，dot 取值留作约定：取 dot 0——"这次访存属于该 cycle，该 cycle 之后做的
+  事都看得到它"，这也正是机器目前对"指令各 cycle 之前执行的读"所采用的顺序。等出现真正
+  能读到该 dot 的测试再回来定它：`10-even_odd_timing` 与 `4-scanline_timing` 仍因本步没有
+  触及的原因失败。
+- **放到 cycle 内部的更晚 dot 会直接吃掉帧率。** 要把写入放进 cycle 内部，就得逐个推进该
+  cycle 的三个 dot，也就需要在 `advance_one_cpu_cycle` 之外再留一条"逐 dot 走一遍"的路径；
+  实测：仅仅是这条路径**存在**，帧耗时就从 1.034 ms 涨到 1.104 ms（release，nestest 连续
+  600 帧，约 7%），而 ROM 结果一个都没动。把停放整体关掉仍是 1.11 ms，说明代价来自优化器
+  放弃了对热 cycle 循环的优化，而不是写入处理本身。最终落地的形状让循环保持原样——只多一个
+  内联小助手里的 `Option`——并把写入放在该 cycle 的第一个 dot 上，这样完全不需要逐 dot 推进。
 
 **第 3 步：在 L3 之上重试 NMI 抢占（L2b）。** 写入与其依赖者都到位后，重新应用那份搁置的
 抢占补丁并测量：预期 `3-nmi_and_irq` 从中获益，且 `$0452` 那个 AccuracyCoin 项不再掉。
@@ -159,8 +183,12 @@ mask 的生效时间点也跟着移动了），以及 `apu_test/2-len_table`、`
 1. L3 第 1 步——**已完成**：保住了 `04-nmi_control`，并把 `4-irq_and_dma` 推到文档期望的
    形状；ROM 数量如预期不变。L3a 留下的那个常量偏移本步没有改变；下一步的怀疑对象是 §4.3
    （L4）里 DMA 侧的采样。
-2. L3 第 2 步——`3-A12_clocking`（现已全绿）必须存活，应当移动的是 `10-even_odd_timing`
-   与 `4-scanline_timing`。
+2. L3 第 2 步——**已完成**，而且最初瞄错了目标：用现有 ROM 测不出"写入落在哪个 dot"，但把
+   写入搬进 cycle 内部同时也把它搬到了该 cycle 的 APU tick 之前，于是修好了 `5-len_timing`
+   与两项 AccuracyCoin 帧计数器测试。`10-even_odd_timing` 与 `4-scanline_timing` 完全没动：
+   第 1 步已经把 `10-even_odd_timing` 从 "skipped too late" 变成 "skipped too soon"，而 dot
+   并不能推动它；因此这两项现在更像是等 §6 决策 2 所说的逐 dot PPU 工作，而不是等写入位置的
+   调整。
 3. L3 第 3 步——`2-nmi_and_brk`、`3-nmi_and_irq`。
 4. L3 第 4 步——`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`。
 5. L4——DMA/帧计数器那一组，然后是 sprite 0 时序。

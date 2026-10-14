@@ -836,12 +836,13 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
-| `apu_test` | 3/8 |
-| AccuracyCoin | 79 passed, 0 skipped, 49 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
+| `apu_test` | 4/8 |
+| AccuracyCoin | 81 passed, 0 skipped, 47 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2` needs the A12/PPU-bus hook, the
 `ppu_vbl_nmi` and `cpu_interrupts` suites need the VBlank/NMI subtleties and the odd-frame
-skip, and the two CPU failures are cycle-count bugs the ROMs localise precisely.
+skip, the `apu_test` ones are frame-counter and DMC timing, and the two remaining CPU
+failures are cycle-count bugs the ROMs localise precisely.
 
 The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
 asserted in both directions: a failure outside it is a regression, and an entry that starts
@@ -924,11 +925,13 @@ clone needs `npm run build:wasm` before building the front end.
   interleaved around them. CLI/SEI/PLP delay what interrupts are allowed by one instruction
   (RTI does not), and a taken branch that stays in its page skips that poll. A write to
   `$2000-$401F` now lands on its own cycle - the last cycle of a store, the one before it
-  for a read-modify-write's discarded write - instead of at the instruction's start. Where
-  *inside* that cycle it takes effect is still not modelled, so a register's effective time
-  can still be a cycle out of place in dot terms, and the remaining
-  `cpu_interrupts_v2`/`ppu_vbl_nmi` cases still differ by one or two instructions - the
-  tests measure to one PPU clock.
+  for a read-modify-write's discarded write - instead of at the instruction's start, and on a
+  dot inside that cycle: the PPU's per-dot view sees it from the cycle's first dot, and the
+  APU's tick at the end of the cycle sees it too. That last point is what fixed blargg's
+  length-counter table and AccuracyCoin's two frame-counter tests, which were a cycle out of
+  phase before. Reads with side effects (`$2002`, `$2007`, `$4015`) are still performed at
+  the instruction's start, and the remaining `cpu_interrupts_v2`/`ppu_vbl_nmi` cases still
+  differ by one or two instructions - those tests measure to one PPU clock.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
@@ -1026,8 +1029,8 @@ backlog, so they are written down here to stop them being re-litigated:
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **The accuracy backlog the test ROMs now name**: the sixteen remaining cases in §13.1 —
-   `cpu_interrupts_v2`'s four, `apu_test`'s five, `ppu_vbl_nmi`'s five, `mmc3_test_2`'s two —
+5. **The accuracy backlog the test ROMs now name**: the fifteen remaining cases in §13.1 —
+   `cpu_interrupts_v2`'s four, `apu_test`'s four, `ppu_vbl_nmi`'s five, `mmc3_test_2`'s two —
    plus MMC5's extended attributes, sprite 0 hit timing, the five mappers §8 defers, and the
    PAL dot ratio. Almost all of them come down to one thing: knowing *which PPU dot* a CPU
    action lands on, which means moving the rest of the CPU's bus accesses (reads with side

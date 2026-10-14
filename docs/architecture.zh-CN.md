@@ -766,12 +766,13 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
-| `apu_test` | 3/8 |
-| AccuracyCoin | 79 通过、0 跳过、49 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
+| `apu_test` | 4/8 |
+| AccuracyCoin | 81 通过、0 跳过、47 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 需要 A12/PPU 总线钩子，
 `ppu_vbl_nmi` 与 `cpu_interrupts` 需要 VBlank/NMI 细节与奇数帧跳点，
-两处 CPU 失败则是 ROM 已经精确定位到具体指令的周期计数 bug。
+`apu_test` 那几项是帧计数器与 DMC 时序，剩下的两处 CPU 失败则是 ROM 已经精确定位到具体
+指令的周期计数 bug。
 
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。
@@ -837,9 +838,11 @@ flowchart LR
   （两次丢弃读、三次压栈、两次取向量）逐个 cycle 推进，PPU 与 APU 交错在其间。CLI/SEI/PLP
   对中断使能的影响延后一条指令（RTI 不延后），未跨页的已跳转分支跳过那一次采样。对
   `$2000-$401F` 的写入现在落在它自己的 cycle 上（store 是最后一个 cycle，读改写的丢弃写
-  提前一个 cycle），而不是指令开头。**写入落在该 cycle 内的哪个 dot** 仍未建模，因此寄存器
-  生效时刻在 dot 尺度上仍可能差一个 cycle；剩下的 `cpu_interrupts_v2`/`ppu_vbl_nmi` 各项
-  仍差一到两条指令——这些测试的精度是一 PPU clock。
+  提前一个 cycle），而不是指令开头；并且落在该 cycle 内的一个 dot 上——PPU 的逐 dot 视图
+  从该 cycle 的第一个 dot 起就能看到新值，而 cycle 末尾的 APU tick 也看得到。后面这一点正是
+  blargg 长度计数器表与 AccuracyCoin 两项帧计数器测试从"差一个 cycle"变成通过的原因。
+  带副作用的读（`$2002`、`$2007`、`$4015`）仍在指令开头执行；剩下的
+  `cpu_interrupts_v2`/`ppu_vbl_nmi` 各项仍差一到两条指令——这些测试的精度是一 PPU clock。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，
@@ -914,8 +917,8 @@ flowchart LR
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 16 项——`cpu_interrupts_v2` 的 4 项、
-   `apu_test` 的 5 项、`ppu_vbl_nmi` 的 5 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展属性、
+5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 15 项——`cpu_interrupts_v2` 的 4 项、
+   `apu_test` 的 4 项、`ppu_vbl_nmi` 的 5 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展属性、
    sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。它们几乎都归结为同一件
    事：要知道某个 CPU 动作落在**哪个 PPU dot** 上——也就是把 CPU 其余的总线访问（带副作用的
    读、DMA、渲染器）也搬到它们真实发生的 cycle 上。
