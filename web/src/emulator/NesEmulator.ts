@@ -36,6 +36,14 @@ export interface NesEmulatorOptions {
    * builds a fresh console.
    */
   onFatalError?: (message: string) => void;
+  /**
+   * Called once when a KIL opcode stops the CPU.
+   *
+   * The machine is still alive — frames keep completing — but nothing more is
+   * fetched, so the picture will not change again. Not worth throwing the
+   * console away for; just tell the player and let them reload.
+   */
+  onCpuHalted?: () => void;
   /** Called whenever the cartridge's battery RAM changes. */
   onSaveRamChange?: (data: Uint8Array) => void;
 }
@@ -87,6 +95,8 @@ export class NesEmulator {
 
   private currentState: EmulatorState = 'idle';
   private disposed = false;
+  /** Whether the hung-CPU message has already been sent for this cartridge. */
+  private cpuHaltReported = false;
 
   constructor(canvas: HTMLCanvasElement, options: NesEmulatorOptions = {}) {
     this.canvas = canvas;
@@ -142,6 +152,7 @@ export class NesEmulator {
 
     this.nes?.free();
     this.nes = next;
+    this.cpuHaltReported = false;
     if (saveRam) {
       next.set_save_ram(saveRam);
     }
@@ -166,6 +177,7 @@ export class NesEmulator {
       throw new Error(t('error.coreRejected', { reason: describe(error) }));
     }
     this.render();
+    this.reportCpuHalt();
 
     this.setState('running');
     this.startLoop();
@@ -186,6 +198,7 @@ export class NesEmulator {
       this.clock?.reset();
       this.stepFrames(1);
       this.render();
+      this.reportCpuHalt();
     } catch (error) {
       this.handleCorePanic(error);
     }
@@ -334,6 +347,7 @@ export class NesEmulator {
     this.render();
     this.pumpAudio();
     this.reportFps();
+    this.reportCpuHalt();
   };
 
   /**
@@ -494,8 +508,22 @@ export class NesEmulator {
   }
 
   /**
-   * The core panicked mid-instruction: an undefined opcode in a corrupt
-   * cartridge, which the core refuses to guess at.
+   * Tell the host once when a KIL opcode has hung the CPU.
+   *
+   * The machine keeps running and frames keep completing, but no instruction is
+   * fetched any more, so the picture is frozen. That is not a reason to throw
+   * the console away — the player just needs to know.
+   */
+  private reportCpuHalt(): void {
+    if (this.cpuHaltReported || !this.nes?.is_cpu_halted()) return;
+
+    this.cpuHaltReported = true;
+    this.options.onCpuHalted?.();
+  }
+
+  /**
+   * The core panicked mid-instruction: a bug in the core rather than anything
+   * the cartridge did (undefined opcodes hang the CPU instead).
    *
    * `wasm32-unknown-unknown` aborts on panic, so Rust cannot catch this — a
    * `catch_unwind` there never runs, the trap surfaces as a JS exception and the

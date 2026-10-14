@@ -638,9 +638,10 @@ Constraints:
   wraps them as needed.
 - The `frame_ready` semantics of `frame()` and `run_cycles()` match the core, with no extra
   interpretation.
-- **A panic cannot be caught here** (`wasm32-unknown-unknown` aborts on panic): an undefined
-  opcode makes `frame()` throw a JS exception and renders the instance unusable, and the
-  host must discard and rebuild it — see §15.1.
+- **A panic cannot be caught here** (`wasm32-unknown-unknown` aborts on panic): a bug in the
+  core makes `frame()` throw a JS exception and renders the instance unusable, and the host
+  must discard and rebuild it — see §15.1. Cartridge-caused failures do not go down this
+  path: an undefined opcode hangs the CPU, and `is_cpu_halted()` reports it instead.
 
 ### 11.2 `nes-uniffi` (iOS / macOS / Android)
 
@@ -660,9 +661,9 @@ Three design points worth noting:
 - **Handles are reference-counted objects**, their methods take `&self`, and a `Mutex`
   serializes internally. Hosts should still keep the machine on their own emulation thread
   (§10.5); the lock only exists so that calling from another thread by mistake is not UB.
-- **A poisoned lock is recovered**: the CPU panics on an undefined opcode, poisoning the
-  `Mutex`, and a plain `unwrap` would permanently ruin the handle over one bad frame, so
-  this takes `into_inner()` to stay usable (the host should reload the cartridge).
+- **A poisoned lock is recovered**: a panic while the lock is held (a bug in the core)
+  poisons the `Mutex`, and a plain `unwrap` would permanently ruin the handle over one bad
+  frame, so this takes `into_inner()` to stay usable (the host should reload the cartridge).
 - **Panics must be caught by the binding layer, and not by relying on UniFFI's default
   behavior alone**: UniFFI does catch panics at the FFI boundary (no UB, and the message is
   preserved), but for **methods that don't return `Result`** the Swift wrapper it generates
@@ -798,34 +799,30 @@ clone needs `npm run build:wasm` before building the front end.
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
   `fill_audio`.
-- **Unsupported mappers**: cartridges outside `supported_mappers()` are rejected outright
-  (6, 8, 16, 18, 30, 85, and so on). See section 8 for how to extend.
-- **An undefined opcode panics (policy settled: only the binding boundary catches it)**: the
-  CPU implements only the documented instruction set and calls `panic!` on an undefined
-  opcode (`crates/nes-core/src/cpu/instructions.rs`) — turning "unknown" into an explicit
-  failure is a deliberate choice: accuracy at the expense of robustness. About 40% of 6502
-  byte values are not documented instructions, so a corrupted ROM can easily hit one. The
-  current handling is layered:
-  - **`nes-uniffi` (iOS / macOS / Android)**: the binding layer catches it with
-    `catch_unwind` and turns it into a catchable `NesError::EmulationPanic`, keeping the
-    process alive and the handle usable (§11.2). Verified with a real Swift program: the
-    same ROM was a `try!` fatal error before the fix (exit code 133) and a `catch`-able
-    error after it (exit code 0).
-  - **`nes-wasm` (Web)**: this path **cannot be caught on the Rust side** —
-    `wasm32-unknown-unknown` aborts on panic, so `catch_unwind` never returns (measured: even
-    after adding `catch_unwind` in the binding layer, what comes back is still
+- **Unsupported mappers**: cartridges outside `supported_mappers()` are rejected outright.
+  See section 8 for the list and how to extend.
+- **An undefined opcode hangs the CPU; it no longer panics**: every one of the 256 opcode
+  bytes has a handler in `crates/nes-core/src/cpu/instructions.rs` — the documented
+  instructions, the undocumented ones the 2A03 really executes (LAX/SAX/DCP/ISC/SLO/RLA/SRE/
+  RRA …), the NOP variants, and the twelve KIL/JAM opcodes. A KIL stops the CPU: it keeps
+  burning cycles, frames keep completing, and only an interrupt (NMI, or IRQ with I clear)
+  or a reset restarts it, exactly as the hardware does. `Nes::is_cpu_halted()` /
+  `is_cpu_halted()` in both bindings reports the hang, and the web front end surfaces it in
+  the notification bar (`NesEmulator.reportCpuHalt`).
+  - **Why not panic**: it used to be a `panic!`. On `wasm32-unknown-unknown` a panic aborts,
+    so `catch_unwind` never returns (measured: what comes back is
     `RuntimeError: unreachable`, and the instance is permanently borrowed, so even `free()`
-    throws "attempted to take ownership of Rust value while it was borrowed"). Only the **JS
-    side** can handle it: what `frame()` throws is a catchable exception, the page stays
-    alive, and `console_error_panic_hook` prints the panic message to the console; but that
-    instance is ruined and must be discarded and rebuilt (measured: a freshly created
-    instance works fine). The front end's `NesEmulator.handleCorePanic` therefore stops the
-    loop, discards the instance with `freeQuietly`, and uses the existing notification bar
-    to suggest switching ROMs.
-  - **What it does not do**: it neither treats undefined opcodes as NOPs nor fills in their
-    semantics — those would cost accuracy or a lot of work, respectively. The behavior is
-    pinned from both sides by characterization tests in
-    `crates/nes-core/tests/host_contract.rs` and unit tests in `nes-uniffi`.
+    throws "attempted to take ownership of Rust value while it was borrowed"). The page
+    survived only by throwing the emulator away — a heavy price for a corrupted ROM, and a
+    hang is what the hardware does anyway.
+  - **The binding boundary stays as a backstop for real bugs**: `nes-uniffi` wraps every
+    entry point that runs the CPU in `catch_unwind` and turns a panic into a catchable
+    `NesError::EmulationPanic { message }` (§11.2), and the front end's
+    `NesEmulator.handleCorePanic` discards the instance and tells the user. Nothing in the
+    emulated path is expected to reach either one now.
+  - The behavior is pinned by `crates/nes-core/tests/host_contract.rs`, the CPU unit tests
+    (`test_kil_halts_the_cpu_without_panicking`, `test_every_opcode_executes`) and the
+    binding tests.
 
 ### 15.2 Saves and replay
 

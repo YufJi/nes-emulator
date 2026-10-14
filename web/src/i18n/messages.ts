@@ -174,6 +174,8 @@ export const ZH = {
   'error.wasmFailed': 'WASM 模块加载失败：{reason}',
   'error.coreStopped':
     '模拟器内核异常，游戏已停止（ROM 可能已损坏）。换一个 ROM 即可继续；详情见浏览器控制台。',
+  'error.coreHalted':
+    'CPU 停在了 KIL 指令上，画面不会再变化（ROM 可能已损坏）。重新加载或换一个 ROM 即可继续。',
   'error.canvasUnavailable': '无法创建 Canvas 2D 上下文。',
   'error.disposed': '模拟器实例已销毁。',
   'error.coreNotReady': 'WASM 内核尚未初始化，无法读取其内存。',
@@ -330,6 +332,8 @@ export const EN: Dictionary = {
   'error.wasmFailed': 'Could not load the WASM module: {reason}',
   'error.coreStopped':
     'The emulator core faulted and the game stopped (the ROM may be damaged). Load another ROM to carry on; the browser console has the details.',
+  'error.coreHalted':
+    'The CPU hit a KIL instruction and the picture will not change again (the ROM may be damaged). Reload it or load another ROM to carry on.',
   'error.canvasUnavailable': 'Could not create a Canvas 2D context.',
   'error.disposed': 'The emulator instance has been disposed.',
   'error.coreNotReady': 'The WASM core is not initialized yet, so its memory cannot be read.',
@@ -483,6 +487,8 @@ export const JA: Dictionary = {
   'error.wasmFailed': 'WASM モジュールの読み込みに失敗しました: {reason}',
   'error.coreStopped':
     'コアで例外が発生し、ゲームが停止しました（ROM が壊れている可能性があります）。別の ROM を読み込めば続けられます。詳細はブラウザのコンソールへ。',
+  'error.coreHalted':
+    'CPU が KIL 命令で停止し、画面は更新されません（ROM が壊れている可能性があります）。再読み込みするか別の ROM を読み込んでください。',
   'error.canvasUnavailable': 'Canvas 2D コンテキストを作成できません。',
   'error.disposed': 'エミュレータのインスタンスは破棄されました。',
   'error.coreNotReady': 'WASM コアが未初期化のため、メモリを読み取れません。',

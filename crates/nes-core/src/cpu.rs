@@ -27,6 +27,11 @@ pub struct Cpu {
     status: StatusFlags,
     /// Total cycles executed
     cycles: u64,
+    /// Set when a KIL/JAM opcode stops the CPU.
+    ///
+    /// The 2A03 parks here until an interrupt (or a reset) arrives; the rest of
+    /// the machine — PPU, APU, mappers — keeps running while it hangs.
+    halted: bool,
 }
 
 bitflags::bitflags! {
@@ -61,7 +66,7 @@ impl crate::state::StateField for StatusFlags {
     }
 }
 
-crate::state::state_fields!(Cpu { a, x, y, sp, pc, status, cycles });
+crate::state::state_fields!(Cpu { a, x, y, sp, pc, status, cycles, halted });
 
 impl Default for Cpu {
     fn default() -> Self {
@@ -83,6 +88,7 @@ impl Cpu {
             pc: 0,
             status: StatusFlags::from_bits_truncate(0x24),
             cycles: 0,
+            halted: false,
         }
     }
 
@@ -95,7 +101,8 @@ impl Cpu {
         let lo = bus.read(0xFFFC) as u16;
         let hi = bus.read(0xFFFD) as u16;
         self.pc = (hi << 8) | lo;
-        
+
+        self.halted = false;
         self.cycles = 0;
     }
 
@@ -132,6 +139,14 @@ impl Cpu {
     /// Get total cycles executed
     pub fn cycles(&self) -> u64 {
         self.cycles
+    }
+
+    /// Whether a KIL/JAM opcode has stopped the CPU.
+    ///
+    /// The machine keeps running — the PPU, APU and mappers keep ticking — but
+    /// no instruction is fetched until an interrupt or a reset arrives.
+    pub fn is_halted(&self) -> bool {
+        self.halted
     }
 
     /// Set the program counter (for testing purposes)

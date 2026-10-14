@@ -9,7 +9,7 @@
 
 ## 特性
 
-- **CPU**：6502（Ricoh 2A03）指令集，附 nestest 集成校验。
+- **CPU**：6502（Ricoh 2A03）指令集——含未文档指令与硬件一致的 KIL/JAM 停机——附 nestest 集成校验。
 - **PPU**：背景与精灵渲染、sprite 0 命中、扫描线时序、OAM DMA、nametable 镜像。
 - **APU**：2 个脉冲、三角、噪声、DMC 五个通道，支持帧序列器 IRQ。
 - **Mapper**：34 个编号（NROM、MMC1/2/3/4/5、VRC 系列、Sunsoft、Irem 等）。

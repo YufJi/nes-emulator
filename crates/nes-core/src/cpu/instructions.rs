@@ -72,12 +72,23 @@ impl Cpu {
         //
         // NMI is edge-triggered and cannot be masked. IRQ is level-triggered
         // and is ignored while the I flag is set.
+        //
+        // Taking one is also what restarts a halted CPU, which is why the halt
+        // check sits below rather than above these.
         if bus.nmi_pending() {
             bus.clear_nmi();
+            self.halted = false;
             return self.service_interrupt(bus, 0xFFFA);
         }
         if bus.irq_pending() && !self.status.contains(StatusFlags::I) {
+            self.halted = false;
             return self.service_interrupt(bus, 0xFFFE);
+        }
+
+        // A KIL/JAM opcode stops the CPU: it keeps burning cycles but fetches
+        // nothing until one of the interrupt paths above fires.
+        if self.halted {
+            return 2;
         }
 
         let op = &OPCODE_TABLE[opcode as usize];
@@ -1164,24 +1175,36 @@ impl Cpu {
         // NOP - does nothing
         0
     }
-}
 
-/// Invalid opcode handler
-fn invalid_opcode(_cpu: &mut Cpu, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
-    panic!("Invalid opcode executed");
+    /// KIL (JAM, HLT) - Stop the CPU
+    ///
+    /// The twelve KIL opcodes leave the 6502 hung: it stops fetching, and only
+    /// an interrupt (NMI, or IRQ with the I flag clear) or a reset brings it
+    /// back. Cartridges do not use them deliberately — a corrupted ROM or a
+    /// jump into data is how they show up — but hanging is what the hardware
+    /// does, and it is far better than tearing down the host: `wasm32` aborts
+    /// the whole instance when the core panics.
+    ///
+    /// Opcodes: $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2
+    fn jam(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+        self.halted = true;
+        0
+    }
 }
 
 /// The complete 6502 opcode table (256 entries)
-/// 
-/// Each entry maps an opcode byte to its metadata and handler.
-/// Unofficial opcodes are marked as invalid for now.
+///
+/// Each entry maps an opcode byte to its metadata and handler. Every one of the
+/// 256 byte values has a handler: the documented instructions, the undocumented
+/// ones the 2A03 really executes (LAX/SAX/DCP/ISC/SLO/RLA/SRE/RRA …), the NOP
+/// variants, and the twelve KILs that hang the CPU.
 pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x00 - BRK (Implied)
     Opcode { mnemonic: "BRK", addr_mode: AddressingMode::Implied, base_cycles: 7, handler: Cpu::brk },
     // 0x01 - ORA (Indirect,X)
     Opcode { mnemonic: "ORA", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::ora },
     // 0x02 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x03 - SLO (Indirect,X)
     Opcode { mnemonic: "SLO", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::slo },
     // 0x04 - IGN (Zero Page)
@@ -1200,8 +1223,8 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     Opcode { mnemonic: "ASL", addr_mode: AddressingMode::Accumulator, base_cycles: 2, handler: Cpu::asl },
     // 0x0B - ANC (Immediate)
     Opcode { mnemonic: "ANC", addr_mode: AddressingMode::Immediate, base_cycles: 2, handler: Cpu::anc },
-    // 0x0C - Invalid
-    Opcode { mnemonic: "???", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    // 0x0C - NOP (Absolute) - undocumented, 3 bytes / 4 cycles
+    Opcode { mnemonic: "NOP", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::nop },
     // 0x0D - ORA (Absolute)
     Opcode { mnemonic: "ORA", addr_mode: AddressingMode::Absolute, base_cycles: 4, handler: Cpu::ora },
     // 0x0E - ASL (Absolute)
@@ -1214,7 +1237,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x11 - ORA (Indirect,Y)
     Opcode { mnemonic: "ORA", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::ora },
     // 0x12 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x13 - SLO (Indirect,Y)
     Opcode { mnemonic: "SLO", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::slo },
     // 0x14 - IGN (Zero Page,X)
@@ -1247,7 +1270,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x21 - AND (Indirect,X)
     Opcode { mnemonic: "AND", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::and },
     // 0x22 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x23 - RLA (Indirect,X)
     Opcode { mnemonic: "RLA", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::rla },
     // 0x24 - BIT (Zero Page)
@@ -1280,7 +1303,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x31 - AND (Indirect,Y)
     Opcode { mnemonic: "AND", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::and },
     // 0x32 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x33 - RLA (Indirect,Y)
     Opcode { mnemonic: "RLA", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::rla },
     // 0x34 - IGN (Zero Page,X)
@@ -1313,7 +1336,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x41 - EOR (Indirect,X)
     Opcode { mnemonic: "EOR", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::eor },
     // 0x42 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x43 - SRE (Indirect,X)
     Opcode { mnemonic: "SRE", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::sre },
     // 0x44 - IGN (Zero Page)
@@ -1346,7 +1369,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x51 - EOR (Indirect,Y)
     Opcode { mnemonic: "EOR", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::eor },
     // 0x52 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x53 - SRE (Indirect,Y)
     Opcode { mnemonic: "SRE", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::sre },
     // 0x54 - IGN (Zero Page,X)
@@ -1379,7 +1402,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x61 - ADC (Indirect,X)
     Opcode { mnemonic: "ADC", addr_mode: AddressingMode::IndirectX, base_cycles: 6, handler: Cpu::adc },
     // 0x62 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x63 - RRA (Indirect,X)
     Opcode { mnemonic: "RRA", addr_mode: AddressingMode::IndirectX, base_cycles: 8, handler: Cpu::rra },
     // 0x64 - IGN (Zero Page)
@@ -1412,7 +1435,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x71 - ADC (Indirect,Y)
     Opcode { mnemonic: "ADC", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::adc },
     // 0x72 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x73 - RRA (Indirect,Y)
     Opcode { mnemonic: "RRA", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::rra },
     // 0x74 - IGN (Zero Page,X)
@@ -1478,7 +1501,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x91 - STA (Indirect,Y)
     Opcode { mnemonic: "STA", addr_mode: AddressingMode::IndirectY, base_cycles: 6, handler: Cpu::sta },
     // 0x92 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0x93 - SHA (Indirect,Y)
     Opcode { mnemonic: "SHA", addr_mode: AddressingMode::IndirectY, base_cycles: 6, handler: Cpu::sha },
     // 0x94 - STY (Zero Page,X)
@@ -1544,7 +1567,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xB1 - LDA (Indirect,Y)
     Opcode { mnemonic: "LDA", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::lda },
     // 0xB2 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0xB3 - LAX (Indirect,Y)
     Opcode { mnemonic: "LAX", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::lax },
     // 0xB4 - LDY (Zero Page,X)
@@ -1610,7 +1633,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xD1 - CMP (Indirect,Y)
     Opcode { mnemonic: "CMP", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::cmp },
     // 0xD2 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0xD3 - DCP (Indirect,Y)
     Opcode { mnemonic: "DCP", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::dcp },
     // 0xD4 - IGN (Zero Page,X)
@@ -1676,7 +1699,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xF1 - SBC (Indirect,Y)
     Opcode { mnemonic: "SBC", addr_mode: AddressingMode::IndirectY, base_cycles: 5, handler: Cpu::sbc },
     // 0xF2 - KIL (Implied)
-    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: invalid_opcode },
+    Opcode { mnemonic: "KIL", addr_mode: AddressingMode::Implied, base_cycles: 2, handler: Cpu::jam },
     // 0xF3 - ISC (Indirect,Y)
     Opcode { mnemonic: "ISC", addr_mode: AddressingMode::IndirectY, base_cycles: 8, handler: Cpu::isc },
     // 0xF4 - IGN (Zero Page,X)
@@ -1712,13 +1735,20 @@ mod tests {
     /// Mock bus for testing
     struct MockBus {
         memory: [u8; 65536],
+        nmi: bool,
     }
 
     impl MockBus {
         fn new() -> Self {
             Self {
                 memory: [0; 65536],
+                nmi: false,
             }
+        }
+
+        /// Raise the NMI line, the interrupt that restarts a halted CPU.
+        fn set_nmi(&mut self, pending: bool) {
+            self.nmi = pending;
         }
 
         fn write_mem(&mut self, addr: u16, value: u8) {
@@ -1744,10 +1774,12 @@ mod tests {
         fn on_cpu_cycle(&mut self, _cycles: u8) {}
 
         fn nmi_pending(&self) -> bool {
-            false
+            self.nmi
         }
 
-        fn clear_nmi(&mut self) {}
+        fn clear_nmi(&mut self) {
+            self.nmi = false;
+        }
 
         fn irq_pending(&self) -> bool {
             false
@@ -2342,5 +2374,266 @@ mod tests {
         assert_eq!(bus.memory[0x01FE], 0x02);
         // Status with B flag should be on stack
         assert_eq!(bus.memory[0x01FD], 0x31); // C=1, I=0, U=1, B=1
+    }
+
+    /// The twelve KIL opcodes hang the CPU. They must not take the host down
+    /// with them: on `wasm32` a panic aborts the whole instance.
+    #[test]
+    fn test_kil_halts_the_cpu_without_panicking() {
+        const KIL: [u8; 12] = [
+            0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2,
+        ];
+
+        for opcode in KIL {
+            let mut cpu = Cpu::new();
+            let mut bus = MockBus::new();
+            bus.load_program(0x0600, &[opcode, opcode, opcode]);
+            cpu.pc = 0x0600;
+
+            assert_eq!(cpu.execute_instruction(&mut bus, opcode), 2);
+            assert!(cpu.is_halted(), "{opcode:#04X} should halt the CPU");
+
+            // A halted CPU burns cycles but fetches nothing: the PC stays put
+            // and the machine keeps ticking around it.
+            let pc = cpu.pc();
+            assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 2);
+            assert_eq!(cpu.pc(), pc, "{opcode:#04X} must not advance the PC while halted");
+            assert!(cpu.is_halted());
+        }
+    }
+
+    #[test]
+    fn test_nmi_resumes_a_halted_cpu() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x02]);
+        bus.write_mem(0xFFFA, 0x00);
+        bus.write_mem(0xFFFB, 0x90); // NMI vector -> $9000
+        cpu.pc = 0x0600;
+
+        cpu.execute_instruction(&mut bus, 0x02);
+        assert!(cpu.is_halted());
+
+        // The interrupt is what brings it back, exactly as on hardware.
+        bus.set_nmi(true);
+        assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 7);
+        assert!(!cpu.is_halted());
+        assert_eq!(cpu.pc(), 0x9000);
+        assert!(!bus.nmi_pending(), "taking the NMI acknowledges it");
+    }
+
+    #[test]
+    fn test_reset_clears_the_halt() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.write_mem(0xFFFC, 0x00);
+        bus.write_mem(0xFFFD, 0x80);
+        cpu.pc = 0x0600;
+
+        cpu.execute_instruction(&mut bus, 0x02);
+        assert!(cpu.is_halted());
+
+        cpu.reset(&mut bus);
+        assert!(!cpu.is_halted());
+        assert_eq!(cpu.pc(), 0x8000);
+    }
+
+    /// $0C is the undocumented 3-byte NOP; it used to be "invalid".
+    #[test]
+    fn test_undocumented_nop_absolute() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x0C, 0x34, 0x12]);
+        cpu.pc = 0x0600;
+
+        assert_eq!(cpu.execute_instruction(&mut bus, 0x0C), 4);
+        assert_eq!(cpu.pc, 0x0603);
+        assert!(!cpu.is_halted());
+    }
+
+    /// Every byte value must have a real handler: the documented set, the
+    /// undocumented instructions the 2A03 executes, and the KILs. A sweep over
+    /// all 256 opcodes catches a table entry that was left "invalid" and makes
+    /// the "no opcode panics" guarantee explicit.
+    #[test]
+    fn test_every_opcode_executes() {
+        const KIL: [u8; 12] = [
+            0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2,
+        ];
+
+        for opcode in 0u8..=0xFF {
+            for flags in [
+                StatusFlags::from_bits_truncate(0x24),
+                StatusFlags::C | StatusFlags::V,
+            ] {
+                let mut cpu = Cpu::new();
+                let mut bus = MockBus::new();
+                // A program of interest: the opcode followed by operands, with
+                // the rest of memory holding a pattern that makes a stray fetch
+                // or store visible rather than silent.
+                for (addr, slot) in bus.memory.iter_mut().enumerate() {
+                    *slot = (addr as u8).wrapping_mul(0x2B);
+                }
+                bus.load_program(0x0600, &[opcode, 0x00, 0x02, 0x04, 0x06]);
+                cpu.pc = 0x0600;
+                cpu.a = 0x55;
+                cpu.x = 0x1F;
+                cpu.y = 0xF0;
+                cpu.sp = 0xFD;
+                cpu.status = flags;
+
+                let cycles = cpu.execute_instruction(&mut bus, opcode);
+
+                assert!(
+                    (2..=8).contains(&cycles),
+                    "{opcode:#04X} returned {cycles} cycles"
+                );
+                assert_eq!(
+                    cpu.is_halted(),
+                    KIL.contains(&opcode),
+                    "{opcode:#04X} halted when it should not (or the reverse)"
+                );
+            }
+        }
+    }
+
+    /// The undocumented instructions are combinations of documented ones; these
+    /// pin a representative sample so a refactor cannot quietly change them.
+    #[test]
+    fn test_undocumented_instruction_semantics() {
+        /// Runs `opcode` against a zero page operand and returns the machine.
+        fn run(
+            opcode: u8,
+            operand: u8,
+            setup: impl FnOnce(&mut Cpu),
+            value: u8,
+        ) -> (Cpu, MockBus, u8) {
+            let mut cpu = Cpu::new();
+            let mut bus = MockBus::new();
+            bus.load_program(0x0600, &[opcode, operand]);
+            bus.write_mem(operand as u16, value);
+            cpu.pc = 0x0600;
+            setup(&mut cpu);
+            let cycles = cpu.execute_instruction(&mut bus, opcode);
+            (cpu, bus, cycles)
+        }
+
+        /// Runs an immediate-mode opcode with `A` primed.
+        fn run_immediate(opcode: u8, immediate: u8, a: u8) -> (Cpu, u8) {
+            let mut cpu = Cpu::new();
+            let mut bus = MockBus::new();
+            bus.load_program(0x0600, &[opcode, immediate]);
+            cpu.pc = 0x0600;
+            cpu.a = a;
+            let cycles = cpu.execute_instruction(&mut bus, opcode);
+            (cpu, cycles)
+        }
+
+        // LAX $10 - load A and X together
+        let (cpu, _, _) = run(0xA7, 0x10, |_| {}, 0x80);
+        assert_eq!((cpu.a, cpu.x), (0x80, 0x80));
+        assert!(cpu.status.contains(StatusFlags::N));
+
+        // SAX $10 - store A AND X
+        let (_, bus, _) = run(0x87, 0x10, |cpu| {
+            cpu.a = 0xF0;
+            cpu.x = 0xFF;
+        }, 0x00);
+        assert_eq!(bus.memory[0x10], 0xF0);
+
+        // DCP $10 - decrement memory then compare with A
+        let (cpu, bus, _) = run(0xC7, 0x10, |cpu| cpu.a = 0x40, 0x41);
+        assert_eq!(bus.memory[0x10], 0x40);
+        assert!(cpu.status.contains(StatusFlags::Z), "A == memory after the decrement");
+
+        // ISC $10 - increment memory then subtract it from A
+        let (cpu, bus, _) = run(0xE7, 0x10, |cpu| {
+            cpu.a = 0x10;
+            cpu.status.insert(StatusFlags::C);
+        }, 0x04);
+        assert_eq!(bus.memory[0x10], 0x05);
+        assert_eq!(cpu.a, 0x0B);
+
+        // SLO $10 - shift memory left, then ORA into A
+        let (cpu, bus, _) = run(0x07, 0x10, |cpu| cpu.a = 0x01, 0x81);
+        assert_eq!(bus.memory[0x10], 0x02);
+        assert_eq!(cpu.a, 0x03);
+        assert!(cpu.status.contains(StatusFlags::C));
+
+        // RLA $10 - rotate memory left, then AND into A
+        let (cpu, bus, _) = run(0x27, 0x10, |cpu| {
+            cpu.a = 0xFF;
+            cpu.status.remove(StatusFlags::C);
+        }, 0x81);
+        assert_eq!(bus.memory[0x10], 0x02);
+        assert_eq!(cpu.a, 0x02);
+        assert!(cpu.status.contains(StatusFlags::C));
+
+        // SRE $10 - shift memory right, then EOR into A
+        let (cpu, bus, _) = run(0x47, 0x10, |cpu| cpu.a = 0xFF, 0x03);
+        assert_eq!(bus.memory[0x10], 0x01);
+        assert_eq!(cpu.a, 0xFE);
+        assert!(cpu.status.contains(StatusFlags::C));
+
+        // RRA $10 - rotate memory right, then ADC into A with the carry the
+        // rotate just produced
+        let (cpu, bus, _) = run(0x67, 0x10, |cpu| {
+            cpu.a = 0x00;
+            cpu.status.insert(StatusFlags::C);
+        }, 0x02);
+        assert_eq!(bus.memory[0x10], 0x81);
+        assert_eq!(cpu.a, 0x81);
+
+        // ANC #$80 - AND immediate, carry from bit 7
+        let (cpu, _) = run_immediate(0x0B, 0x80, 0xFF);
+        assert_eq!(cpu.a, 0x80);
+        assert!(cpu.status.contains(StatusFlags::C));
+
+        // ALR #$01 - AND immediate, then LSR
+        let (cpu, _) = run_immediate(0x4B, 0x01, 0x03);
+        assert_eq!(cpu.a, 0x00);
+        assert!(cpu.status.contains(StatusFlags::C));
+        assert!(cpu.status.contains(StatusFlags::Z));
+
+        // AXS #$10 - X = (A AND X) - immediate
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0xCB, 0x10]);
+        cpu.pc = 0x0600;
+        cpu.a = 0xFF;
+        cpu.x = 0x20;
+        cpu.execute_instruction(&mut bus, 0xCB);
+        assert_eq!(cpu.x, 0x10);
+
+        // LAE $1234,Y - A = X = SP = memory AND SP
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0xBB, 0x34, 0x12]);
+        bus.write_mem(0x1234, 0xFF);
+        cpu.pc = 0x0600;
+        cpu.sp = 0x0F;
+        cpu.y = 0x00;
+        cpu.execute_instruction(&mut bus, 0xBB);
+        assert_eq!((cpu.a, cpu.x, cpu.sp), (0x0F, 0x0F, 0x0F));
+
+        // SHX $1234,Y - store X AND (high byte + 1)
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x9E, 0x34, 0x12]);
+        cpu.pc = 0x0600;
+        cpu.x = 0xFF;
+        cpu.y = 0x00;
+        cpu.execute_instruction(&mut bus, 0x9E);
+        assert_eq!(bus.memory[0x1234], 0x13);
+
+        // IGN $10 - reads the operand and ignores it
+        let (cpu, _, cycles) = run(0x04, 0x10, |cpu| cpu.a = 0x7E, 0x00);
+        assert_eq!(cycles, 3);
+        assert_eq!(cpu.a, 0x7E);
+
+        // SKB #$10 - an immediate NOP
+        let (cpu, _, cycles) = run(0x80, 0x10, |cpu| cpu.a = 0x7E, 0x00);
+        assert_eq!(cycles, 2);
+        assert_eq!((cpu.a, cpu.pc), (0x7E, 0x0602));
     }
 }

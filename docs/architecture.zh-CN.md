@@ -588,8 +588,9 @@ flowchart LR
 - 绑定是**生成物**，修改必须落在 Rust 侧，然后 `cd web && npm run build:wasm`。
 - 方法一律使用 `snake_case`（与 wasm-bindgen 惯例一致），TS 侧按需包装。
 - `frame()` 与 `run_cycles()` 的 `frame_ready` 语义与内核一致，不做额外解释。
-- **panic 在这里无法被 Rust 捕获**（`wasm32-unknown-unknown` panic 即 abort）：未定义 opcode
-  会让 `frame()` 抛出 JS 异常并使实例报废，宿主必须丢弃重建——详见 §15.1。
+- **panic 在这里无法被 Rust 捕获**（`wasm32-unknown-unknown` panic 即 abort）：内核自身的
+  bug 会让 `frame()` 抛出 JS 异常并使实例报废，宿主必须丢弃重建——详见 §15.1。
+  卡带引起的问题不走这条路：未定义 opcode 会让 CPU 停机，由 `is_cpu_halted()` 报告。
 
 ### 11.2 `nes-uniffi`（iOS / macOS / Android）
 
@@ -608,8 +609,8 @@ flowchart LR
 
 - **句柄是引用计数的对象**，方法都取 `&self`，内部用 `Mutex` 串行化。宿主仍应把机器放在
   自己的模拟线程上（§10.5）；锁只是为了"从别的线程误调"不会变成 UB。
-- **锁的中毒会被恢复**：CPU 遇到未定义 opcode 会 panic 并毒化 `Mutex`，若直接 `unwrap`
-  会让一次坏帧永久废掉句柄，因此这里取 `into_inner()` 继续可用（宿主应重新加载卡带）。
+- **锁的中毒会被恢复**：持锁期间发生 panic（内核自身的 bug）会毒化 `Mutex`，若直接
+  `unwrap` 会让一次坏帧永久废掉句柄，因此这里取 `into_inner()` 继续可用（宿主应重新加载卡带）。
 - **panic 必须由绑定层兜住，而且不能只靠 UniFFI 的默认行为**：UniFFI 确实会在 FFI 边界捕获
   panic（不会 UB，消息也保留），但对**不返回 `Result` 的方法**，它生成的 Swift 包装是 `try!`——
   实测结果是 panic 变成 Swift 致命错误、整个 App 崩溃（退出码 133，而不是抛给调用方）。
@@ -727,26 +728,23 @@ flowchart LR
   这是主流取舍，但对少数依赖精确 A12 计时的游戏会有差异。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
-- **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝（如 6、8、16、18、
-  30、85、等等）。扩展方式见第 8 节。
-- **未定义的 opcode 会 panic（已定策略：只在绑定边界兜住）**：CPU 只实现文档化指令集，
-  遇到未定义 opcode 直接 `panic!`（`crates/nes-core/src/cpu/instructions.rs`）——
-  把"不知道"升级成显式失败是刻意选择：牺牲健壮性换准确性。6502 有约 40% 的字节值不是
-  文档化指令，所以损坏的 ROM 很容易踩到。当前的处理方式是分层的：
-  - **`nes-uniffi`（iOS / macOS / Android）**：绑定层用 `catch_unwind` 捕获，变成可捕获的
-    `NesError::EmulationPanic`，进程存活、句柄可继续使用（§11.2）。已用真实 Swift 程序验证：
-    同一个 ROM 在修复前是 `try!` 致命错误（退出码 133），修复后是可 `catch` 的错误（退出码 0）。
-  - **`nes-wasm`（Web）**：这条路**无法在 Rust 侧捕获**——`wasm32-unknown-unknown` 在 panic 时
-    直接 abort，`catch_unwind` 永远不会返回（实测：在绑定层加了 `catch_unwind` 之后，
-    拿到的仍然是 `RuntimeError: unreachable`，而且实例被永久借用、连 `free()` 都会抛
-    "attempted to take ownership of Rust value while it was borrowed"）。只能由 **JS 侧**兜：
-    `frame()` 抛出的是可捕获的异常，页面存活，`console_error_panic_hook` 把 panic 消息
-    打到控制台；但该实例已报废，必须丢弃重建（实测新建实例一切正常）。
-    前端 `NesEmulator.handleCorePanic` 因此会停掉循环、`freeQuietly` 丢弃实例、
-    并用既有通知条提示用户换一个 ROM。
-  - **不做的事**：既不把未定义 opcode 当作 NOP，也不补齐它们的语义——那样会分别牺牲准确性
-    或显著增加工作量。行为由 `crates/nes-core/tests/host_contract.rs` 的 characterization 测试
-    与 `nes-uniffi` 的单测双向钉住。
+- **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。清单与扩展方式见第 8 节。
+- **未定义 opcode 让 CPU 停机，不再 panic**：256 个 opcode 字节全部有实现
+  （`crates/nes-core/src/cpu/instructions.rs`）——文档化指令、2A03 实际会执行的未文档
+  指令（LAX/SAX/DCP/ISC/SLO/RLA/SRE/RRA 等）、NOP 变体，以及 12 个 KIL/JAM。
+  KIL 会让 CPU 停机：继续消耗周期、帧照常完成，只有中断（NMI，或 I 位为 0 时的 IRQ）
+  或复位能重新启动它，与硬件行为一致。`Nes::is_cpu_halted()` / 两个绑定层的
+  `is_cpu_halted()` 用于上报这次停机，Web 前端在通知条里提示用户
+  （`NesEmulator.reportCpuHalt`）。
+  - **为什么不再 panic**：以前这里是 `panic!`。在 `wasm32-unknown-unknown` 上 panic 即 abort，
+    `catch_unwind` 永远不会返回（实测：拿到的是 `RuntimeError: unreachable`，而且实例被永久
+    借用、连 `free()` 都会抛 "attempted to take ownership of Rust value while it was borrowed"）。
+    页面只能靠丢弃整个模拟器实例存活——为一个损坏的 ROM 付这个代价太重，而硬件本身也只是停机。
+  - **绑定边界保留为真正 bug 的兜底**：`nes-uniffi` 仍用 `catch_unwind` 包住所有会执行 CPU 的
+    入口，把 panic 变成可捕获的 `NesError::EmulationPanic { message }`（§11.2）；
+    前端的 `NesEmulator.handleCorePanic` 会丢弃实例并提示用户。模拟路径上不应再触发这两处。
+  - 行为由 `crates/nes-core/tests/host_contract.rs`、CPU 单测
+    （`test_kil_halts_the_cpu_without_panicking`、`test_every_opcode_executes`）与绑定层单测钉住。
 
 ### 15.2 存档与回放
 

@@ -12,7 +12,8 @@ drag a `.nes` file onto the page, or paste a ROM URL, and start playing.
 
 ## Features
 
-- **CPU**: 6502 (Ricoh 2A03) instruction set, validated by nestest integration tests.
+- **CPU**: 6502 (Ricoh 2A03) instruction set — documented and undocumented opcodes alike,
+  with the KIL/JAM hang the hardware has — validated by nestest integration tests.
 - **PPU**: background and sprite rendering, sprite 0 hit, scanline timing, OAM DMA,
   nametable mirroring.
 - **APU**: five channels — two pulses, triangle, noise, DMC — with frame-sequencer IRQ.

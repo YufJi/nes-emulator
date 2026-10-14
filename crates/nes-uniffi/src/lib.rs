@@ -23,8 +23,10 @@
 //!   layout, the mapper list and the default sample rate.
 //!
 //! Panics cannot cross the boundary: UniFFI catches them and re-raises them as
-//! an unexpected error on the foreign side, so a corrupt cartridge that trips
-//! the CPU is reported instead of aborting the process.
+//! an unexpected error on the foreign side, so a bug in the core is reported
+//! instead of aborting the process. (A corrupt cartridge does not need that
+//! safety net any more: an undefined opcode hangs the CPU and the machine keeps
+//! running — see [`Nes::is_cpu_halted`].)
 //!
 //! # Generating the bindings
 //!
@@ -118,10 +120,11 @@ pub enum NesError {
     IoError { message: String },
     /// The emulated CPU panicked mid-instruction.
     ///
-    /// The core deliberately panics on an undefined opcode instead of quietly
-    /// treating it as a no-op, so a corrupt cartridge fails loudly. The binding
-    /// catches that panic and hands it back as this error; the machine is left
-    /// mid-instruction, so reload the cartridge before running another frame.
+    /// A safety net rather than a routine outcome: undefined opcodes hang the
+    /// CPU instead of panicking, so this only fires on a genuine bug in the
+    /// core. The binding catches the panic and hands it back as this error; the
+    /// machine is left mid-instruction, so reload the cartridge before running
+    /// another frame.
     EmulationPanic { message: String },
 }
 
@@ -194,10 +197,10 @@ pub struct Nes {
 impl Nes {
     /// Lock the machine, recovering from a poisoned mutex.
     ///
-    /// A panic while the lock was held (the CPU panics on an undefined opcode)
-    /// leaves it poisoned; refusing every later call would turn one bad frame
-    /// into a permanently dead handle. The machine may be mid-instruction, so
-    /// the host should reload the cartridge — but it stays usable.
+    /// A panic while the lock was held leaves it poisoned; refusing every later
+    /// call would turn one bad frame into a permanently dead handle. The machine
+    /// may be mid-instruction, so the host should reload the cartridge — but it
+    /// stays usable.
     fn machine(&self) -> MutexGuard<'_, CoreNes> {
         self.inner
             .lock()
@@ -283,6 +286,15 @@ impl Nes {
     /// Whether a frame finished since the last [`Nes::clear_frame_ready`].
     pub fn is_frame_ready(&self) -> bool {
         self.machine().is_frame_ready()
+    }
+
+    /// Whether a KIL/JAM opcode has stopped the CPU.
+    ///
+    /// Frames keep completing, but nothing more is fetched, so the picture
+    /// stops changing. Worth surfacing to the user instead of leaving them with
+    /// a frozen screen.
+    pub fn is_cpu_halted(&self) -> bool {
+        self.machine().is_cpu_halted()
     }
 
     /// Clear the frame-ready flag.
@@ -594,8 +606,8 @@ mod tests {
         rom
     }
 
-    /// A structurally valid cartridge whose PRG is nothing but `0x02`, an
-    /// undefined 6502 opcode the core refuses to guess at.
+    /// A structurally valid cartridge whose PRG is nothing but `0x02`, the
+    /// KIL/JAM opcode that hangs the CPU.
     fn undefined_opcode_rom() -> Vec<u8> {
         tiny_rom_with(0x02)
     }
@@ -641,35 +653,24 @@ mod tests {
     }
 
     #[test]
-    fn an_undefined_opcode_is_an_error_not_a_crash() {
-        // This is the case that would otherwise unwind into UniFFI's `try!`
-        // wrapper and take the host process down.
+    fn a_kil_cartridge_halts_instead_of_crashing_the_host() {
+        // This case used to unwind into UniFFI's `try!` wrapper and take the
+        // host process down. The CPU now hangs exactly as the hardware does, so
+        // the frame completes, the handle reports it, and the next cartridge
+        // still loads into the same handle.
         let nes = Nes::new();
         nes.load_rom(undefined_opcode_rom())
             .expect("the header itself is valid");
 
-        match nes.frame() {
-            Err(NesError::EmulationPanic { message }) => {
-                assert!(
-                    message.contains("Invalid opcode"),
-                    "the panic message should survive, got {message:?}"
-                );
-            }
-            other => panic!("expected an emulation panic, got {other:?}"),
-        }
-    }
+        nes.frame().expect("a halted cartridge still runs frames");
+        assert!(nes.is_cpu_halted());
 
-    #[test]
-    fn the_console_survives_an_emulation_panic() {
-        let nes = Nes::new();
-        nes.load_rom(undefined_opcode_rom()).unwrap();
-        assert!(nes.frame().is_err());
-
-        // The panic poisons the mutex; the wrapper recovers, so the host can
-        // simply reload the cartridge and carry on instead of rebuilding.
         nes.load_rom(tiny_rom()).expect("reloading should work");
+        assert!(!nes.is_cpu_halted(), "a fresh cartridge clears the halt");
         nes.frame().expect("the fresh cartridge should run");
-        assert_eq!(nes.frame_number(), 1);
+        // The frame counter keeps counting across a reload (the hung cartridge
+        // completed one frame, plus this one).
+        assert_eq!(nes.frame_number(), 2);
     }
 
     #[test]

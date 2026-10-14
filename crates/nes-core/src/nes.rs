@@ -1018,6 +1018,17 @@ impl Nes {
         self.bus.frame_ready = false;
     }
 
+    /// Whether a KIL/JAM opcode has stopped the CPU.
+    ///
+    /// A halted machine keeps running — the PPU still draws, the APU still
+    /// plays, frames still complete — but no instruction is fetched until an
+    /// interrupt or a reset arrives, so the picture will not change again.
+    /// Hosts can use this to tell the user the cartridge has hung instead of
+    /// leaving them with a frozen screen.
+    pub fn is_cpu_halted(&self) -> bool {
+        self.cpu.is_halted()
+    }
+
     /// Read a byte straight off the system bus.
     ///
     /// Exposed for diagnostics and tests; games should not need it.

@@ -103,6 +103,11 @@ export function useNesEmulator(): UseNesEmulatorResult {
             console.error('NES 内核异常：', message);
             setError(t('error.coreStopped'));
           },
+          // A hung CPU is not fatal — the console keeps running — but the
+          // picture will not change again, so the player has to be told.
+          onCpuHalted: () => {
+            setError(t('error.coreHalted'));
+          },
           onSaveRamChange: (data) => {
             const key = romKeyRef.current;
             if (key) writeSaveRam(key, data);
