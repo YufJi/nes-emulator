@@ -44,6 +44,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use nes_core::{
     Config as CoreConfig, FrameClock as CoreClock, Nes as CoreNes, Region as CoreRegion,
+    RenderTiming as CoreRenderTiming,
 };
 
 uniffi::setup_scaffolding!();
@@ -84,6 +85,9 @@ pub struct Config {
     pub enable_audio: bool,
     /// Sample rate the core resamples to, in Hz; `0` keeps the default.
     pub sample_rate: u32,
+    /// When the renderer draws each scanline; leave it at the default unless a
+    /// game's raster effects sit a line high or low.
+    pub render_timing: RenderTiming,
 }
 
 impl Default for Config {
@@ -93,6 +97,7 @@ impl Default for Config {
             region_override: core.region_override.map(Region::from),
             enable_audio: core.enable_audio,
             sample_rate: core.sample_rate,
+            render_timing: core.render_timing.into(),
         }
     }
 }
@@ -103,6 +108,38 @@ impl From<Config> for CoreConfig {
             region_override: config.region_override.map(CoreRegion::from),
             enable_audio: config.enable_audio,
             sample_rate: config.sample_rate,
+            render_timing: config.render_timing.into(),
+        }
+    }
+}
+
+/// When the renderer draws a scanline, relative to the CPU's own writes.
+///
+/// A whole scanline is drawn at once, so this decides which side of a write the
+/// line falls on. Games with raster effects disagree about which they want,
+/// which is why it is a setting and not a constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum RenderTiming {
+    /// Draw line *N* at dot 256: a write earlier in the line still affects it.
+    ScanlineEnd,
+    /// Draw line *N* at dot 0: only the state as the line starts counts.
+    ScanlineStart,
+}
+
+impl From<CoreRenderTiming> for RenderTiming {
+    fn from(timing: CoreRenderTiming) -> Self {
+        match timing {
+            CoreRenderTiming::ScanlineEnd => RenderTiming::ScanlineEnd,
+            CoreRenderTiming::ScanlineStart => RenderTiming::ScanlineStart,
+        }
+    }
+}
+
+impl From<RenderTiming> for CoreRenderTiming {
+    fn from(timing: RenderTiming) -> Self {
+        match timing {
+            RenderTiming::ScanlineEnd => CoreRenderTiming::ScanlineEnd,
+            RenderTiming::ScanlineStart => CoreRenderTiming::ScanlineStart,
         }
     }
 }
@@ -295,6 +332,19 @@ impl Nes {
     /// a frozen screen.
     pub fn is_cpu_halted(&self) -> bool {
         self.machine().is_cpu_halted()
+    }
+
+    /// Change when the renderer draws each scanline.
+    ///
+    /// Meant as a per-game compatibility switch: it only decides which side of
+    /// a CPU write a scanline falls on, so changing it mid-game is safe.
+    pub fn set_render_timing(&self, timing: RenderTiming) {
+        self.machine().set_render_timing(timing.into());
+    }
+
+    /// When the renderer draws each scanline.
+    pub fn render_timing(&self) -> RenderTiming {
+        self.machine().render_timing().into()
     }
 
     /// Clear the frame-ready flag.

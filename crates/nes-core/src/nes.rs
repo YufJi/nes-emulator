@@ -16,7 +16,7 @@ use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::prelude::*;
 use crate::state::{StateReader, StateWriter};
-use crate::{Config, NesError, Region, DEFAULT_SAMPLE_RATE};
+use crate::{Config, NesError, Region, RenderTiming, DEFAULT_SAMPLE_RATE};
 
 /// Button indices used by [`Nes::set_button`].
 pub const BUTTON_A: u8 = 0;
@@ -244,6 +244,8 @@ struct NesBus {
     open_bus: u8,
     /// Whether the cartridge declares battery-backed work RAM
     has_battery: bool,
+    /// When the renderer draws each scanline, relative to the CPU's writes
+    render_timing: RenderTiming,
     frame_ready: bool,
 }
 
@@ -265,6 +267,7 @@ crate::state::state_fields!(NesBus {
     region,
     open_bus,
     has_battery,
+    render_timing,
     frame_ready,
 });
 
@@ -303,6 +306,7 @@ impl NesBus {
             enable_audio: true,
             open_bus: 0,
             has_battery: false,
+            render_timing: RenderTiming::ScanlineEnd,
             frame_ready: false,
         }
     }
@@ -314,6 +318,7 @@ impl NesBus {
     fn apply_config(&mut self, config: &Config) {
         self.region_override = config.region_override;
         self.enable_audio = config.enable_audio;
+        self.render_timing = config.render_timing;
         self.set_sample_rate(config.sample_rate);
     }
 
@@ -670,7 +675,13 @@ impl NesBus {
 
         if scanline < 240 {
             // Visible scanlines
-            if cycle == 256 {
+            // The whole line is drawn at once, so the only choice left is
+            // whether a write made during this line still counts for it.
+            let draw_at = match self.render_timing {
+                RenderTiming::ScanlineEnd => 256,
+                RenderTiming::ScanlineStart => 0,
+            };
+            if cycle == draw_at {
                     // Reload the horizontal scroll for this line from t.
                     self.ppu.render_v =
                         (self.ppu.render_v & !0x041F) | (self.ppu.t & 0x041F);
@@ -1124,6 +1135,20 @@ impl Nes {
         self.cpu.is_halted()
     }
 
+    /// Change when the renderer draws each scanline.
+    ///
+    /// The setting can be changed while a game runs — it only decides which
+    /// side of a CPU write a scanline falls on — so a host can offer it as a
+    /// per-game compatibility toggle.
+    pub fn set_render_timing(&mut self, timing: RenderTiming) {
+        self.bus.render_timing = timing;
+    }
+
+    /// When the renderer draws each scanline.
+    pub fn render_timing(&self) -> RenderTiming {
+        self.bus.render_timing
+    }
+
     /// Read a byte straight off the system bus.
     ///
     /// Exposed for diagnostics and tests; games should not need it.
@@ -1481,6 +1506,66 @@ mod tests {
         rom.extend_from_slice(&prg);
         rom.extend_from_slice(&[0u8; 0x2000]);
         rom
+    }
+
+    /// A cartridge whose first act is to turn the background off after a short
+    /// delay, so the frame shows where that write landed.
+    fn background_off_rom() -> Vec<u8> {
+        let mut rom = vec![0u8; 16];
+        rom[0..4].copy_from_slice(b"NES\x1a");
+        rom[4] = 1; // one 16 KB PRG bank
+        rom[5] = 1; // one 8 KB CHR bank
+
+        let mut prg = vec![0u8; 0x4000];
+        let code: &[u8] = &[
+            0xA9, 0x08, 0x8D, 0x01, 0x20, // LDA #$08 / STA $2001 (background on)
+            0xA2, 0x50, // LDX #$50
+            0xCA, // DEX
+            0xD0, 0xFD, // BNE -3
+            0xA9, 0x00, 0x8D, 0x01, 0x20, // LDA #$00 / STA $2001 (background off)
+            0x4C, 0x12, 0x80, // JMP $8012
+        ];
+        prg[..code.len()].copy_from_slice(code);
+        prg[0x3FFC] = 0x00;
+        prg[0x3FFD] = 0x80;
+        rom.extend_from_slice(&prg);
+        // A CHR bank of $FF makes every background pixel colour 3, which the
+        // backdrop colour is not, so a blanked line is easy to spot.
+        rom.extend_from_slice(&[0xFFu8; 0x2000]);
+        rom
+    }
+
+    /// The two render timings put a mid-line write on different sides of the
+    /// scanline it lands in.
+    #[test]
+    fn test_render_timing_decides_the_side_of_a_write() {
+        /// Index of the first scanline drawn entirely in the backdrop colour.
+        fn first_blank_line(timing: RenderTiming) -> usize {
+            let mut nes = Nes::new();
+            nes.load_rom(&background_off_rom()).unwrap();
+            nes.set_render_timing(timing);
+            nes.frame();
+
+            let backdrop = crate::ppu::rendering::nes_color(0, PpuMask::empty());
+            let pixels = nes.frame_buffer();
+            (0..240)
+                .find(|line| {
+                    let row = &pixels[line * 256..(line + 1) * 256];
+                    row.iter().all(|pixel| *pixel == backdrop)
+                })
+                .unwrap_or(240)
+        }
+
+        let end = first_blank_line(RenderTiming::ScanlineEnd);
+        let start = first_blank_line(RenderTiming::ScanlineStart);
+        assert!(
+            end < 240 && start < 240,
+            "the write should land inside the frame (end {end}, start {start})"
+        );
+        assert_ne!(
+            end, start,
+            "the timing setting has to move the line the write takes effect on"
+        );
     }
 
     #[test]

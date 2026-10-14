@@ -168,6 +168,11 @@ Key points:
 - **PPU writes are decoupled from rendering**: rendering uses a separate `ppu.render_v`
   scroll counter, so the CPU changing `v` through `$2006/$2007` doesn't corrupt the frame
   being rendered.
+- **A scanline is drawn at once, so the write/render order is a setting**: `RenderTiming`
+  picks whether line *N* is drawn at dot 256 (`ScanlineEnd`, the default: a write earlier in
+  the line still affects it) or at dot 0 (`ScanlineStart`). Games with raster effects do not
+  all agree which they want, so `Config::render_timing` / `Nes::set_render_timing` is a
+  per-game compatibility switch rather than a constant (§15.1).
 - **DMA stalls the CPU**: OAM DMA (`$4014`) stalls it for 513/514 cycles and a DMC byte
   fetch for 4 cycles; PPU and APU keep advancing during the stall.
 
@@ -901,6 +906,11 @@ clone needs `npm run build:wasm` before building the front end.
   work. Still missing: extended-attribute mode's own byte layout, and the hardware
   vertical-split view (which needs the renderer to take a per-scanline nametable *and*
   scroll from the cartridge — the same shape of change section 15.6's rendering work has).
+- **Raster effects get a compatibility switch, not a fix**: because a whole scanline is
+  drawn at once (§3.2), a write made during line *N* either does or does not affect line *N*,
+  and `RenderTiming` chooses which. That is a knob for games whose splits sit a line high or
+  low; making the choice unnecessary means drawing at dot granularity, which is the same
+  work as §6's pipeline and is not on this list yet.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
