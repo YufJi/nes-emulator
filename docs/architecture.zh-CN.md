@@ -755,7 +755,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 
 | 套件 | 结果 |
 | --- | --- |
-| `instr_test-v5` | 15/16（只差 `07-abs_xy`，即 `SHX`/`SHY` 跨页取址/取值的破坏行为） |
+| `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 0/5 |
@@ -907,10 +907,10 @@ flowchart LR
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **测试 ROM 已经点名的精度欠账**：`cpu_interrupts_v2` 的 5 项、`SHX`/`SHY` 跨页破坏、
-   dot 级精确的 A12 与 NMI 时序（§13.1 里 `ppu_vbl_nmi` 与 MMC3 剩余几项）、MMC5 的扩展
-   属性、sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例——以及一个在需要时
-   能暴露 `RenderTiming` 的前端。
+5. **测试 ROM 已经点名的精度欠账**：`cpu_interrupts_v2` 的 5 项、dot 级精确的 A12 与 NMI
+   时序（§13.1 里 `ppu_vbl_nmi` 与 MMC3 剩余几项）、MMC5 的扩展属性、sprite 0 命中时序、
+   §8 里说明延后的 5 个 Mapper、PAL 的 dot 比例——以及一个在需要时能暴露 `RenderTiming`
+   的前端。
 
 ---
 

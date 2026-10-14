@@ -32,6 +32,15 @@ pub struct Cpu {
     /// The 2A03 parks here until an interrupt (or a reset) arrives; the rest of
     /// the machine — PPU, APU, mappers — keeps running while it hangs.
     halted: bool,
+    /// Address an indexed addressing mode started from, before the index was
+    /// added.
+    ///
+    /// The SHx stores (SHX/SHY/SHA/SHS) corrupt their target when the index
+    /// addition carries out of the low byte, and the corruption depends on the
+    /// page the *base* address was in, which the handler cannot recover from
+    /// the effective address alone. It is written and read inside a single
+    /// instruction, so it stays out of save states.
+    addr_base: u16,
 }
 
 bitflags::bitflags! {
@@ -98,6 +107,7 @@ impl Cpu {
             status: StatusFlags::from_bits_truncate(0x24),
             cycles: 0,
             halted: false,
+            addr_base: 0,
         }
     }
 

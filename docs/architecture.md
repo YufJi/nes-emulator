@@ -824,7 +824,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 
 | Suite | Result |
 | --- | --- |
-| `instr_test-v5` | 15/16 (only `07-abs_xy`, i.e. `SHX`/`SHY` page-cross corruption) |
+| `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 0/5 |
@@ -1012,11 +1012,10 @@ backlog, so they are written down here to stop them being re-litigated:
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **The accuracy backlog the test ROMs now name**: `cpu_interrupts_v2`'s five cases, `SHX`/
-   `SHY` page-cross corruption, dot-exact A12 and NMI timing (the remaining `ppu_vbl_nmi` and
-   MMC3 cases in §13.1), MMC5's extended attributes, sprite 0 hit timing, the five mappers §8
-   defers, and the PAL dot ratio — plus a front end that exposes `RenderTiming` when a game
-   needs it.
+5. **The accuracy backlog the test ROMs now name**: `cpu_interrupts_v2`'s five cases,
+   dot-exact A12 and NMI timing (the remaining `ppu_vbl_nmi` and MMC3 cases in §13.1), MMC5's
+   extended attributes, sprite 0 hit timing, the five mappers §8 defers, and the PAL dot
+   ratio — plus a front end that exposes `RenderTiming` when a game needs it.
 
 ---
 

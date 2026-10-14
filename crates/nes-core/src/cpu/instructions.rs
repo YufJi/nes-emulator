@@ -133,6 +133,7 @@ impl Cpu {
                 let hi = bus.read(self.pc.wrapping_add(2));
                 self.pc = self.pc.wrapping_add(3);
                 let base_addr = ((hi as u16) << 8) | (lo as u16);
+                self.addr_base = base_addr;
                 let addr = base_addr.wrapping_add(self.x as u16);
                 let page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00);
                 if page_crossed {
@@ -149,6 +150,7 @@ impl Cpu {
                 let hi = bus.read(self.pc.wrapping_add(2));
                 self.pc = self.pc.wrapping_add(3);
                 let base_addr = ((hi as u16) << 8) | (lo as u16);
+                self.addr_base = base_addr;
                 let addr = base_addr.wrapping_add(self.y as u16);
                 let page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00);
                 if page_crossed {
@@ -190,6 +192,7 @@ impl Cpu {
                 let base_lo = bus.read(operand as u16);
                 let base_hi = bus.read(operand.wrapping_add(1) as u16);
                 let base_addr = ((base_hi as u16) << 8) | (base_lo as u16);
+                self.addr_base = base_addr;
                 let addr = base_addr.wrapping_add(self.y as u16);
                 let page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00);
                 if page_crossed {
@@ -1130,13 +1133,9 @@ impl Cpu {
     /// Has special behavior on page crossing.
     /// Opcodes: $93 (Indirect,Y), $9F (Absolute,Y)
     fn sha(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        // The value to store is A & X & ((high byte of base address) + 1)
-        // For indirect Y, we need to calculate this from the pointer
-        // For absolute Y, base high byte is known from addressing
-        // Simplified: use high byte of effective address
-        let high_byte = ((addr >> 8) + 1) as u8;
-        let value = self.a & self.x & high_byte;
-        bus.write(addr, value);
+        let (target, mask) = self.shx_target(addr);
+        let value = self.a & self.x & mask;
+        bus.write(target, value);
         0
     }
 
@@ -1144,9 +1143,9 @@ impl Cpu {
     /// Store X AND (high byte of address + 1) to memory.
     /// Opcode: $9E (Absolute,Y)
     fn shx(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let high_byte = ((addr >> 8) + 1) as u8;
-        let value = self.x & high_byte;
-        bus.write(addr, value);
+        let (target, mask) = self.shx_target(addr);
+        let value = self.x & mask;
+        bus.write(target, value);
         0
     }
 
@@ -1154,9 +1153,9 @@ impl Cpu {
     /// Store Y AND (high byte of address + 1) to memory.
     /// Opcode: $9C (Absolute,X)
     fn shy(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let high_byte = ((addr >> 8) + 1) as u8;
-        let value = self.y & high_byte;
-        bus.write(addr, value);
+        let (target, mask) = self.shx_target(addr);
+        let value = self.y & mask;
+        bus.write(target, value);
         0
     }
 
@@ -1165,10 +1164,29 @@ impl Cpu {
     /// Opcode: $9B (Absolute,Y)
     fn shs(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
         self.sp = self.a & self.x;
-        let high_byte = ((addr >> 8) + 1) as u8;
-        let value = self.sp & high_byte;
-        bus.write(addr, value);
+        let (target, mask) = self.shx_target(addr);
+        let value = self.sp & mask;
+        bus.write(target, value);
         0
+    }
+
+    /// Where an SHx store really lands, and the mask its value gets.
+    ///
+    /// The index addition keeps the base address's page: a carry out of the low
+    /// byte is dropped instead of incrementing the high byte, so an indexed
+    /// store that "should" cross a page writes into the page it started in.
+    /// The stored byte is `register & (high byte + 1)` of wherever that is,
+    /// which is why SHX and SHY are the instructions that depend on their
+    /// address instead of their data. blargg's `07-abs_xy` is the test that
+    /// pins both halves of the behaviour down.
+    fn shx_target(&self, addr: u16) -> (u16, u8) {
+        let base = self.addr_base;
+        let target = if (base & 0xFF00) != (addr & 0xFF00) {
+            (base & 0xFF00) | (addr & 0x00FF)
+        } else {
+            addr
+        };
+        (target, ((target >> 8) as u8).wrapping_add(1))
     }
 
     /// LAE (LAS, LAR) - Load A, X, SP from memory & SP
@@ -3848,6 +3866,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The SHx stores keep the page the address started in when the index
+    /// carries out of the low byte, and mask the stored byte with that page's
+    /// high byte + 1.
+    #[test]
+    fn test_shx_page_cross_keeps_the_base_page() {
+        // SHY $12F0,X with X = $20 would land in $1310: it lands in $1210
+        // instead, with the value masked by $12 + 1.
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x9C, 0xF0, 0x12]);
+        cpu.pc = 0x0600;
+        cpu.x = 0x20;
+        cpu.y = 0xFF;
+        assert_eq!(cpu.execute_instruction(&mut bus, 0x9C), 5);
+        // Y & ($12 + 1): the page it stayed in is what the mask comes from.
+        assert_eq!(bus.memory[0x1210], 0x13);
+        assert_eq!(
+            bus.memory[0x1310], 0x00,
+            "the page it would have crossed is untouched"
+        );
+
+        // No carry: the store lands exactly where the arithmetic says.
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x9E, 0xF0, 0x12]);
+        cpu.pc = 0x0600;
+        cpu.x = 0xFF;
+        cpu.y = 0x0F;
+        cpu.execute_instruction(&mut bus, 0x9E);
+        assert_eq!(bus.memory[0x12FF], 0x13);
+
+        // The same rule applies to the A & X store and to SHS, which also
+        // writes the AND into the stack pointer first.
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x9B, 0xF0, 0x12]);
+        cpu.pc = 0x0600;
+        cpu.y = 0x20;
+        cpu.a = 0x0F;
+        cpu.x = 0xF3;
+        cpu.execute_instruction(&mut bus, 0x9B);
+        assert_eq!(cpu.sp, 0x03);
+        assert_eq!(bus.memory[0x1210], 0x03 & 0x13);
     }
 
     /// The undocumented instructions are combinations of documented ones; these

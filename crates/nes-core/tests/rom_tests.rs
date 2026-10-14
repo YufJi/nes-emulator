@@ -24,13 +24,7 @@ const BLARGG_SLOW_FRAMES: u32 = 3600;
 
 #[test]
 fn blargg_instr_test_v5() {
-    common::check_blargg_directory(
-        "blargg/instr_test-v5/rom_singles",
-        BLARGG_FRAMES,
-        // SHX/SHY must corrupt the address and the stored value when the
-        // indexed store crosses a page; unimplemented.
-        &["07-abs_xy.nes"],
-    );
+    common::check_blargg_directory("blargg/instr_test-v5/rom_singles", BLARGG_FRAMES, &[]);
 }
 
 #[test]
