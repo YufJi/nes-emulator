@@ -8,7 +8,7 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：810 个测试（全部通过），含 nestest、blargg、AccuracyCoin
+- 测试规模：814 个测试（全部通过），含 nestest、blargg、AccuracyCoin
   真实 ROM 套件（`roms/` 为空时自动跳过）
 
 ---
@@ -156,9 +156,8 @@ sequenceDiagram
 
 要点：
 
-- **渲染是"边跑边画"的**：背景渲染器持续写入自己的工作缓冲，只有在帧边界才
-  `copy_from_slice` 进对外暴露的 `FrameBuffer`。因此帧中途读到的永远是**上一个完整帧**，
-  不会撕裂。
+- **渲染是"边跑边画"的**：背景渲染器持续写入自己的工作缓冲，帧边界处两个缓冲**互换**。
+  因此帧中途读到的永远是**上一个完整帧**，不会撕裂——而且不需要为此每帧复制 245 KB。
 - **PPU 写入与渲染解耦**：渲染使用独立的 `ppu.render_v` 滚动计数器，CPU 通过
   `$2006/$2007` 改 `v` 不会破坏正在渲染的帧。
 - **整行一次画完，所以"写入与渲染的先后"是一个设置项**：`RenderTiming` 决定第 *N* 行是在
@@ -324,7 +323,7 @@ flowchart LR
     Sprites --> Hit
     BG --> Buf["bg_pixels 工作缓冲"]
     Sprites --> Buf
-    Buf -->|帧边界 copy_from_slice| Fb["FrameBuffer.pixels<br/>256×240 · 0xAARRGGBB"]
+    Buf -->|帧边界互换| Fb["FrameBuffer.pixels<br/>256×240 · 0xAARRGGBB"]
 ```
 
 | 组件 | 关键结构 | 说明 |
@@ -711,9 +710,9 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 567 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 572 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
-| `tests/ppu.rs` | 83 | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI、卡带命名表 |
+| `tests/ppu.rs` | 82 | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI、卡带命名表 |
 | `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 68 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
@@ -870,9 +869,9 @@ flowchart LR
 ### 15.3 性能
 
 - **单线程**：模拟在调用线程上执行；移动端建议放独立线程，音频回调只做 `fill_audio`。
-- **WASM 画面拷贝**：`get_frame_buffer()` 每帧复制约 245 KB 并在 JS 里做一次通道重排。
-  优化方向：用 `get_frame_buffer_ptr()` + `ImageData`/BGRA 直接构造，或让内核直接输出
-  `0xRRGGBBAA`/BGRA 变体。
+- **WASM 画面拷贝**：内核内部已改为缓冲互换、不再复制；绑定层的 `get_frame_buffer()`
+  仍会为需要独立 `Vec` 的宿主复制约 245 KB。Web 前端已经走 `get_frame_buffer_ptr()`，
+  剩下可优化的是免去那层逐像素循环、直接构造 `ImageData`。
 - **Mapper 动态分发**：每次内存访问都走 `dyn Mapper` 虚调用；如需再提速，可在热路径上
   做特化或内联缓存。
 

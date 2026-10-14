@@ -1260,33 +1260,6 @@ fn test_ppu_reset() {
     assert_eq!(ppu.scanline, 0);
 }
 
-#[test]
-fn test_ppu_step() {
-    let mut ppu = Ppu::new();
-
-    // Initial state
-    assert_eq!(ppu.scanline, 0);
-    assert_eq!(ppu.cycle, 0);
-    assert_eq!(ppu.frame, 0);
-
-    // Step through one full scanline
-    for _ in 0..341 {
-        ppu.step();
-    }
-
-    assert_eq!(ppu.scanline, 1);
-    assert_eq!(ppu.cycle, 0);
-
-    // Step through one full frame
-    for _ in 0..(341 * 262 - 341) {
-        ppu.step();
-    }
-
-    assert_eq!(ppu.scanline, 0);
-    assert_eq!(ppu.cycle, 0);
-    assert_eq!(ppu.frame, 1);
-}
-
 // ============================================================================
 // NES Palette Tests
 // ============================================================================

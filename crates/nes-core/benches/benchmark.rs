@@ -76,9 +76,21 @@ impl BenchBus {
     }
 
     /// Step PPU for a given number of CPU cycles
+    ///
+    /// The real machine advances the PPU inside `NesBus::advance_cycles`, which
+    /// is private; this benchmark drives its own copy of the wiring, so the dot
+    /// counter it needs lives here.
     fn step_ppu(&mut self, cpu_cycles: u32) {
         for _ in 0..(cpu_cycles * 3) {
-            self.ppu.step();
+            self.ppu.cycle += 1;
+            if self.ppu.cycle > 340 {
+                self.ppu.cycle = 0;
+                self.ppu.scanline += 1;
+                if self.ppu.scanline > 261 {
+                    self.ppu.scanline = 0;
+                    self.ppu.frame += 1;
+                }
+            }
         }
     }
 
@@ -288,17 +300,6 @@ fn bench_ppu_rendering(c: &mut Criterion) {
                 bus.ppu.write_register(0x2006, (i >> 8) as u8);
                 bus.ppu.write_register(0x2006, i as u8);
                 bus.ppu.write_register(0x2007, i as u8);
-            }
-            black_box(&bus.ppu);
-        });
-    });
-
-    // Benchmark PPU stepping
-    group.bench_function("ppu_step", |b| {
-        let mut bus = BenchBus::create_test_bus();
-        b.iter(|| {
-            for _ in 0..10000 {
-                bus.ppu.step();
             }
             black_box(&bus.ppu);
         });

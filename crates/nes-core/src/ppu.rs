@@ -659,20 +659,6 @@ impl Ppu {
     pub fn take_vblank_suppression(&mut self) -> bool {
         core::mem::take(&mut self.suppress_vblank)
     }
-
-    /// Step the PPU by one dot (1/3 CPU cycle)
-    pub fn step(&mut self) {
-        // TODO: Implement PPU rendering logic
-        self.cycle += 1;
-        if self.cycle > 340 {
-            self.cycle = 0;
-            self.scanline += 1;
-            if self.scanline > 261 {
-                self.scanline = 0;
-                self.frame += 1;
-            }
-        }
-    }
 }
 
 #[cfg(test)]

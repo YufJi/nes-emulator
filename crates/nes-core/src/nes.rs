@@ -960,9 +960,11 @@ impl NesBus {
                     self.ppu.frame += 1;
                     self.frame_ready = true;
 
+                    // Show the finished frame by exchanging buffers with the
+                    // renderer: the host keeps reading a complete frame while
+                    // the next one is drawn, and no pixels are copied.
                     self.frame_buffer
-                        .pixels
-                        .copy_from_slice(self.bg_renderer.get_frame());
+                        .swap_pixels(self.bg_renderer.frame_buffer_mut());
                 }
 
                 // Let mappers with a scanline counter tick here.
@@ -1594,6 +1596,26 @@ mod tests {
         // backdrop colour is not, so a blanked line is easy to spot.
         rom.extend_from_slice(&[0xFFu8; 0x2000]);
         rom
+    }
+
+    /// A frame stops on the boundary: the PPU is back at the top of the
+    /// picture with a frame counted, whatever instruction was mid-flight when
+    /// the boundary arrived.
+    ///
+    /// This is the geometry the removed `Ppu::step` test used to cover, now
+    /// checked where the stepping actually happens.
+    #[test]
+    fn test_a_frame_stops_at_the_frame_boundary() {
+        let mut nes = Nes::new();
+        nes.load_rom(&background_off_rom()).unwrap();
+        nes.frame();
+
+        assert_eq!(nes.frame_number(), 1);
+        assert!(nes.is_frame_ready());
+        assert_eq!(
+            nes.bus.ppu.scanline, 0,
+            "the frame ends just after the last scanline, at the top of the next"
+        );
     }
 
     /// The two render timings put a mid-line write on different sides of the

@@ -325,6 +325,17 @@ impl FrameBuffer {
         self.pixels.fill(color);
     }
 
+    /// Exchange this buffer's pixels with another's.
+    ///
+    /// The renderer draws into a working buffer and the machine shows it by
+    /// swapping the two at the frame boundary: the host keeps reading a
+    /// complete frame while the next one is being drawn, and nothing copies
+    /// 245 KB per frame to make that true.
+    pub fn swap_pixels(&mut self, other: &mut FrameBuffer) {
+        debug_assert_eq!(self.pixels.len(), other.pixels.len());
+        core::mem::swap(&mut self.pixels, &mut other.pixels);
+    }
+
     /// Set a pixel at the given coordinates
     ///
     /// # Arguments
@@ -903,6 +914,15 @@ impl BackgroundRenderer {
     /// Get the frame buffer as a slice of ARGB pixels
     pub fn get_frame(&self) -> &[u32] {
         &self.frame_buffer.pixels
+    }
+
+    /// The buffer the renderer is drawing into.
+    ///
+    /// The machine takes the finished frame by swapping buffers with this one
+    /// at the frame boundary, so the host sees a complete frame while the next
+    /// one is drawn (see [`FrameBuffer::swap_pixels`]).
+    pub fn frame_buffer_mut(&mut self) -> &mut FrameBuffer {
+        &mut self.frame_buffer
     }
 
     /// Check if a background pixel exists at the given position

@@ -9,7 +9,7 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 810 tests (all passing), including the nestest, blargg and
+- Test suite: 814 tests (all passing), including the nestest, blargg and
   AccuracyCoin real-ROM suites (which skip without ROMs in `roms/`)
 
 ---
@@ -162,9 +162,9 @@ sequenceDiagram
 Key points:
 
 - **Rendering happens as the machine runs**: the background renderer keeps writing to its
-  own working buffer, and only at a frame boundary does it `copy_from_slice` into the
-  externally visible `FrameBuffer`. So mid-frame reads always see the **previous complete
-  frame**, and there is no tearing.
+  own working buffer, and at a frame boundary the two buffers are swapped. So mid-frame reads
+  always see the **previous complete frame**, and there is no tearing — with no 245 KB copy
+  per frame to make that true.
 - **PPU writes are decoupled from rendering**: rendering uses a separate `ppu.render_v`
   scroll counter, so the CPU changing `v` through `$2006/$2007` doesn't corrupt the frame
   being rendered.
@@ -345,7 +345,7 @@ flowchart LR
     Sprites --> Hit
     BG --> Buf["bg_pixels working buffer"]
     Sprites --> Buf
-    Buf -->|copy_from_slice at frame boundary| Fb["FrameBuffer.pixels<br/>256×240 · 0xAARRGGBB"]
+    Buf -->|swap at frame boundary| Fb["FrameBuffer.pixels<br/>256×240 · 0xAARRGGBB"]
 ```
 
 | Component | Key structures | Notes |
@@ -776,9 +776,9 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 567 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 572 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
-| `tests/ppu.rs` | 83 | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI, cartridge nametables |
+| `tests/ppu.rs` | 82 | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI, cartridge nametables |
 | `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 68 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
@@ -967,10 +967,11 @@ clone needs `npm run build:wasm` before building the front end.
 
 - **Single-threaded**: emulation runs on the calling thread; on mobile, put it on its own
   thread and let the audio callback do nothing but `fill_audio`.
-- **WASM picture copy**: `get_frame_buffer()` copies about 245 KB per frame and does one
-  channel reorder in JS. Optimization directions: use `get_frame_buffer_ptr()` with
-  `ImageData`/BGRA construction, or have the core emit an `0xRRGGBBAA`/BGRA variant
-  directly.
+- **WASM picture copy**: the core hands its finished frame over by swapping buffers, so
+  nothing copies inside the core. The binding's `get_frame_buffer()` still copies about
+  245 KB per frame for hosts that want an owned `Vec`; the web front end already reads through
+  `get_frame_buffer_ptr()`, and what is left to optimize there is building its `ImageData`
+  without the per-pixel loop.
 - **Dynamic mapper dispatch**: every memory access goes through a `dyn Mapper` virtual
   call; for more speed, specialize or inline-cache the hot paths.
 
