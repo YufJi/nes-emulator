@@ -519,7 +519,11 @@ impl NesBus {
             mirroring: self.mirroring,
             open_bus: self.open_bus,
         };
-        self.ppu.read_register_with(addr, memory)
+        let value = self.ppu.read_register_with(addr, memory);
+        if addr & 0x2007 == 0x2007 {
+            self.feed_ppu_vram_access();
+        }
+        value
     }
 
     /// Write to PPU register
@@ -530,6 +534,24 @@ impl NesBus {
             open_bus: self.open_bus,
         };
         self.ppu.write_register_with(addr, value, memory);
+        // $2006 sets the VRAM address, $2007 moves it: both drive the PPU's
+        // address bus, which is what A12 is taken from when nothing is being
+        // rendered.
+        match addr & 0x2007 {
+            0x2006 | 0x2007 => self.feed_ppu_vram_access(),
+            _ => {}
+        }
+    }
+
+    /// Hand the cartridge the address a VRAM access just put on the PPU bus.
+    ///
+    /// MMC3 counts A12 rises, and a game can raise A12 with an ordinary $2007
+    /// access to the pattern tables, with no rendering involved at all.
+    fn feed_ppu_vram_access(&mut self) {
+        let addr = self.ppu.v;
+        if let Some(ref mut mapper) = self.mapper {
+            mapper.on_ppu_bus(addr);
+        }
     }
 
     /// Read from APU/register
@@ -791,6 +813,78 @@ impl Bus for NesBus {
 }
 
 impl NesBus {
+    /// Address the PPU drives for the dot it is on.
+    ///
+    /// The renderer draws a whole scanline in one go, so the fetches the
+    /// cartridge actually sees — the ones that toggle A12 — are reconstructed
+    /// from the dot clock: dots group in eights that fetch nametable,
+    /// attribute, pattern low and pattern high, and the sprite phase fetches
+    /// from the sprite pattern table.
+    ///
+    /// Only bit 12 matters here, and a fetch from the $0000 pattern table can
+    /// never set it (the highest address in that table is $0FF7), so the
+    /// background side is decided by the table the cartridge selected. Sprites
+    /// are tracked per sprite: 8x16 ones choose their table with bit 0 of the
+    /// tile number, which is the difference between an IRQ arriving on time and
+    /// arriving a scanline late.
+    fn ppu_bus_address(&self) -> u16 {
+        let rendering = self
+            .ppu
+            .mask
+            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+        // Nothing is fetched during vertical blanking: the pipeline is idle, so
+        // A12 only moves when the CPU moves it through $2006/$2007. The frame
+        // therefore clocks a scanline counter 241 times - every visible line
+        // plus the pre-render one.
+        let in_vblank = self.ppu.scanline >= 240 && self.ppu.scanline < self.region.last_scanline();
+        if !rendering || in_vblank {
+            // Nothing is being fetched, so A12 follows the VRAM address
+            // register; $2006/$2007 accesses feed it from the other side.
+            return self.ppu.v;
+        }
+
+        if (257..=320).contains(&self.ppu.cycle) {
+            let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
+            let sprite = self
+                .sprite_evaluator
+                .secondary_oam
+                .get_sprite(((self.ppu.cycle - 257) / 8) as usize);
+
+            // An empty slot fetches tile $FF from the sprite table, which is
+            // what the hardware does with the sprites it did not find.
+            let tile = sprite.map_or(0xFF, |sprite| sprite.tile);
+            let table = if eight_by_sixteen {
+                tile & 0x01
+            } else if self.ppu.ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
+                1
+            } else {
+                0
+            };
+            return if table != 0 { 0x1000 } else { 0x0000 };
+        }
+
+        match self.ppu.cycle.wrapping_sub(1) % 8 {
+            // Nametable and attribute fetches address $2000-$2FFF, where bit 12
+            // is clear.
+            0..=3 => 0x2000 | (self.ppu.render_v & 0x0FFF),
+            _ => {
+                if self.ppu.ctrl.contains(PpuCtrl::BACKGROUND_PATTERN) {
+                    0x1000
+                } else {
+                    0x0000
+                }
+            }
+        }
+    }
+
+    /// Hand the current PPU address to the cartridge.
+    fn feed_ppu_bus(&mut self) {
+        let addr = self.ppu_bus_address();
+        if let Some(ref mut mapper) = self.mapper {
+            mapper.on_ppu_bus(addr);
+        }
+    }
+
     /// Advance the PPU and APU by `cycles` CPU cycles without executing any
     /// CPU instructions. Used for normal instruction timing and for the cycles
     /// stolen by OAM/DMC DMA.
@@ -835,6 +929,7 @@ impl NesBus {
                 }
             }
             self.ppu_step();
+            self.feed_ppu_bus();
         }
 
         // The APU runs one tick per CPU cycle.

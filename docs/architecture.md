@@ -830,7 +830,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `ppu_open_bus` | 0/1 (the data bus latch does not decay) |
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
-| `mmc3_test_2` | 0/6 |
+| `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
 | `apu_test` | 3/8 |
 | AccuracyCoin | 146 ran, 78 passed, 0 skipped, 50 failing |
 

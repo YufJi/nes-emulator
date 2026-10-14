@@ -121,14 +121,11 @@ fn blargg_mmc3() {
     common::check_blargg_directory(
         "blargg/mmc3_test_2/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // The MMC3 counter is clocked once per rendered scanline instead of on
-        // A12 edges (§15.1).
+        // The A12 edge filter and the dot-exact timing of the first rise are
+        // not exact enough yet, and the "alternate" IRQ revision this board
+        // variant uses needs a submapper this project does not parse (§15.1).
         &[
-            "1-clocking.nes",
-            "2-details.nes",
-            "3-A12_clocking.nes",
             "4-scanline_timing.nes",
-            "5-MMC3.nes",
             "6-MMC3_alt.nes",
         ],
     );

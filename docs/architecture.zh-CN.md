@@ -761,7 +761,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `ppu_open_bus` | 0/1（数据总线锁存不会衰减） |
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
-| `mmc3_test_2` | 0/6 |
+| `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
 | `apu_test` | 3/8 |
 | AccuracyCoin | 146 项全部跑到，78 通过、0 跳过、50 失败 |
 

@@ -40,6 +40,14 @@ pub struct Mapper4 {
     irq_enabled: bool,
     /// IRQ pending flag
     irq_pending: bool,
+    /// Set when R0/R1 was written, forcing a reload on the next A12 rise
+    irq_reload: bool,
+    /// Whether A12 was low on the previous PPU dot
+    a12_low: bool,
+    /// PPU dots A12 has been low for; the hardware ignores rises shorter than
+    /// three CPU cycles, which is what keeps sprite fetches from clocking the
+    /// counter twice per scanline.
+    a12_low_dots: u16,
 
     // Mirroring
     /// 0=vertical, 1=horizontal
@@ -76,6 +84,9 @@ impl Mapper4 {
             irq_latch: 0,
             irq_enabled: false,
             irq_pending: false,
+            irq_reload: false,
+            a12_low: true,
+            a12_low_dots: 0,
             mirroring: 0,
             prg_rom_banks: prg_rom_banks.max(2),
             chr_rom_banks: chr_rom_banks.max(8),
@@ -232,7 +243,8 @@ impl Mapper4 {
 impl Mapper for Mapper4 {
     crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, command,
         prg_address_select, chr_address_select, bank_regs, irq_counter, irq_latch,
-        irq_enabled, irq_pending, mirroring, prg_rom_banks, chr_rom_banks);
+        irq_enabled, irq_pending, irq_reload, a12_low, a12_low_dots, mirroring, prg_rom_banks,
+        chr_rom_banks);
 
     fn read(&mut self, addr: u16) -> u8 {
         match addr {
@@ -285,9 +297,10 @@ impl Mapper for Mapper4 {
                         self.irq_latch = value;
                     }
                     0xC001 => {
-                        // IRQ reload: the counter is reloaded from the latch
-                        // on the next clock.
-                        self.irq_counter = 0;
+                        // IRQ reload: the counter is pushed above 127 and the
+                        // next A12 rise reloads it from the latch.
+                        self.irq_counter |= 0x80;
+                        self.irq_reload = true;
                     }
                     0xE000 => {
                         // IRQ disable
@@ -313,15 +326,37 @@ impl Mapper for Mapper4 {
         self.irq_pending = false;
     }
 
-    /// Clock the scanline counter once per rendered scanline.
+    /// Clock the IRQ counter on A12 rises, the way the chip does.
     ///
-    /// The hardware toggles A12 eight times per scanline; games only care about
-    /// the resulting count, so clocking once per visible scanline is enough.
-    /// Nothing is clocked while rendering is disabled, which is how games keep
-    /// the counter under control.
-    fn on_scanline(&mut self, scanline: u16, rendering: bool) {
-        if rendering && scanline < 240 {
-            self.clock_irq_counter();
+    /// A rise only counts if A12 was low for at least three CPU cycles (nine
+    /// PPU dots); the filter is what stops the two dots of a sprite fetch from
+    /// clocking the counter on their own. The counter reloads from the latch
+    /// when it is at zero or when the game just wrote R0/R1, and raises the IRQ
+    /// when it lands on zero with interrupts enabled.
+    fn on_ppu_bus(&mut self, addr: u16) {
+        let a12 = addr & 0x1000 != 0;
+        if !a12 {
+            self.a12_low = true;
+            self.a12_low_dots = self.a12_low_dots.saturating_add(1);
+            return;
+        }
+
+        let was_low = self.a12_low;
+        self.a12_low = false;
+        if !was_low || self.a12_low_dots < 9 {
+            return;
+        }
+        self.a12_low_dots = 0;
+
+        if self.irq_counter == 0 || self.irq_reload {
+            self.irq_counter = self.irq_latch;
+            self.irq_reload = false;
+        } else {
+            self.irq_counter -= 1;
+        }
+
+        if self.irq_counter == 0 && self.irq_enabled {
+            self.irq_pending = true;
         }
     }
 
@@ -518,24 +553,24 @@ mod tests {
         let chr = vec![0u8; 8192];
         let mut mapper = Mapper4::new(prg, chr);
 
-        // $C000 sets the latch, $C001 requests a reload.
+        // $C000 sets the latch, $C001 pushes the counter above 127 and asks for
+        // a reload on the next A12 rise.
         mapper.write(0xC000, 3);
         assert_eq!(mapper.irq_latch, 3);
         mapper.write(0xC001, 0);
-        assert_eq!(mapper.irq_counter, 0, "reload clears the counter");
+        assert_eq!(mapper.irq_counter, 0x80, "the counter is pushed up, not cleared");
 
-        // Enable IRQ
         mapper.write(0xE001, 0);
         assert!(mapper.irq_enabled);
 
-        // Clock the counter down to 0
-        mapper.clock_irq_counter(); // reload to 3
+        // Each rise of A12 counts; the first one honours the reload request.
+        clock_a12(&mut mapper); // reload to 3
         assert!(!mapper.irq_pending());
-        mapper.clock_irq_counter(); // 3 -> 2
+        clock_a12(&mut mapper); // 3 -> 2
         assert!(!mapper.irq_pending());
-        mapper.clock_irq_counter(); // 2 -> 1
+        clock_a12(&mut mapper); // 2 -> 1
         assert!(!mapper.irq_pending());
-        mapper.clock_irq_counter(); // 1 -> 0, triggers IRQ
+        clock_a12(&mut mapper); // 1 -> 0, and the IRQ is raised
         assert!(mapper.irq_pending());
     }
 
@@ -653,29 +688,55 @@ mod tests {
         assert_eq!(mapper.read(0x0000), 0x5A, "CHR-RAM was not restored");
     }
 
-    #[test]
-    fn test_on_scanline_clocks_only_while_rendering() {
-        let mut mapper = Mapper4::new(vec![0u8; 0x20000], vec![0u8; 8192]);
+    /// Raises A12 the way a rendered scanline does: low long enough to pass the
+    /// filter, then high.
+    fn clock_a12(mapper: &mut Mapper4) {
+        for _ in 0..12 {
+            mapper.on_ppu_bus(0x2000); // A12 low
+        }
+        mapper.on_ppu_bus(0x1000); // A12 rises
+    }
 
-        mapper.write(0xC000, 2); // latch
-        mapper.write(0xC001, 0); // reload
+    /// One rendered scanline of PPU fetches clocks the counter once.
+    ///
+    /// The background's four-dot pattern pulses are far too short to survive
+    /// the A12 filter, so what the counter actually sees is the sprite phase's
+    /// sixty-four-dot pulse: exactly one rise per scanline.
+    #[test]
+    fn test_a12_clocks_once_per_rendered_scanline() {
+        let mut mapper = Mapper4::new(vec![0u8; 0x20000], vec![0u8; 8192]);
+        mapper.write(0xC000, 5); // latch
         mapper.write(0xE001, 0); // enable
 
-        // Rendering disabled: the counter must not move.
-        mapper.on_scanline(10, false);
-        mapper.on_scanline(10, false);
+        /// One scanline of fetches in the configuration games actually use:
+        /// background tiles from the left pattern table (A12 low all through
+        /// the background fetch groups) and sprites from the right one, so the
+        /// only rise is the sprite phase.
+        fn scanline(mapper: &mut Mapper4) {
+            for _ in 0..42 {
+                for _ in 0..8 {
+                    mapper.on_ppu_bus(0x0000); // nametable, attribute, pattern
+                }
+            }
+            for _ in 0..64 {
+                mapper.on_ppu_bus(0x1000); // sprite pattern fetches
+            }
+            for _ in 0..4 {
+                mapper.on_ppu_bus(0x0000); // and back to idle
+            }
+        }
+
+        scanline(&mut mapper);
+        assert_eq!(mapper.irq_counter, 5, "the first clock reloaded from the latch");
         assert!(!mapper.irq_pending());
 
-        // VBlank scanlines are not clocked either.
-        mapper.on_scanline(250, true);
+        scanline(&mut mapper);
+        assert_eq!(mapper.irq_counter, 4, "one clock per scanline, not more");
         assert!(!mapper.irq_pending());
 
-        // Visible scanlines advance the counter: the first clock reloads from
-        // the latch (2), then it counts 2 -> 1 -> 0 and raises the IRQ.
-        mapper.on_scanline(10, true); // reload to 2
-        mapper.on_scanline(11, true); // 2 -> 1
-        assert!(!mapper.irq_pending());
-        mapper.on_scanline(12, true); // 1 -> 0 -> IRQ
-        assert!(mapper.irq_pending());
+        for _ in 0..4 {
+            scanline(&mut mapper);
+        }
+        assert!(mapper.irq_pending(), "four more lines walk the counter to zero");
     }
 }

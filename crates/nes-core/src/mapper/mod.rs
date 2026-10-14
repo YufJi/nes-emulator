@@ -77,6 +77,30 @@ pub trait Mapper: Send + Sync + Debug {
         0.0
     }
 
+    /// Called once per PPU dot with the address the PPU drives.
+    ///
+    /// This is what a cartridge sees of the PPU: bit 12 of the address (A12)
+    /// rising is how MMC3 and its clones clock their IRQ counter, and how the
+    /// CIRAM-A10 boards know which nametable a fetch belongs to. The default
+    /// does nothing, for the many boards that never look at the PPU.
+    fn on_ppu_bus(&mut self, _addr: u16) {}
+
+    /// Byte the cartridge supplies for a nametable read, if it overrides VRAM.
+    ///
+    /// MMC5's ExRAM modes answer here; `None` means the PPU's own nametable
+    /// RAM has the answer.
+    fn nametable_read(&mut self, _addr: u16) -> Option<u8> {
+        None
+    }
+
+    /// Let the cartridge handle a nametable write, returning whether it did.
+    ///
+    /// MMC5's ExRAM and fill modes claim these writes; the default leaves them
+    /// to the PPU's nametable RAM.
+    fn nametable_write(&mut self, _addr: u16, _value: u8) -> bool {
+        false
+    }
+
     /// Called once per executed CPU instruction with the cycles it consumed.
     ///
     /// Mappers whose IRQ counter runs at the CPU clock rate (Sunsoft FME-7)
