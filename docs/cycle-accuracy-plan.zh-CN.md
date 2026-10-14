@@ -24,10 +24,11 @@ one PPU clock"（`ppu_vbl_nmi/readme.txt`）。`docs/architecture.md` §13.1 里
 | L3 第 1 步 | `a2b13e9` | 对 `$2000-$401F` 的写入落在芯片真正驱动的那个 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个 cycle），`$2000` 写入抬起的 NMI 也在该 cycle 被接收 | ROM 数量零变化（57 pass / 17 known 与 AccuracyCoin 79/49 逐条一致）；`4-irq_and_dma` 的轨迹从错误形状变成 L3a 那份"与文档期望一致、只差常量偏移"的形状（`53 53 53 0…` → `0 0 0 0 1 1 2 2 4…`，CRC `5FA88FED` → `218E154C`）；`3-nmi_and_irq` 的 CRC 从 `90BC9498` 变为 `7E5D001A`；AccuracyCoin 两项错误码变化（`$0468`/`$0469` 由 0x06 变 0x0A，仍为失败）；帧耗时不变（1.033 → 1.034 ms，release，nestest 连续 600 帧） |
 | L3 第 2 步 | `d4bf4ce` | 写入还落在该 cycle 内的一个 **dot** 上：PPU 的逐 dot 视图从该 cycle 的第一个 dot 起就能看到它，cycle 末尾的 APU tick 也看得到 | ROM 基线 57 pass / 17 known → **58 / 16**（`apu_test/5-len_timing`）；AccuracyCoin 79/49 → **81 / 47**（`Frame Counter 4-step`、`Frame Counter 5-step`）；`4-irq_and_dma` 的 CRC 从 `218E154C` 变为 `7DE0C30F`，`5-branch_delays_irq` 的 `BE443B12` → `29BB6E90`，`6-irq_flag_timing` 的子项前进（"Flag first set too late" → "Flag last set too soon"）；原本全绿的没有任何回退；帧耗时不变（1.034 → 1.032 ms，release，nestest 连续 600 帧）；dot 本身不被任何套件区分（0、1、2 结果逐字节相同） |
 | L3 第 3a 步 | `32864f1` | 中断序列在压栈之前被 NMI 抬起时，NMI 接管取向量：压栈内容仍属原序列，处理程序换成 NMI 的 | 无一项翻绿、无任何回退（58 pass / 16 known、AccuracyCoin 81/47）；`3-nmi_and_irq` 在 "NMI occurs after CLC, interrupting IRQ" 五行上第二列与 readme 对齐（`23` → `00`），该处第一列由 `27` → `23`（文档值 `20`） |
+| 修复：分支的采样 | （本次改动） | 撤掉 L1 之前的"未跨页的已跳转分支跳过那一次采样"锁存：采样本就属于分支自己的倒数第二个 cycle，把它推给下一条指令，等于让"单指令等待循环"永远不采样 | 没有任何套件量过这个锁存——ROM 基线仍是 **62 / 12**、AccuracyCoin 仍是 **82 / 46**，`5-branch_delays_irq` 的 CRC 保持 `29BB6E90` 不变；`cargo test --workspace` 826 → 827；热血格斗（mapper 4）恢复出画，它的 VBlank 等待是 `$F86F: D0 FE`（开着 NMI 的 `BNE self` 循环），此前 60 万条指令里 **0** 次 NMI |
 | L3 第 4 步 | （本次改动） | `$2000-$3FFF` 的读落在它自己的 cycle **与 dot** 上——机器在芯片真正做这次访问的那个 cycle 的第二个 dot 之后运行 handler；VBlank 抑制窗口移到标志置位前一个 dot；NMI 线改为每个 CPU cycle 采样一次，而不再在标志抬起的那个 dot 直接置位 | ROM 基线 58 pass / 16 known → **62 / 12**（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`）；AccuracyCoin 81/47 → **82 / 46**；`2-nmi_and_brk` 前四行与 readme 一致（`27 26 26 36`），`3-nmi_and_irq` 第二列在前半段与 readme 一致；帧耗时 1.11 → 1.16 ms（release，nestest 连续 600 帧，两者同场测量），几乎全部来自逐 cycle 的采样 |
 
-当前状态：`cargo test --workspace` 826 全绿、ROM 基线 **62 pass / 12 known**、
-AccuracyCoin **82 通过 / 46 失败**、`STATE_VERSION` 为 4。
+当前状态：`cargo test --workspace` 827 全绿、ROM 基线 **62 pass / 12 known**、
+AccuracyCoin **82 通过 / 46 失败**、`STATE_VERSION` 为 5。
 
 另有三个实验已经实现、量过、并**整体撤回**；它们的证据正是后文的起点（§4）。
 L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当初逼它撤回的依赖者一起搬了过去；

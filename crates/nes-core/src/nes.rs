@@ -35,7 +35,9 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// 4: the mid-frame NMI no longer carries its own flag - the deferred register
 /// write that raises it is replayed on the write's own cycle, so it needs no
 /// save-state field.
-const STATE_VERSION: u8 = 4;
+/// 5: the CPU no longer latches a taken branch's poll as deferred - the poll
+/// belongs to the branch itself, on its penultimate cycle.
+const STATE_VERSION: u8 = 5;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;

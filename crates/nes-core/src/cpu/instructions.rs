@@ -815,12 +815,10 @@ impl Cpu {
     /// `irq_inhibit`, not the live I flag, because CLI/SEI/PLP only change what
     /// is allowed after one more instruction has run.
     ///
-    /// A taken branch that stayed in its page has no poll cycle to spare, so it
-    /// sets `skip_interrupt_poll` and this returns without looking.
+    /// A taken branch keeps its poll: the extra cycle it spends is a discarded
+    /// opcode read, not the poll, so an interrupt asserted before its
+    /// penultimate cycle is taken as soon as the branch ends.
     pub(crate) fn poll_interrupts(&mut self, bus: &mut dyn Bus) {
-        if core::mem::take(&mut self.skip_interrupt_poll) {
-            return;
-        }
         if self.interrupt_source.is_some() {
             return;
         }
@@ -904,7 +902,6 @@ impl Cpu {
                 // sees.
                 self.status.insert(StatusFlags::I);
                 self.irq_inhibit = true;
-                self.skip_interrupt_poll = false;
                 self.vector_low = bus.read(Self::interrupt_vector(vector));
             }
             _ => {
@@ -943,9 +940,10 @@ impl Cpu {
             bus.read(dummy_addr);
             2
         } else {
-            // The poll a three-cycle branch would make at its end falls on the
-            // cycle it does not have: the next instruction runs first.
-            self.skip_interrupt_poll = true;
+            // The extra cycle is only the discarded read of the opcode at the
+            // new PC; the poll already happened on the penultimate cycle, so an
+            // interrupt asserted during this cycle waits for the next
+            // instruction by itself - no deferral has to be imposed on it.
             1
         }
     }
@@ -4255,10 +4253,11 @@ mod tests {
         assert_eq!(bus.memory[0x01FE], 0x20, "pushed status");
     }
 
-    /// A taken branch that does not cross a page skips the interrupt poll its
-    /// last cycle would have made, so one more instruction runs first.
+    /// A taken branch polls on its own penultimate cycle like any other
+    /// instruction, so an interrupt that is already waiting is taken as soon as
+    /// the branch ends - at the branch's target, not after one more instruction.
     #[test]
-    fn test_taken_branch_skips_one_interrupt_poll() {
+    fn test_taken_branch_polls_on_its_own_penultimate_cycle() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
         bus.load_program(0x0600, &[0x90, 0x05, 0xEA, 0xEA]); // BCC +5
@@ -4268,19 +4267,13 @@ mod tests {
         cpu.status.remove(StatusFlags::C); // BCC is taken
         cpu.status.remove(StatusFlags::I);
 
-        // The IRQ is already pending, but a taken branch has no poll cycle to
-        // spare: it runs on its own, and nothing is taken.
         bus.set_irq(true);
-        assert_eq!(run_instruction(&mut cpu, &mut bus, 0x90), 3);
-
-        // The instruction after the branch runs, and the handler follows it.
-        assert_eq!(run_instruction(&mut cpu, &mut bus, 0xEA), 2 + 7);
+        assert_eq!(run_instruction(&mut cpu, &mut bus, 0x90), 3 + 7);
         assert_eq!(cpu.pc(), 0x9000);
         assert_eq!(bus.memory[0x01FD], 0x06, "PCH");
-        assert_eq!(bus.memory[0x01FC], 0x08, "PCL: the NOP's successor");
+        assert_eq!(bus.memory[0x01FC], 0x07, "PCL: the branch's target");
 
-        // A branch that is *not* taken keeps that cycle, so the same pending IRQ
-        // is taken as soon as the branch ends.
+        // A branch that is not taken behaves the same way, one cycle shorter.
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
         bus.load_program(0x0600, &[0x90, 0x05, 0xEA]);
@@ -4293,8 +4286,33 @@ mod tests {
 
         assert_eq!(run_instruction(&mut cpu, &mut bus, 0x90), 2 + 7);
         assert_eq!(cpu.pc(), 0x9000);
-        assert_eq!(bus.memory[0x01FD], 0x06, "PCH");
         assert_eq!(bus.memory[0x01FC], 0x02, "PCL: the branch's successor");
+    }
+
+    /// A loop made of nothing but taken branches must keep polling.
+    ///
+    /// `BNE self` is how a game waits for VBlank, and the poll cannot be handed
+    /// to "the instruction after the branch": in a one-instruction loop that is
+    /// the same branch again, so the interrupt would never be taken and the
+    /// screen would never change again. Regression test for 热血格斗, which
+    /// parks in exactly this loop with NMI enabled.
+    #[test]
+    fn test_branch_only_loop_does_not_starve_nmi() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0xD0, 0xFE]); // BNE $0600
+        bus.write_mem(0xFFFA, 0x00);
+        bus.write_mem(0xFFFB, 0x90); // NMI vector -> $9000
+        cpu.pc = 0x0600;
+        cpu.status.remove(StatusFlags::Z); // BNE is taken, back to itself
+        bus.set_nmi(true);
+
+        // The first pass through the loop polls and takes it.
+        assert_eq!(run_instruction(&mut cpu, &mut bus, 0xD0), 3 + 7);
+        assert_eq!(cpu.pc(), 0x9000);
+        assert!(!bus.nmi_pending(), "taking the NMI acknowledges it");
+        assert_eq!(bus.memory[0x01FD], 0x06, "PCH");
+        assert_eq!(bus.memory[0x01FC], 0x00, "PCL: the loop's own address");
     }
 
     /// The SHx stores keep the page the address started in when the index

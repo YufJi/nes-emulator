@@ -929,7 +929,9 @@ clone needs `npm run build:wasm` before building the front end.
   cycle of each instruction, and the seven cycles that follow (two discarded reads, three
   pushes, two halves of the vector) are driven one cycle at a time, with the PPU and APU
   interleaved around them. CLI/SEI/PLP delay what interrupts are allowed by one instruction
-  (RTI does not), and a taken branch that stays in its page skips that poll. A write to
+  (RTI does not). A taken branch keeps that sample like any other instruction: the extra cycle
+  it spends is only a discarded opcode read, so an interrupt asserted during it is simply too
+  late for the sample and waits for the next instruction's. A write to
   `$2000-$401F` now lands on its own cycle - the last cycle of a store, the one before it
   for a read-modify-write's discarded write - instead of at the instruction's start, and on a
   dot inside that cycle, the one the chip drives the bus on: the PPU's per-dot view sees it

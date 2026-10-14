@@ -110,13 +110,6 @@ pub struct Cpu {
     /// clear in the pushed status — without the IRQ handler being entered an
     /// instruction too early.
     irq_inhibit: bool,
-    /// Set by a taken branch that does not cross a page, to skip the interrupt
-    /// poll the next instruction would otherwise make.
-    ///
-    /// The hardware polls interrupts on the penultimate cycle of an instruction,
-    /// and a branch's last cycle is not one: the instruction after the branch
-    /// gets to run first.
-    skip_interrupt_poll: bool,
     /// The interrupt sequence being taken, if any, and how many of its seven
     /// cycles have run.
     interrupt_source: Option<InterruptSource>,
@@ -193,7 +186,6 @@ crate::state::state_fields!(Cpu {
     cycles,
     halted,
     irq_inhibit,
-    skip_interrupt_poll,
     interrupt_source,
     interrupt_step,
     vector_low
@@ -222,7 +214,6 @@ impl Cpu {
             halted: false,
             addr_base: 0,
             irq_inhibit: true,
-            skip_interrupt_poll: false,
             interrupt_source: None,
             interrupt_step: 0,
             nmi_hijack: false,
@@ -245,7 +236,6 @@ impl Cpu {
 
         self.halted = false;
         self.irq_inhibit = true;
-        self.skip_interrupt_poll = false;
         self.cycles = 0;
     }
 
