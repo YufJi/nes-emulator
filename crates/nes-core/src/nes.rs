@@ -37,7 +37,7 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// save-state field.
 /// 5: the CPU no longer latches a taken branch's poll as deferred - the poll
 /// belongs to the branch itself, on its penultimate cycle.
-const STATE_VERSION: u8 = 6;
+const STATE_VERSION: u8 = 8;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
@@ -241,6 +241,18 @@ struct NesBus {
     cpu_cycles: u64,
     /// CPU cycles the next OAM/DMC DMA transfer still has to steal
     dma_stall_cycles: u16,
+    /// The address the PPU is driving for the cartridge: Mesen's
+    /// `_ppuBusAddress`, set by `SetBusAddress` on every access and *held*
+    /// between them.
+    ///
+    /// Holding it is what the cartridges see: during vertical blanking the
+    /// pipeline is idle, so A12 stays wherever the last fetch left it (the
+    /// nametable, i.e. low) instead of following the VRAM address register,
+    /// which is what makes the long low run before a frame's first fetch —
+    /// and therefore the one rise per scanline that a scanline counter counts.
+    /// A CPU access through `$2007` drives it too, which is how a game can
+    /// move A12 from the CPU side.
+    bus_address: u16,
     /// Set when pre-render dot 339 found the conditions for an odd frame's
     /// short frame, so dot 340 is the one that gets skipped.
     ///
@@ -283,6 +295,7 @@ crate::state::state_fields!(NesBus {
     cpu_cycles,
     dma_stall_cycles,
     skip_odd_frame_dot,
+    bus_address,
     bg_renderer,
     sprite_evaluator,
     mirroring,
@@ -319,6 +332,7 @@ impl NesBus {
             cpu_cycles: 0,
             dma_stall_cycles: 0,
             skip_odd_frame_dot: false,
+            bus_address: 0,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
             sprite_evaluator: SpriteEvaluator::new(),
@@ -588,10 +602,11 @@ impl NesBus {
     /// MMC3 counts A12 rises, and a game can raise A12 with an ordinary $2007
     /// access to the pattern tables, with no rendering involved at all.
     fn feed_ppu_vram_access(&mut self) {
-        let addr = self.ppu.v;
-        if let Some(ref mut mapper) = self.mapper {
-            mapper.on_ppu_bus(addr);
-        }
+        // A CPU access through `$2006`/`$2007` drives the bus too, and the
+        // address it leaves there is the one that stays: Mesen's `SetBusAddress`
+        // on the `ReadVram`/`WriteVram` a register access makes.
+        self.bus_address = self.ppu.v;
+        self.feed_ppu_bus();
     }
 
     /// Read from APU/register
@@ -905,60 +920,86 @@ impl NesBus {
     /// never set it (the highest address in that table is $0FF7), so the
     /// background side is decided by the table the cartridge selected. Sprites
     /// are tracked per sprite: 8x16 ones choose their table with bit 0 of the
-    /// tile number, which is the difference between an IRQ arriving on time and
-    fn ppu_bus_address(&self) -> u16 {
+    /// Drive the PPU bus for the dot being stepped, the way the chip's own
+    /// fetches do.
+    ///
+    /// Mesen's `SetBusAddress`, called from every `ReadVram`: the cartridge
+    /// sees the address of the *last* access, held between accesses. The
+    /// pipeline reads at fixed dots — `LoadTileInfo` takes the nametable byte
+    /// on `cycle % 8 == 1`, the attribute byte on 3 and the two pattern bytes
+    /// on 5 and 7, and the sprite phase at 257-320 does its garbage nametable
+    /// and attribute reads on `(cycle - 257) % 8 == 0` and `2` before the
+    /// sprite's own pattern bytes on 4 — so reproducing the sequence from the
+    /// dot counter gives the cartridge the same addresses, on the same dots,
+    /// that the fetches would.
+    ///
+    /// Nothing is fetched during vertical blanking or with rendering off
+    /// (Mesen only runs the pipeline for `scanline < 240`, and the pre-render
+    /// line counts as one of those): the address is left where it was.
+    fn drive_ppu_bus(&mut self) {
         let rendering = self
             .ppu
             .mask
             .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
-        // Nothing is fetched during vertical blanking: the pipeline is idle, so
-        // A12 only moves when the CPU moves it through $2006/$2007. The frame
-        // therefore clocks a scanline counter 241 times - every visible line
-        // plus the pre-render one.
-        let in_vblank = self.ppu.scanline >= 240 && self.ppu.scanline < self.region.last_scanline();
+        let in_vblank =
+            self.ppu.scanline >= 240 && self.ppu.scanline <= self.region.last_scanline();
         if !rendering || in_vblank {
-            // Nothing is being fetched, so A12 follows the VRAM address
-            // register; $2006/$2007 accesses feed it from the other side.
-            return self.ppu.v;
+            return;
         }
 
-        if (257..=320).contains(&self.ppu.cycle) {
-            let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
-            let sprite = self
-                .sprite_evaluator
-                .secondary_oam
-                .get_sprite(((self.ppu.cycle - 257) / 8) as usize);
+        let cycle = self.ppu.cycle;
+        // The nametable and attribute fetches address $2000-$2FFF, where bit 12
+        // is clear; the pattern fetches address the table the control register
+        // selects, and bit 12 is the only bit a cartridge's A12 filter looks at.
+        let nametable = 0x2000 | (self.ppu.render_v & 0x0FFF);
+        let background_pattern = if self.ppu.ctrl.contains(PpuCtrl::BACKGROUND_PATTERN) {
+            0x1000
+        } else {
+            0x0000
+        };
 
-            // An empty slot fetches tile $FF from the sprite table, which is
-            // what the hardware does with the sprites it did not find.
-            let tile = sprite.map_or(0xFF, |sprite| sprite.tile);
-            let table = if eight_by_sixteen {
-                tile & 0x01
-            } else if self.ppu.ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
-                1
-            } else {
-                0
-            };
-            return if table != 0 { 0x1000 } else { 0x0000 };
-        }
-
-        match self.ppu.cycle.wrapping_sub(1) % 8 {
-            // Nametable and attribute fetches address $2000-$2FFF, where bit 12
-            // is clear.
-            0..=3 => 0x2000 | (self.ppu.render_v & 0x0FFF),
-            _ => {
-                if self.ppu.ctrl.contains(PpuCtrl::BACKGROUND_PATTERN) {
-                    0x1000
+        self.bus_address = match cycle {
+            0 | 337..=340 => nametable,
+            257..=320 => {
+                let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
+                let sprite = self
+                    .sprite_evaluator
+                    .secondary_oam
+                    .get_sprite(((cycle - 257) / 8) as usize);
+                // An empty slot fetches tile $FF from the sprite table, which
+                // is what the hardware does with the sprites it did not find.
+                let tile = sprite.map_or(0xFF, |sprite| sprite.tile);
+                let table = if eight_by_sixteen {
+                    tile & 0x01
+                } else if self.ppu.ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
+                    1
                 } else {
-                    0x0000
+                    0
+                };
+                match (cycle - 257) % 8 {
+                    // The group's nametable and attribute reads come first, so
+                    // A12 goes low between the sprite pattern fetches; that is
+                    // what an MC-ACC clone's IRQ is built on.
+                    0..=3 => nametable,
+                    _ => {
+                        if table != 0 {
+                            0x1000
+                        } else {
+                            0x0000
+                        }
+                    }
                 }
             }
-        }
+            _ => match cycle.wrapping_sub(1) % 8 {
+                0..=3 => nametable,
+                _ => background_pattern,
+            },
+        };
     }
 
     /// Hand the current PPU address to the cartridge.
     fn feed_ppu_bus(&mut self) {
-        let addr = self.ppu_bus_address();
+        let addr = self.bus_address;
         if let Some(ref mut mapper) = self.mapper {
             mapper.on_ppu_bus(addr);
         }
@@ -1194,6 +1235,7 @@ impl NesBus {
             }
         }
         self.ppu_step();
+        self.drive_ppu_bus();
         self.feed_ppu_bus();
     }
 }
