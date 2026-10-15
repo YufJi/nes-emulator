@@ -72,10 +72,16 @@ const STATE_VERSION: u8 = 10;
 /// How far into a CPU cycle the chip performs a bus access: after the cycle's
 /// first two PPU dots.
 ///
-/// Measured, not chosen — the VBlank flag's set/clear boundary and the NMI
-/// suppression window both pin it down (§4 and §7 of
-/// `docs/mesen-alignment.md`). Saying it in dots rather than in ticks is
-/// what keeps it meaningful if a cycle is ever not exactly three dots long.
+/// Measured, not chosen. It was picked out by the VBlank flag's set/clear
+/// boundary and the NMI suppression window, and the per-dot renderer made it
+/// discriminating: with the pipeline fetching at the dot, moving the access to
+/// the first or the zeroth dot costs five ROMs (`ppu_vbl_nmi`'s
+/// `05-nmi_timing`, `06-suppression` and `07-nmi_on_timing`,
+/// `cpu_interrupts_v2/2-nmi_and_brk` and `mmc3_test_2/4-scanline_timing`),
+/// while two passes every suite. See §7 of `docs/mesen-alignment.md`.
+///
+/// Saying it in dots rather than in ticks is what keeps it meaningful if a
+/// cycle is ever not exactly three dots long.
 const ACCESS_DOTS: u32 = 2;
 
 /// How much audio the core buffers before it starts dropping the oldest

@@ -127,10 +127,12 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 - **KIL/JAM**。Mesen 把 KIL 当作不可恢复的崩溃并清掉中断采样，使挂死无法被打断。内核保留硬件
   行为——中断或复位可以把 CPU 重新拉起——因为宿主需要上报挂死（`Nes::is_cpu_halted`，Web 前端
   会提示）。PC 回退沿用 Mesen，清采样**不是**。
-- **访问在周期内的落点**。`ACCESS_DOTS = 2`：芯片的访问落在该周期前两个 dot 之后。Mesen 的
-  `_startClockCount`/`_endClockCount`（12 中的 6/6）把它放在约一个 dot 处。这个 dot 是拿
-  blargg 的 `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` 测出来的，且没有任何套件能区分
-  写入时的 0/1/2；逐 dot 渲染落地后作为一次实验重新审视。
+- **访问在周期内的落点**。`ACCESS_DOTS = 2`：芯片的访问落在该周期前两个 dot 之后，Mesen 的
+  `_startClockCount`/`_endClockCount`（12 中的 6/6）把它放在约一个 dot 处。这是**实测**的，且
+  逐 dot 渲染让这个测量变得尖锐：流水线按 dot 取指之后，`ACCESS_DOTS = 1`（以及 0）各自会让
+  五个 ROM 失败——`ppu_vbl_nmi` 的 `05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`，
+  `cpu_interrupts_v2/2-nmi_and_brk`，以及 `mmc3_test_2/4-scanline_timing`——而 2 让所有套件通过。
+  上文原先写的"没有任何套件能区分 0/1/2"在整行渲染器时代成立，现在不成立了。
 
 ## 5. 观测手段
 
@@ -198,6 +200,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | 帧计数器相位 | `$4017` 让计数器迟 3 个周期起步（奇数 APU 相位时 4 个）；帧 IRQ 标志从写入后第 29831 个周期起连续三个周期置位 | **`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿**（apu_test 3/8 → 6/8）；其余基线不变 |
 | DMC 修复 | `write_4015` 现在会置 enable 标志（此前 `$4015` 的 bit 4 从未置位）；读 `$4015` 不再清 DMC 的 IRQ 标志；字节计数按**已播放**的字节走，并改成两级缓冲 | `7-dmc_basics` 从第 2 项推进到第 19 项；`8-dmc_rates` 仍在基线（rate 0 的窗口） |
 | PAL 16/5 | `cpu_divider` 15 → 16，`has_whole_dot_ratio` 的 PAL 分支改 false 以启用主时钟路径，APU 的速率改由 `dots_per_cpu_cycle()` 推导而不再用 3.0 常量 | ROM 无移动（没有 PAL ROM）；PAL 一帧是 33,247.5 个 CPU 周期，音频时钟与公布值相差不到 10 Hz |
+| 访问的 dot | 逐 dot 渲染落地后，把 `ACCESS_DOTS` 取 0/1/2 各跑一遍完整 ROM 基线 | **实测值是 2**：0 与 1 各自让五个 ROM 失败（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`2-nmi_and_brk`、`4-scanline_timing`）；2 让所有套件通过 |
 
 ### 实现、实测、随后撤回的实验
 
@@ -236,8 +239,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 维持单元测试、不做金标准比对；访问的 dot（§4）等一次用 `Nes::ppu_bus_trace` 做的实验；
 `6-MMC3_alt` 需要逐 ROM 覆盖表或按 CRC 的数据库而不是 submapper——它的头部是纯 iNES，§2.5 已记下。
 
-1. **访问的 dot**（§4）：用 `Nes::ppu_bus_trace` 跑
-   `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` 的实验，除非证据反对，继续保留
-   `ACCESS_DOTS = 2`。
+1. ~~**访问的 dot**（§4）~~ —— 实验已做，结论就是保留 `ACCESS_DOTS = 2`：0 与 1 各自会让五个
+   ROM 失败（§7）。
 2. **APU 帧计数器的相位**（§2.4）：先弄清 `4-jitter` 与 `6-irq_flag_timing` 各自读的是哪个事件，
    再动计数器（§7）。

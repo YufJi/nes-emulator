@@ -149,10 +149,13 @@ randomised CPU/PPU alignment (this core has offset 0).
   reset restarts the CPU — because the host reports the hang (`Nes::is_cpu_halted`, and the web
   front end surfaces it). The PC rewind is Mesen's; the sample clearing is not.
 - **The access dot inside a cycle.** `ACCESS_DOTS = 2`: the chip's access lands after the cycle's
-  first two dots. Mesen's `_startClockCount`/`_endClockCount` (6/6 of 12) put it about one dot in.
-  The dot was measured against blagg's `05-nmi_timing`/`06-suppression`/`02-vbl_set_time`, and no
-  suite discriminates between 0, 1 and 2 for writes; revisit it as one experiment when the
-  per-dot renderer lands.
+  first two dots, where Mesen's `_startClockCount`/`_endClockCount` (6/6 of 12) put it about one
+  dot in. This is *measured*, and the per-dot renderer made the measurement sharp: with the
+  pipeline fetching at the dot, `ACCESS_DOTS = 1` (and 0) each cost five ROMs —
+  `ppu_vbl_nmi`'s `05-nmi_timing`, `06-suppression` and `07-nmi_on_timing`,
+  `cpu_interrupts_v2/2-nmi_and_brk` and `mmc3_test_2/4-scanline_timing` — while 2 passes every
+  suite. The earlier note here said no suite discriminated between 0, 1 and 2; that was true of
+  the whole-line renderer and is not true any more.
 
 ## 5. Instruments
 
@@ -227,6 +230,7 @@ several runs.
 | Frame counter phase | `$4017` holds the counter 3 cycles (4 on the odd APU phase); the frame IRQ flag goes up for three cycles in a row starting 29831 clocks after the write | **`4-jitter`, `5-len_timing` and `6-irq_flag_timing` green** (apu_test 3/8 → 6/8); rest of the baseline unchanged |
 | DMC fixes | `write_4015` now sets the enable flag (`$4015` bit 4 was never set at all), a read of `$4015` no longer clears the DMC IRQ flag, and the byte counter follows *played* bytes with a two-stage buffer | `7-dmc_basics` from its 2nd check to its 19th; `8-dmc_rates` still on the baseline (rate 0's window) |
 | PAL 16/5 | `cpu_divider` 15 → 16, `has_whole_dot_ratio` PAL → false so the master-clock path runs, and the APU's rate derives from `dots_per_cpu_cycle()` instead of a 3.0 constant | No ROM moved (no PAL ROMs); a PAL frame is 33,247.5 CPU cycles and the audio clock lands within 10 Hz of the published rate |
+| The access dot | Ran `ACCESS_DOTS` at 0, 1 and 2 against the whole ROM baseline now that the pipeline fetches at the dot | **2 is the measured value**: 0 and 1 each cost five ROMs (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `2-nmi_and_brk`, `4-scanline_timing`); 2 passes every suite |
 
 ### Experiments that were implemented, measured and reverted
 
