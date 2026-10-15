@@ -18,4 +18,5 @@ targets = [
     "aarch64-linux-android",  # android/build-core.sh, devices and TV boxes
     "x86_64-linux-android",   # android/build-core.sh, 64-bit emulator images
     "i686-linux-android",     # android/build-core.sh, the Android TV emulator
+    "armv7-linux-androideabi", # android/build-core.sh, TVs that run 32-bit Android
 ]

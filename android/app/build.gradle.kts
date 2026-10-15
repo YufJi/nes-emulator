@@ -30,11 +30,12 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // The ABIs `build-core.sh` builds: 64-bit devices (every Android TV box
-        // worth shipping to), 64-bit emulator images, and 32-bit x86, which is
-        // what Google's own Android TV system images use up to API 31.
+        // The ABIs `build-core.sh` builds: 64-bit devices, 32-bit ARM for the
+        // sets that run a 32-bit Android userspace on 64-bit silicon (Sony's,
+        // among others — without it the APK does not install), 64-bit emulator
+        // images, and 32-bit x86 for Google's own TV system images up to API 31.
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64", "x86")
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
         }
     }
 
