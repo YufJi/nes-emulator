@@ -26,9 +26,87 @@ one PPU clock"（`ppu_vbl_nmi/readme.txt`）。`docs/architecture.md` §13.1 里
 | L3 第 3a 步 | `32864f1` | 中断序列在压栈之前被 NMI 抬起时，NMI 接管取向量：压栈内容仍属原序列，处理程序换成 NMI 的 | 无一项翻绿、无任何回退（58 pass / 16 known、AccuracyCoin 81/47）；`3-nmi_and_irq` 在 "NMI occurs after CLC, interrupting IRQ" 五行上第二列与 readme 对齐（`23` → `00`），该处第一列由 `27` → `23`（文档值 `20`） |
 | 修复：分支的采样 | （本次改动） | 撤掉 L1 之前的"未跨页的已跳转分支跳过那一次采样"锁存：采样本就属于分支自己的倒数第二个 cycle，把它推给下一条指令，等于让"单指令等待循环"永远不采样 | 没有任何套件量过这个锁存——ROM 基线仍是 **62 / 12**、AccuracyCoin 仍是 **82 / 46**，`5-branch_delays_irq` 的 CRC 保持 `29BB6E90` 不变；`cargo test --workspace` 826 → 827；热血格斗（mapper 4）恢复出画，它的 VBlank 等待是 `$F86F: D0 FE`（开着 NMI 的 `BNE self` 循环），此前 60 万条指令里 **0** 次 NMI |
 | L3 第 4 步 | （本次改动） | `$2000-$3FFF` 的读落在它自己的 cycle **与 dot** 上——机器在芯片真正做这次访问的那个 cycle 的第二个 dot 之后运行 handler；VBlank 抑制窗口移到标志置位前一个 dot；NMI 线改为每个 CPU cycle 采样一次，而不再在标志抬起的那个 dot 直接置位 | ROM 基线 58 pass / 16 known → **62 / 12**（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`08-nmi_off_timing`）；AccuracyCoin 81/47 → **82 / 46**；`2-nmi_and_brk` 前四行与 readme 一致（`27 26 26 36`），`3-nmi_and_irq` 第二列在前半段与 readme 一致；帧耗时 1.11 → 1.16 ms（release，nestest 连续 600 帧，两者同场测量），几乎全部来自逐 cycle 的采样 |
+| Phase 1 | （本次改动） | CPU 不再是指令原子，而是像 Mesen 那样自己驱动自己的周期：每一次访问（`Bus::read_cycle`/`write_cycle`）**本身就是那个周期**，寻址的丢弃读与 handler 的访问都写在芯片真正做它的地方，中断线逐周期采样、判决滞后一个周期 | ROM 基线总数仍是 **62 pass / 12 known**，但构成发生变化：`2-nmi_and_brk` 转绿（向量在压状态字节时选定，因此 NMI 接管了它），`5-len_timing` 则移到失败清单——`$4015` 读现在落在它自己的周期上，它原先吸收的同步误差挪了位置（§4.3 正是这样预测的）；`instr_timing` 2/2 与 `branch_timing` 3/3 保持全绿，这说明周期计数没有走样；AccuracyCoin 82/46 不变；帧耗时 1.204 → 1.204 ms（release，nestest 连续 600 帧，各测 5 次）——寄存写入与事后补周期的机制整体删除，访问驱动的写法自己把开销赚了回来 |
+| Phase 0 | （本次改动） | 机器获得 Mesen 的时钟形状：一条主时钟配上 `cpuDivider`/`ppuDivider`（`Region::cpu_divider()`/`ppu_divider()`），一个 cycle 的 dot 既可以走计数循环，也可以走"推进到某个主时钟目标" | ROM 结果零变化（所有套件逐条一致，AccuracyCoin 82/46，`4-irq_and_dma` 的 CRC `7DE0C30F` 不变）；帧耗时 1.206 → 1.210 ms（release，nestest 连续 600 帧，各测 5 次）——最初那版每周期都做时钟算术，代价 1.266 ms，已换成计数式快路径 |
 
-当前状态：`cargo test --workspace` 827 全绿、ROM 基线 **62 pass / 12 known**、
-AccuracyCoin **82 通过 / 46 失败**、`STATE_VERSION` 为 5。
+当前状态：`cargo test --workspace` 829 全绿、ROM 基线 **62 pass / 12 known**、
+AccuracyCoin **82 通过 / 46 失败**、`STATE_VERSION` 为 6。
+
+### 2.1 Phase 0：后续工作所需的时钟模型
+
+上面这些步骤让*机器*变成了逐 cycle 推进，但 CPU 仍是指令原子、渲染器仍是整行渲染。
+两者无论往哪个方向再进一步，都先需要同一件东西：一个两颗芯片都由它推导的时钟——这正是
+Mesen 的 NES 内核的骨架（`NesCpu::StartCpuCycle`/`EndCpuCycle` 推进同一条主时钟，并把 PPU
+推进到 `_masterClock - _ppuOffset`；NTSC 的 `ppuDivider` 为 4、`cpuDivider` 为 12，PAL 为 5 与 16）。
+Phase 0 就是这个结构，且不改变任何行为：
+
+- `Region::cpu_divider()`/`ppu_divider()` 是该比例唯一的落点。NTSC 的 12/4 就是真实
+  21.477 MHz 晶振的分频；PAL 暂时建模为 15/5，而不是真机的 16/5，等 PAL 有了可测的 ROM 再切。
+- `NesBus::run_ppu_to` 把 PPU 推进到某个主时钟目标，而访问位置改用 *tick* 偏移表达
+  （`ACCESS_DOTS * ppu_divider`），不再写成"三步里的第三步"，这样即使一个 cycle 不是恰好三个
+  dot，位置依然成立。
+- 整除的比例走计数式 dot 循环，而不是每周期都做一遍时钟算术：通用写法实测白吃 4% 帧时间；
+  两者由 `test_the_master_clock_path_places_the_same_dots` 钉在一起。另一个测试
+  `test_the_whole_ratio_flags_agree_with_the_dividers` 负责在"只改了 PAL 的数值、没同步改
+  `has_whole_dot_ratio`"时直接失败。
+- 主时钟由周期数推导而非存储，因此存档完全不受影响——这也是本次不需要升 `STATE_VERSION` 的原因。
+- 新增 `Nes::cpu_cycles()` / `master_clock()` / `ppu_dots()` / `ppu_position()` / `cpu_pc()`，
+  以及 `tests/cycle_trace.rs`：它用这些接口打印逐指令 trace，便于与 ROM readme 里记录的轨迹逐行比对。
+
+### 2.2 Phase 1：CPU 自己驱动周期
+
+已落地。`Cpu::execute_instruction` 不再返回一个"交给机器去补"的周期数：它通过
+`Bus::read_cycle` 取操作数，handler 也通过同一个调用读写，芯片用内部周期做的那些丢弃读则
+在 `Cpu::fetch_operand` 与需要它们的 handler 里逐条写出（`RTS` 两次、`RTI` 一次、`PLA`/`PLP`
+各一次、NOP 的操作数读、分支的两次）。`NesBus::begin_cpu_cycle`/`end_cpu_cycle` 即 Mesen 的
+`StartCpuCycle`/`EndCpuCycle`：PPU 先跑到该访问所属的那个时刻，访问发生，随后跑完这个周期剩下的部分。
+
+随之删除的东西：`Access`/`plan_access`/`PendingAccess`、被寄存的寄存器写入及其回放、
+`defer_writes`/`defer_register_reads`、机器侧的中断轮询与手工驱动的七周期向量过程，以及
+`irq_inhibit`——中断判决滞后一个周期本身就带来了 CLI/SEI/PLP 的延迟，所以那个特例随之消失。
+中断锁存改由 CPU 持有，这也正是 Mesen 的归置。
+
+两点值得单独说明：
+
+- **操作码表里的周期数现在只是交叉校验**。没有任何东西去 tick 它；约束它的是测试
+  （`test_every_opcode_executes`、`instr_timing`、`branch_timing`）。而这次改造正是被它们驱动的：
+  `instr_timing` 直接点名了那些"索引写入却用了读寻址"的操作码（`1E`、`3E`、`5E`、`7E`、`DE`、
+  `FE`、`91`、`99`、`9D`、`13`、`33`、`1B`、`3B`、`1F`、`3F`），这正是
+  `AddressingMode::AbsoluteXWrite` 这类写寻址存在的理由——store 与读改写总要发那次丢弃读，
+  而读只在索引进位时才有。
+- **KIL 保持本项目的行为，而不是 Mesen 的**。Mesen 把 KIL 当作不可恢复的崩溃，会清掉中断采样
+  让挂死无法被打断；硬件——以及本内核（通过 `Nes::is_cpu_halted` 把挂死上报宿主）——允许中断
+  把它重新拉起来。PC 回退是 Mesen 的做法，清采样不是。
+
+### 2.3 奇数帧判定前移到 dot 339（逐 dot 工作的第一步）
+
+Mesen 是在处理 pre-render 的 **dot 339** 时就决定奇数帧要短一拍的——它把计数器直接跳到 340，
+于是真正被跳过的是 340——而那次判定读到的是该 dot 时刻的渲染位。内核原先在 340 上判定，
+会把恰好落在两者之间的 `$2001` 写入算进去；现在判定前移一个 dot 到 339，用
+`skip_odd_frame_dot` 锁存到被跳过的那个 dot（这是状态，因此 `STATE_VERSION` 由 5 升到 6）。
+
+实测：没有任何 ROM 移动（`10-even_odd_timing` 仍报 "skipped too late"，输出逐字节相同），
+帧耗时也不变。这个结果本身是有用的：写入在它周期内的 dot 与判定所在的 dot 现在都落在 Mesen
+的位置上，因此那一项剩下的部分不是这个边界，而是可见行的取指级行为——也就是逐 dot 渲染器。
+
+接下来渲染器要变成逐 dot 流水线（§6 的决策 2，A12、sprite 0 与奇数帧跳点都在等它），
+而 APU 下一个要解决的是帧计数器的相位。
+
+### 2.4 A12 无法单独重建（实验，已撤回）
+
+通往 `mmc3_test_2/4-scanline_timing` 的"更便宜"路线，是保留整行渲染器、只按 dot 重建
+*取指地址序列*（就像奇数帧那个 dot 的处理）：Mesen 的 `LoadTileInfo` 在 `cycle % 8 == 1`
+读名称表字节、3 读属性字节、5 与 7 读图案字节，而 sprite 阶段在 `(cycle - 257) % 8 == 0`
+与 `2` 的垃圾名称表/属性读，正是让 A12 能在两次 sprite 图案取指之间拉低的东西。
+
+实现并实测：`4-scanline_timing` 从第 2 个子项推进到第 4 个子项（说明预渲染行与 sprite 阶段
+的行为是对的），但 **`2-details` 回退了**——"Counter should be clocked 241 times in PPU frame"——
+因为序列与计数器的过滤是同一套机制：用真实地址时 A12 在两次取指之间只低 4 个 dot，而真正应当
+构成每帧唯一一次合格上升的，是跨扫描线边界的那段 9 dot 低电平（dot 337-340 加上下一行的
+0-4），每行一次。只把更准的序列喂给过滤器、却不带产生它的取指，这个计数就会跑偏。
+
+因此撤回。这也成了逐 dot 渲染器最具体的论证：地址**和**它落在哪个 dot，必须来自同一个地方，
+也就是取指本身。
 
 另有三个实验已经实现、量过、并**整体撤回**；它们的证据正是后文的起点（§4）。
 L3a 的总线侧停放后来以"L3 第 1 步"的形式回来了，并且把当初逼它撤回的依赖者一起搬了过去；
@@ -341,7 +419,9 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 - ROM 不入库：把 blargg 各套件与 AccuracyCoin 放到 `roms/` 下（布局与下载来源见 §13.1）。
 - 基线清单里"开始通过"的项必须从 `tests/rom_tests.rs` 删掉；清单之外出现失败会直接红。
 - 性能：用 release 模式跑帧耗时前后对比（nestest 连续 600 帧，由临时测试打印）——L1 的净效果
-  是略微**变快**；L3 各步才是第一批预计会有开销的改动。
+  是略微**变快**；L3 各步才是第一批预计会有开销的改动。现在直接用
+  `cargo test -p nes-core --release --test frame_cost -- --ignored --nocapture`，跑几次取中位数。
+  同一形式下 `tests/cycle_trace.rs` 打印逐指令 trace，用于与 ROM readme 记录的轨迹逐行比对。
 - `docs/architecture.md` 与其 `zh-CN` 对照必须同步更新；每个阶段的实测数字要写进提交信息——
   本文档里的数字都来自那些提交信息。
 

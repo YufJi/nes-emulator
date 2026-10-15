@@ -103,9 +103,11 @@ flowchart LR
 
 ### 3.1 时钟与制式
 
-内核以 **CPU 周期**为最小时间单位，硬性假设 **1 CPU 周期 = 3 个 PPU dot**
-（`PPU_DOTS_PER_CPU_CYCLE`，见 `crates/nes-core/src/nes.rs`）。一帧的时长由扫描线数决定，
-而不是写死 60 Hz：
+机器维护一条**主时钟**，两颗芯片都由它推导——这正是 Mesen 的 NES 内核所用的形状
+（`cpuDivider`/`ppuDivider`）：一个 CPU 周期推进 `Region::cpu_divider()` 个 tick，
+一个 PPU dot 推进 `Region::ppu_divider()` 个 tick。NTSC 是 12/4，即真实的 21.477 MHz
+晶振分频，而 12/4 恰好就是**每 CPU 周期 3 个 PPU dot**；PAL 目前建模为 15/5（同样是 3），
+因为真机 PAL 的 3.2:1 尚未实现（见 §15.1）。一帧的时长由扫描线数决定，而不是写死 60 Hz：
 
 | 指标 | NTSC | PAL |
 | --- | --- | --- |
@@ -121,6 +123,15 @@ flowchart LR
 > **实现细节**：APU 的采样时钟同样取 `ppu_clock_rate / 3`（即机器真正推进 CPU 的速率），
 > 而不是卡带标称的 CPU 时钟。PAL 板子的 PPU:CPU 真机比例是 3.2:1，内核按 3:1 建模，
 > 因此标称 CPU 时钟与实现不一致；音频若沿用 NTSC 常量会走音约 7.6%。
+
+每周期循环把该比例写成了两种形式，并用测试把两者钉在一起：整除的比例（当前两种制式都是）
+走计数式 dot 循环，不能整除的比例则把 PPU 推进到某个主时钟目标
+（`NesBus::run_ppu_to`）——PAL 的 3.2:1 就落在这条路径上。内层循环付出代价的是计数式那一条：
+实测每周期都做时钟算术会吃掉约 4% 的帧时间。
+
+模型通过三个访问器暴露给调试器与 trace 工具：`Nes::cpu_cycles()`、`Nes::master_clock()`、
+`Nes::ppu_dots()`，外加 `Nes::ppu_position() -> (scanline, dot)` 与 `Nes::cpu_pc()`。
+主时钟是**由周期数推导**而非存储的，因此存档不需要新字段，读档也不可能让两者失步。
 
 ### 3.2 一帧的执行流程
 
@@ -167,6 +178,14 @@ sequenceDiagram
   （§15.1）。
 - **DMA 会让 CPU 停顿**：OAM DMA（`$4014`）停 513/514 周期，DMC 取字节停 4 周期；
   停顿期间 PPU/APU 继续推进。
+- **CPU 自己驱动自己的周期，和 Mesen 一样**：一条指令不再是"由机器事后补 tick 的一坨周期"。
+  芯片做的每一次访问——取操作码、寻址取操作数、handler 的读写、6502 用内部周期做的丢弃读——
+  都走 `Bus::read_cycle`/`write_cycle`，而**这次调用本身就是那个周期**：机器围绕这次访问推进
+  PPU 与 APU（`NesBus::begin_cpu_cycle`/`end_cpu_cycle`，即 Mesen 的
+  `StartCpuCycle`/`EndCpuCycle`）。因此一条指令的时长就等于它的访问之和——这正是
+  `Cpu::fetch_operand` 要把丢弃读一条条写清、而操作码表里的周期数只是给测试用的交叉校验的原因。
+  中断线在这些周期的末尾各采样一次，判决滞后一个周期，这就是硬件的"真正重要的是倒数第二个周期的
+  采样"规则，也让 `CLI`/`SEI`/`PLP` 的一指令延迟自然成立，不再需要特例。
 
 ### 3.3 三种驱动粒度
 
@@ -757,7 +776,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 1/5（`2`/`3`/`5` 只差一到两条指令；`4` 的偏移与帧计数器相位一致） |
+| `cpu_interrupts_v2` | 2/5（`3`/`5` 只差一两个 cycle；`4` 的偏移与帧计数器相位一致） |
 | `ppu_vbl_nmi` | 9/10（只剩奇数帧跳点：它需要"时钟在哪一个 dot 被跳过"） |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
@@ -766,7 +785,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
-| `apu_test` | 4/8 |
+| `apu_test` | 3/8（`$4015` 读开始落在自己的周期上之后，`5-len_timing` 移入本清单；它等的是帧计数器的相位） |
 | AccuracyCoin | 82 通过、0 跳过、46 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 与 `ppu_vbl_nmi` 最后一项需要 PPU 事件落在
@@ -815,7 +834,11 @@ flowchart LR
 
 - **PAL 时序建模**：内核统一按"1 CPU 周期 = 3 PPU dot"，而真机 PAL 的 PPU:CPU 是 3.2:1。
   结果：PAL 的帧率/音频/CPU 周期三者自洽（不会走音），但与真机时序仍有系统性偏差。
-  彻底解决需要引入分数 dot 累加器，会影响扫描线时序与 Mapper IRQ，属高风险改动。
+  所需的机制已经就位——机器跑在一条主时钟上，比例只在
+  `Region::ppu_divider()`/`Region::cpu_divider()` 两处写出（见 §3.1）——因此把 PAL 切到真机的
+  16/5 只需改这两个数加上 `has_whole_dot_ratio`，并且有测试在三者不一致时直接失败。
+  但切换同时会改变 PAL 的音频重采样、每帧周期目标与 Mapper IRQ 相位，所以它要等 PAL 测试
+  ROM 到位。
 - **A12 时序是"推导"出来的**：`Mapper::on_ppu_bus` 在每个 dot 把 PPU 将要驱动的地址交给
   卡带；因为渲染器是整行渲染，这个地址由 dot 时钟反推。MMC3 的 IRQ 计数器现在按硬件规则
   走（上升沿需 A12 保持低 3 个 CPU 周期才计数，重载标志来自 `$C001`），足以通过 blargg
@@ -839,20 +862,17 @@ flowchart LR
   blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 9/10；最后一项 `10-even_odd_timing` 与
   `mmc3_test_2/4-scanline_timing` 都需要"奇数帧跳点/一帧首个 A12 上升沿落在哪个 dot"，
   也就是逐 dot 渲染。
-- **中断向量过程按 cycle 执行**：中断线在每条指令的倒数第二个 cycle 采样，随后的七个 cycle
-  （两次丢弃读、三次压栈、两次取向量）逐个 cycle 推进，PPU 与 APU 交错在其间。CLI/SEI/PLP
-  对中断使能的影响延后一条指令（RTI 不延后）。已跳转分支与其它指令一样保留那一次采样——
-  它多出的一个 cycle 只是一次被丢弃的取指，这期间到来的中断赶不上采样，自然要等到了下一条
-  指令才被响应。对
-  `$2000-$401F` 的写入现在落在它自己的 cycle 上（store 是最后一个 cycle，读改写的丢弃写
-  提前一个 cycle），而不是指令开头；并且落在该 cycle 内的一个 dot 上——PPU 的逐 dot 视图
-  从那里开始就能看到新值，而同一个 cycle 末尾的 APU tick 也看得到。后面这一点正是
-  blargg 长度计数器表与 AccuracyCoin 两项帧计数器测试从"差一个 cycle"变成通过的原因。
-  带副作用的读也按同样的方式摆放——`$2000-$3FFF` 的 `$2002`/`$2007` 读取在芯片真正做这次
-  访问的那个 cycle 的第二个 dot 之后执行，于是寻址阶段与访问不再共用一个 cycle。仍在指令
-  开头执行的只有 APU 的 `$4015` 读：blargg 的 `apu_test` 用它做同步，而它测的帧计数器相位
-  本来还差一两个 cycle，现在挪这次读只会把误差挪个地方。`cpu_interrupts_v2` 剩下的部分
-  是中断向量过程自身的 cycle——这些测试的精度是一 PPU clock。
+- **CPU 是访问驱动的，中断判定自然落在其中**：中断线在每个 CPU cycle 末尾采样，判决滞后一个
+  cycle，因此真正生效的是倒数第二个 cycle 的采样——这既是 CLI/SEI/PLP 一指令延迟的来源
+  （RTI 没有延迟），也让已跳转分支能"无视"它最后一个 cycle 里抬起的中断。向量过程的七个 cycle
+  （两次丢弃读、三次压栈、两次取向量）就是普通的访问，由 CPU 像其它指令一样亲自驱动；向量在压
+  状态字节那一刻选定，因此在此之前到达的 NMI 会接管它，而已经压入的帧仍属 IRQ（B 位为 0）。
+  对 `$2000-$401F` 的写入落在它自己的 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个
+  cycle），并且落在该 cycle 内的 `ACCESS_DOTS` 处——PPU 的逐 dot 视图与同一 cycle 末尾的 APU
+  tick 都能看到它。带副作用的读同样如此，`$4015` 现在也由 CPU 亲自读：blargg 的 `apu_test` 用它
+  做同步，这次摆放是"把误差挪了个地方"而不是消除它（见计划的 §4.3），因此在帧计数器自身的相位
+  正确之前，`5-len_timing` 回到了失败清单里。`cpu_interrupts_v2` 剩下的每项还差一两个 cycle，
+  而 `4-irq_and_dma` 依旧跟着帧计数器的相位走。
 - **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
   会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，

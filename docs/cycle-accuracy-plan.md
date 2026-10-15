@@ -29,9 +29,107 @@ measured; none of them regressed the baselines:
 | L3 step 3a | `32864f1` | An NMI asserted during an interrupt sequence, before its status push, takes the vector over: the frame pushed stays the sequence's, the handler is the NMI's | No test flips and nothing regresses (58 pass / 16 known, AccuracyCoin 81/47); `3-nmi_and_irq`'s second column comes in line with its readme for the five "NMI occurs after CLC, interrupting IRQ" rows (`23` → `00`), and its first column there moves `27` → `23` against a documented `20` |
 | Fix: the branch poll | (this change) | Drops the pre-L1 "a taken branch that stays in its page skips that poll" latch: the sample belongs to the branch's own penultimate cycle, so handing it to the next instruction means a one-instruction wait loop never samples at all | No suite ever measured the latch — ROM baseline stays **62 / 12** and AccuracyCoin **82 / 46**, and `5-branch_delays_irq` keeps its CRC `29BB6E90`; `cargo test --workspace` 826 → 827; 热血格斗 (mapper 4) boots again, its VBlank wait being `$F86F: D0 FE` (a `BNE self` loop with NMI enabled) that took **0** NMIs in 600k traced instructions |
 | L3 step 4 | (this change) | `$2000-$3FFF` reads land on their own cycle *and dot* - the machine runs the handler two dots into the cycle the chip performs the access on - the VBlank suppression window moves to the dot before the flag, and the NMI line is sampled once per CPU cycle instead of being set at the dot the flag rises on | ROM baseline 58 pass / 16 known → **62 / 12** (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `08-nmi_off_timing`); AccuracyCoin 81/47 → **82 / 46**; `2-nmi_and_brk`'s first four rows are the readme's (`27 26 26 36`), `3-nmi_and_irq`'s second column matches its readme for the whole first half; frame cost 1.11 → 1.16 ms (release, 600 frames of nestest, both measured in one sitting), almost all of it the per-cycle line sample |
+| Phase 1 | (this change) | The CPU stops being instruction-atomic and drives its own cycles the way Mesen's does: every access (`Bus::read_cycle`/`write_cycle`) *is* a cycle, the addressing's discarded reads and the handler's accesses are written out where the chip makes them, and the interrupt lines are sampled per cycle with the decision one cycle behind | ROM baseline stays **62 pass / 12 known**, but the composition moves: `2-nmi_and_brk` turns green (the vector is chosen at the status push, so the NMI takes it over) and `5-len_timing` moves onto the list, because the `$4015` read now lands on its own cycle and the sync error it was absorbing moved (§4.3 predicted exactly this); `instr_timing` 2/2 and `branch_timing` 3/3 stay green, which is what says the cycle counts survived; AccuracyCoin 82/46 unchanged; frame cost 1.204 → 1.204 ms (release, 600 frames of nestest, 5 runs each) — the parked-write machinery and the post-hoc cycle replay are gone, and the access-driven form pays for itself |
+| Phase 0 | (this change) | The machine gets Mesen's clock shape: one master clock with `cpuDivider`/`ppuDivider` (`Region::cpu_divider()`/`ppu_divider()`), and a cycle's dots can be either a counted loop or a run to a master-clock target | No ROM change at all (every suite identical, AccuracyCoin 82/46, `4-irq_and_dma` `7DE0C30F`); frame cost 1.206 → 1.210 ms (release, 600 frames of nestest, 5 runs each) - the first version, which did the clock arithmetic every cycle, cost 1.266 ms and was replaced by the counted fast path |
 
-Current state: `cargo test --workspace` 827 green, ROM baseline **62 pass / 12 known**,
-AccuracyCoin **82 passed / 46 failing**, `STATE_VERSION` 5.
+Current state: `cargo test --workspace` 829 green, ROM baseline **62 pass / 12 known**,
+AccuracyCoin **82 passed / 46 failing**, `STATE_VERSION` 6.
+
+### 2.1 Phase 0: the clock model the rest of the work needs
+
+The steps above made the *machine* cycle-driven while leaving the CPU instruction-atomic and
+the renderer scanline-at-a-time. Taking either of those further needs one thing first: a
+clock the two chips are derived from, which is what Mesen's NES core is built around
+(`NesCpu::StartCpuCycle`/`EndCpuCycle` advancing one master clock and running the PPU to
+`_masterClock - _ppuOffset`; `ppuDivider` 4 and `cpuDivider` 12 on NTSC, 5 and 16 on PAL).
+Phase 0 is that structure, with no behaviour change:
+
+- `Region::cpu_divider()`/`Region::ppu_divider()` are the ratio's only home. NTSC's 12/4 is
+  the real 21.477 MHz crystal divided down; PAL models 15/5 rather than the real 16/5 until
+  PAL has test ROMs to measure.
+- `NesBus::run_ppu_to` runs the PPU to a master-clock target, and an access is placed by a
+  *tick* offset (`ACCESS_DOTS * ppu_divider`) instead of "the third of three steps", so the
+  placement survives a cycle that is not exactly three dots long.
+- A whole ratio runs a counted dot loop instead of doing that arithmetic per cycle: the
+  general form measured 4% of the frame for nothing, and the two are held together by
+  `test_the_master_clock_path_places_the_same_dots`. The other test,
+  `test_the_whole_ratio_flags_agree_with_the_dividers`, is what fails if PAL's numbers are
+  flipped without flipping `has_whole_dot_ratio` with them.
+- The master clock is derived from the cycle count rather than stored, so save states are
+  untouched - the reason this landed without a `STATE_VERSION` bump.
+- `Nes::cpu_cycles()` / `master_clock()` / `ppu_dots()` / `ppu_position()` / `cpu_pc()` are
+  new, and `tests/cycle_trace.rs` prints a per-instruction trace from them for diffing
+  against the traces the ROM readmes document.
+
+### 2.2 Phase 1: the CPU drives its own cycles
+
+Landed. `Cpu::execute_instruction` no longer returns a cycle count for the machine to tick:
+it fetches operands through `Bus::read_cycle`, its handlers read and write through the same
+call, and the discarded reads the chip spends its internal cycles on are written out in
+`Cpu::fetch_operand` and in the handlers that need them (`RTS`'s two, `RTI`'s, `PLA`/`PLP`'s,
+the NOPs' operand read, the branch's two). `NesBus::begin_cpu_cycle`/`end_cpu_cycle` are
+Mesen's `StartCpuCycle`/`EndCpuCycle`: the PPU runs to the point in the cycle the access
+belongs at, the access happens, and the rest of the cycle follows.
+
+What that deleted: `Access`/`plan_access`/`PendingAccess`, the parked register writes and
+their replay, `defer_writes`/`defer_register_reads`, the machine-side interrupt polling and
+the hand-driven seven-cycle sequence, and `irq_inhibit` - the one-cycle lag in the interrupt
+decision is what gives CLI/SEI/PLP their delay, so the special case went with the rest. The
+interrupt latches moved to the CPU, which is where Mesen keeps them.
+
+Two things worth calling out:
+
+- **The opcode table's cycle counts are now only a cross-check.** Nothing ticks them; the
+  tests pin them (`test_every_opcode_executes`, `instr_timing`, `branch_timing`). The
+  conversion was driven by them: `instr_timing` named the opcodes whose addressing mode was
+  the read form of an indexed write (`1E`, `3E`, `5E`, `7E`, `DE`, `FE`, `91`, `99`, `9D`,
+  `13`, `33`, `1B`, `3B`, `1F`, `3F`), which is what `AddressingMode::AbsoluteXWrite` and
+  friends are for - a store or a read-modify-write always makes the discarded read, a load
+  only when the index carries.
+- **KIL keeps this project's behaviour, not Mesen's.** Mesen treats a KIL as an unrecoverable
+  crash and clears the interrupt samples so the hang cannot be interrupted; the hardware -
+  and this core, which reports the hang to the host through `Nes::is_cpu_halted` - lets an
+  interrupt restart it. The PC rewind is Mesen's; the sample clearing is not.
+
+### 2.3 The odd frame's decision moved to dot 339 (first step of the per-dot work)
+
+Mesen decides the odd frame's short frame while it is processing pre-render dot **339** — it
+jumps its counter to 340 so that 340 is the dot that goes missing — and the check reads the
+rendering bits as they are at that dot. The core used to decide on 340 itself, which counts a
+`$2001` write that lands in between; the decision now happens a dot earlier, on 339, with the
+310 / `skip_odd_frame_dot` latch carrying it to the dot it skips (the latch is state, so
+`STATE_VERSION` went 5 → 6).
+
+Measured: no ROM moves (`10-even_odd_timing` still reports "skipped too late", byte for byte
+the same output), and the frame cost is unchanged. That is the useful result: the write's dot
+*inside* its cycle and the decision's dot are now both where Mesen puts them, so what is left
+of that test is not this boundary — it is the fetch-level behaviour of the visible line, which
+is the per-dot renderer.
+
+Then the renderer becomes a per-dot pipeline (§6's decision 2, which is also what A12,
+sprite 0 and the odd-frame skip are waiting for), and the frame counter's phase is the next
+thing the APU needs.
+
+### 2.4 A12 cannot be reconstructed on its own (experiment, reverted)
+
+The obvious cheaper route to `mmc3_test_2/4-scanline_timing` is to leave the whole-scanline
+renderer in place and reconstruct the *fetch address sequence* per dot in `ppu_bus_address`,
+the way the odd-frame dot was fixed: Mesen's `LoadTileInfo` reads the nametable byte on
+`cycle % 8 == 1`, the attribute byte on 3 and the pattern bytes on 5 and 7, and the sprite
+phase's garbage nametable and attribute reads on `(cycle - 257) % 8 == 0` and `2` are what
+lets A12 go low between the sprite pattern fetches.
+
+Implemented and measured: `4-scanline_timing` moved from its second sub-test to its fourth
+(so the pre-render and sprite-phase behaviour is right with it), and **`2-details` regressed**
+- "Counter should be clocked 241 times in PPU frame" - because the sequence and the counter's
+filter are one mechanism: with the real addresses A12 is low for four dots between fetches,
+and it is the nine-dot low run across a scanline boundary (dots 337-340 plus the next line's
+0-4) that is meant to be the frame's only qualifying rise, one per scanline. Feeding the
+filter a more accurate sequence without the fetches that go with it moves that count.
+
+So it is reverted, and this is now the concrete argument for the per-dot renderer: the
+addresses *and* the dot they land on have to come from the same place, which is the fetch
+itself.
 
 Three experiments were implemented, measured and **reverted**; their evidence is the
 starting point for what follows (§4). L3a's bus-side parking has since come back as L3 step
@@ -406,8 +504,10 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # per-ROM pass/known li
 - A baseline entry that starts passing must be removed from the list in
   `tests/rom_tests.rs`; a failure outside the list fails the suite.
 - Performance: measure release-mode frame cost before and after (`600 frames of nestest`,
-  timing printed by a scratch test) — L1's net effect was a small *speed-up*, and the L3
-  steps are the first ones expected to cost something.
+  `cargo test -p nes-core --release --test frame_cost -- --ignored --nocapture`, a few runs
+  and compare medians) — L1's net effect was a small *speed-up*, and the L3 steps are the
+  first ones expected to cost something. `tests/cycle_trace.rs` prints a per-instruction
+  trace the same way, for diffing against the traces the ROM readmes document.
 - Keep `docs/architecture.md` and its `zh-CN` twin in step with the code, and record each
   phase's measurements in the commit message: the numbers in this document came from those
   messages.

@@ -105,9 +105,13 @@ flowchart LR
 
 ### 3.1 Clock and TV system
 
-The core's smallest unit of time is the **CPU cycle**, and it hard-assumes **1 CPU cycle =
-3 PPU dots** (`PPU_DOTS_PER_CPU_CYCLE`, see `crates/nes-core/src/nes.rs`). The duration of a
-frame follows from the scanline count rather than a hardcoded 60 Hz:
+The machine keeps a single **master clock** and derives both chips from it — the shape
+Mesen's NES core uses (`cpuDivider`/`ppuDivider`): a CPU cycle advances the clock by
+`Region::cpu_divider()` ticks and a PPU dot by `Region::ppu_divider()`. NTSC's pair is 12/4,
+i.e. the real 21.477 MHz crystal divided down, and 12/4 is exactly **3 PPU dots per CPU
+cycle**; PAL models 15/5, also 3, because a real PAL board's 3.2:1 ratio is not emulated yet
+(§15.1). The duration of a frame follows from the scanline count rather than a hardcoded
+60 Hz:
 
 | Metric | NTSC | PAL |
 | --- | --- | --- |
@@ -126,6 +130,17 @@ PAL frame is longer.
 > clock. A real PAL board's PPU:CPU ratio is 3.2:1, while the core models it as 3:1, so the
 > nominal CPU clock and the implementation disagree; audio that kept using NTSC constants
 > would play about 7.6% out of tune.
+
+The per-cycle loop spells the ratio out twice, and the two spellings are held together by
+tests: a whole ratio (both regions today) runs a counted dot loop, and a ratio that is not
+whole runs the PPU to a master-clock target (`NesBus::run_ppu_to`), which is where PAL's
+3.2:1 lands. The counted form is the one the inner loop pays for — doing the clock
+arithmetic every cycle measured about 4% of the frame.
+
+Three accessors expose the model for debuggers and trace tools: `Nes::cpu_cycles()`,
+`Nes::master_clock()`, `Nes::ppu_dots()`, plus `Nes::ppu_position() -> (scanline, dot)` and
+`Nes::cpu_pc()`. The master clock is *derived* from the cycle count rather than stored, so a
+save state needs no new field and a load cannot leave the two out of step.
 
 ### 3.2 Executing one frame
 
@@ -175,6 +190,18 @@ Key points:
   per-game compatibility switch rather than a constant (§15.1).
 - **DMA stalls the CPU**: OAM DMA (`$4014`) stalls it for 513/514 cycles and a DMC byte
   fetch for 4 cycles; PPU and APU keep advancing during the stall.
+- **The CPU drives its own cycles, the way Mesen's does**: an instruction is not a lump of
+  cycles the machine ticks afterwards. Every access the chip makes — the opcode fetch, the
+  addressing's operand fetches, the handler's read or write, the discarded reads the 6502
+  spends its internal cycles on — goes through `Bus::read_cycle`/`write_cycle`, and *that
+  call is the cycle*: the machine advances the PPU and APU around the access (`NesBus::
+  begin_cpu_cycle`/`end_cpu_cycle`, Mesen's `StartCpuCycle`/`EndCpuCycle`). An instruction
+  therefore takes as long as its accesses say it does, which is why `Cpu::fetch_operand`
+  spells out the discarded reads and why the opcode table's cycle counts are only a
+  cross-check for the tests. The interrupt lines are sampled at the end of each of those
+  cycles and the decision is made one cycle behind, which is the hardware's "the second-to-
+  last cycle's sample is the one that matters" rule and is also what gives `CLI`/`SEI`/`PLP`
+  their one-instruction delay without a special case.
 
 ### 3.3 Three driving granularities
 
@@ -827,7 +854,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 1/5 (`2`/`3`/`5` differ by one or two instructions; `4`'s offset tracks the frame counter's phase) |
+| `cpu_interrupts_v2` | 2/5 (`3`/`5` differ by one or two cycles; `4`'s offset tracks the frame counter's phase) |
 | `ppu_vbl_nmi` | 9/10 (only the odd-frame skip is left: it needs the dot the clock is skipped on) |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
@@ -836,7 +863,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
-| `apu_test` | 4/8 |
+| `apu_test` | 3/8 (`5-len_timing` moved onto this list when the `$4015` read started landing on its own cycle; the frame counter's phase is what it is waiting for) |
 | AccuracyCoin | 82 passed, 0 skipped, 46 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2` and `ppu_vbl_nmi`'s last case need
@@ -892,9 +919,12 @@ clone needs `npm run build:wasm` before building the front end.
 - **PAL timing model**: the core uniformly assumes "1 CPU cycle = 3 PPU dots", while a real
   PAL machine has a 3.2:1 PPU:CPU ratio. As a result, PAL frame rate, audio, and CPU cycles
   are self-consistent (nothing plays out of tune), but there is still a systematic
-  deviation from real hardware timing. Fixing it properly would require a fractional dot
-  accumulator, which touches scanline timing and mapper IRQ and is therefore a high-risk
-  change.
+  deviation from real hardware timing. The machinery for the fix is in place — the machine
+  runs off a master clock, and `Region::ppu_divider()`/`Region::cpu_divider()` are the only
+  place the ratio is written down (§3.1) — so switching PAL to its real 16/5 is a matter of
+  flipping those two numbers plus `has_whole_dot_ratio`, which is guarded by a test that
+  fails if the three disagree. Doing it also moves PAL's audio resampler, frame-cycle
+  target and mapper IRQ phase, which is why it waits for PAL test ROMs.
 - **A12 timing is derived, not fetched**: `Mapper::on_ppu_bus` hands the cartridge the
   address the PPU would drive on every dot, reconstructed from the dot clock because the
   renderer draws whole scanlines. MMC3's IRQ counter now follows the hardware rule (a rise
@@ -925,25 +955,22 @@ clone needs `npm run build:wasm` before building the front end.
   case, `10-even_odd_timing`, and `mmc3_test_2/4-scanline_timing` both still need the exact
   dot the odd-frame clock skip and a frame's first A12 rise are decided on, which is per-dot
   rendering.
-- **The interrupt sequence runs cycle by cycle**: the lines are sampled on the penultimate
-  cycle of each instruction, and the seven cycles that follow (two discarded reads, three
-  pushes, two halves of the vector) are driven one cycle at a time, with the PPU and APU
-  interleaved around them. CLI/SEI/PLP delay what interrupts are allowed by one instruction
-  (RTI does not). A taken branch keeps that sample like any other instruction: the extra cycle
-  it spends is only a discarded opcode read, so an interrupt asserted during it is simply too
-  late for the sample and waits for the next instruction's. A write to
-  `$2000-$401F` now lands on its own cycle - the last cycle of a store, the one before it
-  for a read-modify-write's discarded write - instead of at the instruction's start, and on a
-  dot inside that cycle, the one the chip drives the bus on: the PPU's per-dot view sees it
-  from there on, and the APU's tick at the end of the same cycle sees it too. That last point
-  is what fixed blargg's length-counter table and AccuracyCoin's two frame-counter tests,
-  which were a cycle out of phase before. Reads with side effects are placed the same way -
-  a `$2002`/`$2007` read of `$2000-$3FFF` is performed two dots into the cycle the chip
-  performs it on, so the addressing phase and the access no longer share a cycle. The APU's
-  `$4015` read is the one still at the instruction's start: blargg's `apu_test` synchronises
-  through it, and the frame-counter phase it measures is a cycle or two out anyway, so moving
-  the read would only move that error. What is left of `cpu_interrupts_v2` is the interrupt
-  sequence's own cycle - those tests measure to one PPU clock.
+- **The CPU is access-driven, and interrupts fall out of that**: the lines are sampled at
+  the end of every CPU cycle and the decision is made one cycle behind, so the sample that
+  counts is the second-to-last cycle's - which is what gives CLI/SEI/PLP their
+  one-instruction delay (RTI does not have it) and what lets a taken branch shrug off an IRQ
+  raised during its last cycle. The seven cycles of a sequence (two discarded reads, three
+  pushes, two halves of the vector) are ordinary accesses, driven by the CPU like any other
+  instruction's; the vector is chosen at the status push, so an NMI asserted by then takes it
+  over and the frame already pushed stays the IRQ's. A write to `$2000-$401F` lands on its own
+  cycle - the last cycle of a store, the one before it for a read-modify-write's discarded
+  write - and at `ACCESS_DOTS` inside that cycle, where the PPU's per-dot view and the APU
+  tick at the end of the same cycle both see it. Reads with side effects are placed the same
+  way, `$4015` included now that the CPU drives the read itself: blargg's `apu_test`
+  synchronises through that read, and it moved the sync error rather than removing it (§4.3 of
+  the plan), so `5-len_timing` is back on the list until the frame counter's own phase is
+  right. What is left of `cpu_interrupts_v2` is one or two cycles per case, and `4-irq_and_dma`
+  still tracks the frame counter's phase.
 - **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
   filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
   direction is second-order/linear interpolation or a half-band filter, done inside
