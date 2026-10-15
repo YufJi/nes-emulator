@@ -130,6 +130,16 @@ fn trace_a12_for_a_scanline() {
         "pc", "ln", "dot", "a12addr", "a12"
     );
 
+    // The frame that matters is the one the test measures, which is after it
+    // has synchronised - so the tool can run the ROM forward without printing.
+    let skip: u64 = std::env::var("NES_A12_SKIP")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    for _ in 0..skip {
+        nes.frame();
+    }
+
     let until = nes.frame_number() + frames;
     let mut printed = 0;
     let mut last = u16::MAX;
