@@ -46,8 +46,8 @@ const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
 /// first two PPU dots.
 ///
 /// Measured, not chosen — the VBlank flag's set/clear boundary and the NMI
-/// suppression window both pin it down (§4.2 step 4 of
-/// `docs/cycle-accuracy-plan.md`). Saying it in dots rather than in ticks is
+/// suppression window both pin it down (§4 and §7 of
+/// `docs/mesen-alignment.md`). Saying it in dots rather than in ticks is
 /// what keeps it meaningful if a cycle is ever not exactly three dots long.
 const ACCESS_DOTS: u32 = 2;
 

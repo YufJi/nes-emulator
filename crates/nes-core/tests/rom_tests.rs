@@ -62,7 +62,7 @@ fn blargg_ppu_vbl_nmi() {
         BLARGG_SLOW_FRAMES,
         // The VBlank flag's dot, the NMI line and the `$2002` reads that race
         // them are placed per dot now; what is left needs per-dot rendering -
-        // the odd-frame skip, which is decided at pre-render dot 340 (§15.1).
+        // the odd-frame skip, which is decided on pre-render dot 339 (§15.1).
         &["10-even_odd_timing.nes"],
     );
 }
@@ -135,7 +135,7 @@ fn blargg_apu() {
         // approximations, and `5-len_timing` moved into this list when the
         // `$4015` read started landing on its own cycle, as Mesen's does: blargg
         // synchronises through that read, and the frame-counter phase it
-        // measures is a cycle or two out anyway (§4.3 of the plan predicted
+        // measures is a cycle or two out anyway (§7 of `docs/mesen-alignment.md` predicted
         // exactly this). The fix is the counter's phase, not the read.
         &[
             "4-jitter.nes",

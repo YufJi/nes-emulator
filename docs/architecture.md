@@ -1084,9 +1084,10 @@ backlog, so they are written down here to stop them being re-litigated:
    interrupt sequence's own cycle, the frame counter's phase, DMA, and a renderer that draws
    dot by dot rather than a scanline at a time.
 
-The cycle-granularity work has its own plan, with the measurements each phase produced:
-[`cycle-accuracy-plan.md`](./cycle-accuracy-plan.md). It is the document to pick up when this
-list is next worked on; this section stays the summary of where the emulator stands.
+The accuracy work has its own document — the alignment with Mesen2's NES core, the gaps that
+are left, the measurements each step produced and the experiments that were reverted:
+[`mesen-alignment.md`](./mesen-alignment.md). It is the document to pick up when this list is
+next worked on; this section stays the summary of where the emulator stands.
 
 ---
 

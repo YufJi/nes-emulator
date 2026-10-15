@@ -105,8 +105,8 @@ crates/nes-core/   模拟器内核：CPU / PPU / APU / 总线 / mapper / 存档�
 crates/nes-wasm/   wasm-bindgen 绑定（Nes），对内核的薄封装
 crates/nes-uniffi/ UniFFI 绑定，供 iOS / macOS（Swift）与 Android（Kotlin）接入
 web/               React + Vite + TypeScript 前端
-docs/              架构说明（docs/architecture.zh-CN.md）、cycle 精度方案
-                   （docs/cycle-accuracy-plan.zh-CN.md）、嵌入式掌机方案
+docs/              架构说明（docs/architecture.zh-CN.md）、与 Mesen 的对齐文档
+                   （docs/mesen-alignment.zh-CN.md）、嵌入式掌机方案
                    （docs/embedded-handheld.zh-CN.md）、界面截图（docs/img/）
 roms/              本地测试 ROM（可选；缺失时相关测试会跳过）
 ```

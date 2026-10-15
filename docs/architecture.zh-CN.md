@@ -959,8 +959,8 @@ flowchart LR
    `$2002`/`$2007` 读现在已经落在各自 cycle 的 dot 上；剩下的多半是同一件事再往下一层：
    中断向量过程自身的 cycle、帧计数器相位、DMA，以及"整行渲染改成逐 dot 渲染"。
 
-cycle 精度这件事另有一份带各阶段实测数据的方案文档：
-[`cycle-accuracy-plan.zh-CN.md`](./cycle-accuracy-plan.zh-CN.md)。下次动手时从它开始；
+精度工作另有一份专门文档——与 Mesen2 NES 内核的对齐现状、尚存的差距、每一步的实测数据，以及
+被撤回的实验：[`mesen-alignment.zh-CN.md`](./mesen-alignment.zh-CN.md)。下次动手时从它开始；
 本节只保留"模拟器目前处于什么状态"的摘要。
 
 ---

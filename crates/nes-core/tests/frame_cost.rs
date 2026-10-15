@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use nes_core::Nes;
 
 /// Frames measured after a warm-up, matching the numbers in
-/// `docs/cycle-accuracy-plan.md`.
+/// `docs/mesen-alignment.md`.
 const FRAMES: u32 = 600;
 
 #[test]
