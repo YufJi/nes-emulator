@@ -18,11 +18,18 @@
 //!
 //! | dot | background |
 //! | --- | --- |
-//! | 0 | nametable byte fetch, coarse X increment |
+//! | 0 | nametable byte fetch |
 //! | 2 | attribute byte fetch |
 //! | 4 | pattern low byte fetch |
 //! | 6 | pattern high byte fetch |
-//! | 7 | shift registers reload from the latches |
+//! | 7 | shift registers reload from the latches, coarse X increment |
+//!
+//! Coarse X moves on at the group's *last* dot, not right after the nametable
+//! read: the attribute fetch two dots later asks `v` which of the four palette
+//! pairs this tile uses, and which attribute byte covers it. Mesen steps it in
+//! the same place (`IncHorizontalScrolling` on `(_cycle & 0x07) == 0`, which is
+//! the reload dot here) — stepping it earlier hands every tile its *right-hand
+//! neighbour's* palette.
 //!
 //! The shift registers shift left on every dot of the line, and a pixel is
 //! drawn on dots 1-256: the register's bit `15 - fine_x` is the current pixel,
@@ -405,15 +412,23 @@ impl PixelPipeline {
         // next group to walk up into the high byte.
         if rendering && show_bg && in_fetch_range && fetch_phase == 7 {
             self.shifters.reload(self.tile_low, self.tile_high);
+            // Coarse X steps on with it, once the group's own nametable,
+            // attribute and pattern fetches are done: the increment is what
+            // takes `v` to the tile the *next* group fetches, and it is the
+            // `v` a mid-line `$2005`/`$2006` write from the CPU lands on.
+            increment_coarse_x(ppu);
         }
     }
 
-    /// Fetch the nametable byte for the tile being fetched and step `v` along.
+    /// Fetch the nametable byte for the tile being fetched.
+    ///
+    /// Coarse X is *not* stepped here: `v` has to keep pointing at this tile
+    /// until the group's last dot, or the attribute fetch would read the
+    /// neighbour's palette (see the module docs).
     fn fetch_nametable(&mut self, ppu: &mut Ppu, chr: &mut dyn ChrSource) {
         let addr = 0x2000 | (ppu.v & 0x0FFF);
         self.nametable_byte = self.read_nametable(ppu, chr, addr);
         self.bus_access = Some(addr);
-        increment_coarse_x(ppu);
     }
 
     /// Fetch the attribute byte and pick the two palette bits out of it.
@@ -750,6 +765,81 @@ mod tests {
             })
             .collect();
         assert_eq!(drawn, vec![0]);
+    }
+
+    /// `v`'s coarse X steps on at the last dot of a fetch group, not with the
+    /// nametable read: the attribute byte two dots later, and the row the
+    /// pattern fetches read, both belong to the tile the nametable byte named.
+    #[test]
+    fn test_coarse_x_steps_on_at_the_end_of_the_fetch_group() {
+        let mut ppu = ppu_with(&[(0, 1), (1, 2)], &[(1, 0x00), (2, 0x00)]);
+        ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT;
+        ppu.v = 0x0000;
+        ppu.t = 0x0000;
+
+        let mut pipeline = PixelPipeline::new();
+        let mut chr = VramChr;
+        for dot in 1..=8u16 {
+            ppu.cycle = dot;
+            pipeline.step(&mut ppu, &mut chr, 261);
+            assert_eq!(
+                ppu.v & 0x001F,
+                if dot == 8 { 1 } else { 0 },
+                "coarse X after dot {dot}"
+            );
+        }
+    }
+
+    /// A tile reads the pair of palette bits its *own* coarse X names. Both
+    /// tiles of a pair share them, so the boundary sits between coarse X 1 and
+    /// 2 — six dots after the nametable read that started the group.
+    #[test]
+    fn test_a_tile_takes_its_own_attribute_quadrant() {
+        let mut ppu = ppu_with(&[(1, 1)], &[(1, 0x80)]);
+        // Left pair of the attribute byte's top half: palette 0; right pair:
+        // palette 2.
+        ppu.vram[0x23C0] = 0b0000_1000;
+        ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT;
+        ppu.v = 0x0000;
+        ppu.t = 0x0000;
+        ppu.x = 0;
+        ppu.palette[1] = 0x30;
+        ppu.palette[9] = 0x16;
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        run_line(&mut pipeline, &mut ppu, 0);
+
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(8, 0),
+            nes_color(0x30, ppu.mask, pipeline.region),
+            "coarse X 1 is left of the pair boundary, so it keeps palette 0"
+        );
+    }
+
+    /// The attribute *address* is the group's own tile too: the last tile of a
+    /// four-tile block reads that block's byte, not the next one's.
+    #[test]
+    fn test_the_attribute_address_is_the_tiles_own_block() {
+        let mut ppu = ppu_with(&[(3, 1)], &[(1, 0x80)]);
+        ppu.vram[0x23C0] = 0b0000_1100;
+        ppu.vram[0x23C1] = 0b0000_0000;
+        ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT;
+        ppu.v = 0x0000;
+        ppu.t = 0x0000;
+        ppu.x = 0;
+        ppu.palette[1] = 0x30;
+        ppu.palette[13] = 0x27;
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        run_line(&mut pipeline, &mut ppu, 0);
+
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(24, 0),
+            nes_color(0x27, ppu.mask, pipeline.region),
+            "coarse X 3 takes the pair the $23C0 byte gives it"
+        );
     }
 
     /// The sprite-0 hit arrives on the dot the overlapping pixel is drawn on,

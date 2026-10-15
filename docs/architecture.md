@@ -887,9 +887,11 @@ the backlog is worked through, and the baseline cannot silently drift.
 **What the baseline cannot see.** No ROM in it looks at the picture it draws, so the
 baseline says nothing about the colours and patterns on screen: a sprite-pattern fetch that
 read the tile's low plane for its high plane too — two of a sprite's four colours drawn as
-transparent holes — passed every suite for a day (§7 of `mesen-alignment.md`, entry *B1*).
-Anything that changes what a pixel looks like needs a unit test that renders it, and a game
-to look at.
+transparent holes — passed every suite for a day (§7 of `mesen-alignment.md`, entry *B1*); so
+did a background attribute fetch that read the palette of the tile to its right (`?` blocks and
+title text going green, entry *B2*), and the byte-identity check between the whole-line renderer
+and the per-dot pipeline could not see that one either. Anything that changes what a pixel looks
+like needs a unit test that renders it, and a game to look at.
 
 Conventions:
 

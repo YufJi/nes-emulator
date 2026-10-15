@@ -33,7 +33,7 @@ Two rules, in order:
 | Where the chips sit in the cycle | `StartCpuCycle` runs the PPU's dots up to the access and then `ProcessCpuClock` (the APU and the cartridges); `EndCpuCycle` runs the rest of the dots and the CPU samples the lines | `NesBus::begin_cpu_cycle` runs the dots, then the APU tick, before the access; `end_cpu_cycle` runs the remaining dots | `test_the_apu_clocks_before_the_cycles_access`, and `cpu_interrupts_v2` 5/5 — its last three tables read this one cycle |
 | Vector choice | The vector is chosen at the status push; an NMI asserted by then takes it over (`IRQ()`, `BRK()`) | `Cpu::take_interrupt`/`Cpu::brk` do the same, including BRK's `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`, `test_nmi_takes_brks_vector_over` |
 | A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
-| Per-dot rendering | `ProcessScanlineImpl`: `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ShiftTileRegisters` and `DrawPixel` every dot, off the single `_videoRamAddr` | `PixelPipeline`: the same fetch/load/shift/draw schedule off `v`/`t`/`x`, with the sprite phase's fetches and per-dot sprite pixels and sprite-0 hit | `4-scanline_timing`, `sprite_hit` 11/11, and byte-identical frames against the whole-line renderer on `nestest` |
+| Per-dot rendering | `ProcessScanlineImpl`: `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ShiftTileRegisters` and `DrawPixel` every dot, coarse X stepping on the group's last dot (`(_cycle & 0x07) == 0`), all off the single `_videoRamAddr` | `PixelPipeline`: the same fetch/load/shift/draw schedule, with coarse X moving at the reload dot, off `v`/`t`/`x`, plus the sprite phase's fetches and per-dot sprite pixels and sprite-0 hit | `4-scanline_timing`, `sprite_hit` 11/11, and byte-identical frames against the whole-line renderer on `nestest` (that check cannot see the attribute fetch — see §7's last row) |
 | Open bus | A stamp per bit (`_openBusDecayStamp`), three frames of decay, `$2002`'s low five bits masked from it, and the PPU's own latch rather than the CPU's | the same: `Ppu::drive_open_bus`/`open_bus_decay_stamp`, `$2002` driving only its top three bits, `$2007`'s palette reads driving six | `ppu_open_bus` 1/1 |
 | The pre-render line | The pipeline runs for `scanline < 240`, which includes the pre-render line | `drive_ppu_bus`'s `in_vblank` excludes only 240..=260 | the same |
 | The odd frame's skipped dot | Decided while processing dot 339 (`_cycle = 340`), so dot 340 is the one that goes missing | the same, carried by `NesBus::skip_odd_frame_dot` | `test_a_register_write_is_in_time_for_the_odd_frame_decision` |
@@ -91,6 +91,11 @@ What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`,
   was the emphasis: 0.75 → 0.84, the black-column rule, and a lookup instead of per-pixel float
   arithmetic.
 - PAL's own PPU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) are still absent.
+- **What turns the background fetch on.** Mesen's `LoadTileInfo` hangs off `IsRenderingEnabled()`
+  (`BackgroundEnabled | SpritesEnabled`): with the background off and sprites on it still fetches
+  background tiles, still loads the shift registers and still steps `v` — this core hangs all of
+  that off `SHOW_BG`. The visible consequences are A12 (MMC3 misses a batch of clocks with the
+  background off) and the scroll advancing while the background is off; no local ROM covers it.
 
 ### 2.3 CPU: DMA is applied after the instruction
 
@@ -227,6 +232,10 @@ Existing, and used for every measurement above:
 - The test-ROMs ship their own sources and readmes under `roms/blargg/*/source/` and
   `readme.txt`; blargg's suites state their precision ("Timing is tested to an accuracy of one
   PPU clock") and print expected traces. Compare against those, not against the shape of ours.
+- Mind the byte order before writing a raw frame buffer out as a PNG:
+  `PixelFormat::Argb8888`'s `0xAARRGGBB` lands on a little-endian host as **B, G, R, A**, so a
+  script that reads `A, R, G, B` swaps red and blue — correct colours then look like a broken
+  palette (this bullet is here because that cost a session).
 - `Nes::ppu_bus_trace()` / `Nes::clear_ppu_bus_trace()` / `Nes::set_ppu_bus_trace_capacity()`:
   the PPU's bus timeline, one sample per dot, filled by the machine as the dots happen (so it is
   in machine order even though the CPU runs whole instructions). It is the same view the
@@ -297,6 +306,7 @@ several runs.
 | Band-limited resampling (§2.4) | The audio path became blip's shape: a level change is a step, 32 phases × 16 taps with linear interpolation between them, an integrator for the output and a one-pole high-pass (Mesen's `NesSoundMixer` + `blip_buf`), at the host's rate directly rather than through Mesen's 96 kHz intermediate | ROM baseline unchanged (no ROM listens); unit tests 592 → 597, including the point of the exercise — a 30 kHz input, whose 18 kHz fold is at full strength under sample-and-hold, comes out ≥ 20 dB down; frame cost 1.69 → 1.82 ms; state version 11 → 12 |
 | The APU clocks at the start of the cycle | The chip runs the APU before the cycle's own access (Mesen's `ProcessCpuClock`, from `StartCpuCycle`) instead of after it. Measured from the ROM first: with the tick trailing the access, `5-branch_delays_irq`'s row 0 interrupted the `RTS` that ends `begin` two cycles *after* the flag went up, where the readme wants the `NOP` behind it, four cycles after — the same single cycle in each of the four rows of that table that differed | **`cpu_interrupts_v2` 2/5 → 5/5**: `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` all pass. Nothing else moved — `apu_test` 8/8, `ppu_vbl_nmi` 9/10, `mmc3_test_2` 5/6 and AccuracyCoin's 34 failing are unchanged, and the three suites that pin the flag against the `$4017` write stay green because the flag moved *with* the APU. Unit tests 597 → 598 (one of them pins the APU's place in the cycle); frame cost 1.82 → 1.86 ms (median of five runs, spread ±0.06) |
 | The sprite pattern fetch's second plane | The sprite phase read `addr + row` for the high plane as well as the low one, so the low plane came in twice. A sprite pixel whose planes are (0, 1) is colour 2; read back as (0, 0) it is *transparent*, so two of a sprite's four colours were holes — a game character drawn with see-through patches. The high plane is the tile's second eight bytes (`addr + row + 8`), which is what the background fetch has always done. **No suite saw it**: no local ROM looks at the pixels it draws, so `sprite_hit` 11/11, `sprite_overflow` 5/5, every blargg suite and AccuracyCoin's 34 sat exactly where they did even with the bug in | No ROM moved (the whole baseline was run before and after: byte-identical verdicts). The regression test renders a sprite whose planes differ and rejects the old code with the pixel at `0xFF000000` — the backdrop, the sprite invisible there. Frame cost 1.83 ms (median of five; the difference from 1.86 before is inside the run-to-run spread) |
+| Coarse X and the attribute fetch | Coarse X used to step right after the nametable read; Mesen steps it on the group's *last* dot (`(_cycle & 0x07) == 0`, the reload dot here). The attribute fetch comes two dots after the nametable one and reads `v`'s coarse X bit 1 (which palette pair) and bits 2-4 (which attribute byte), so every background tile drew with its **right-hand neighbour's** palette, and one four-tile boundary in four read the neighbour's byte as well. The pattern fetches were untouched (their row comes from fine Y). The symptom lands only on palette boundaries: in SMB's 1-1 the right halves of the `?` blocks and the tail of the brick rows went green (the sky's pair), and the title screen's last "E" in "1 PLAYER GAME" went green | **No ROM saw it** — no local ROM looks at the pixels it draws, so every blargg suite and AccuracyCoin's 143 ran / 94 passed / 34 failing sat exactly where they did. Pixel-comparing against the whole-line renderer: `894cc07` (before the per-dot background pipeline) is **byte-identical** to the fixed code, while `5dc9e32` (the per-dot background pipeline itself) is already 304 pixels off — the defect came in with it, and `nestest`'s byte-identity check could not see it. Three regression tests (the increment's dot, the pair, the attribute byte's address) all fail on the old code. SMB's title screen and 1-1 render correctly again (248 and 283 pixels change on the same frames, all of them on palette boundaries). Frame cost: median of three on one host 3.68 ms, 3.84 ms unfixed (spread ±0.3 ms; this host is running about 2× the table's absolute numbers today) |
 
 **One stale number, corrected.** From `8ec693d` (DMA inside `MemoryRead`) until the row above,
 AccuracyCoin never ran: the ROM hung inside its own DMA-sync loop while booting, `$37` stayed
@@ -441,10 +451,10 @@ double-charged fetch hid here for several steps (§7).
 --nocapture`): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
 `blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
-**5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94
-passed, 0 skipped — the same 34 as before the APU move). Unit tests: 598. Frame cost: about
-1.86 ms (release, 600 frames of nestest, median of five; spread ±0.06). Branch:
-`codex/mesen-alignment`.
+**5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94 passed, 0 skipped — the same 34 as
+before the APU move). Unit tests: 602. Frame cost: about 1.86 ms (release, 600 frames of nestest,
+median of five; spread ±0.06) — the host this session ran on reports 3.68 ms for the same test, so
+only compare numbers measured on one host. Branch: `codex/mesen-alignment`.
 
 | # | Item | Status | Evidence (commit / measurement) | Next step |
 | --- | --- | --- | --- | --- |
@@ -459,6 +469,7 @@ passed, 0 skipped — the same 34 as before the APU move). Unit tests: 598. Fram
 | P7 | Audio resampling | Done | `e33ebeb`, the §7 row: the band-limited resampler; four unit tests on the filter itself (step level, AC coupling, in-band amplitude, the out-of-band fold) plus the machine-level silence test | Nothing for the local ROMs; a reference recording would be the only way to judge the remaining difference from Mesen's two-stage chain |
 | P3c | `cpu_interrupts_v2`'s three remaining tables | **Done** | The chain was measured cycle by cycle (§7) and the missing cycle was the APU's place in it: the chip clocks the APU at the *start* of a CPU cycle (Mesen's `ProcessCpuClock`), not at the end. **`cpu_interrupts_v2` 2/5 → 5/5** — `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` all pass, and everything that pinned the flag against the `$4017` write stayed green. §2.4; the two withdrawn knob experiments are explained in §7 | Nothing; the neighbouring item is the sprite *evaluation* being per line (P1) |
 | B1 | A game's sprites drawn with holes ("transparent" characters) | **Done** | The sprite pattern fetch's high plane came from the low plane's address (§7), so colour 2 pixels read as colour 0 and vanished. Fixed to `addr + row + 8`; unit test `test_a_sprites_high_plane_is_the_tiles_second_half` fails on the old code | Nothing. Worth remembering: the ROM baseline is blind to drawn pixels — a game, or a unit test, is what catches this class |
+| B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
 **How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the

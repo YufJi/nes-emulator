@@ -29,7 +29,7 @@
 | 芯片落在周期里的位置 | `StartCpuCycle` 先跑到访问点的 PPU dot，再跑 `ProcessCpuClock`（APU 与卡带）；`EndCpuCycle` 跑剩下的 dot，由 CPU 采样中断线 | `NesBus::begin_cpu_cycle` 跑完 dot 后、在访问之前给 APU 打点；`end_cpu_cycle` 跑剩下的 dot | `test_the_apu_clocks_before_the_cycles_access`，以及 `cpu_interrupts_v2` 5/5——它最后三张表读的就是这一个周期 |
 | 向量选择 | 在压状态字节那一刻选定；此前到达的 NMI 接管（`IRQ()`、`BRK()`） | `Cpu::take_interrupt`/`Cpu::brk` 相同，含 BRK 的 `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`、`test_nmi_takes_brks_vector_over` |
 | A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
-| 逐 dot 渲染 | `ProcessScanlineImpl`：`cycle % 8 == 1/3/5/7` 取指，每 dot `ShiftTileRegisters` 与 `DrawPixel`，用同一个 `_videoRamAddr` | `PixelPipeline`：同样的取指/装载/移位/绘制节奏，滚动取 `v`/`t`/`x`；sprite 阶段的取指、逐 dot sprite 像素与 sprite 0 命中都在这里 | `4-scanline_timing`、`sprite_hit` 11/11，且 `nestest` 的帧与整行渲染器逐字节相同 |
+| 逐 dot 渲染 | `ProcessScanlineImpl`：`cycle % 8 == 1/3/5/7` 取指，每 dot `ShiftTileRegisters` 与 `DrawPixel`，粗 X 在每组最后一个 dot 推进（`(_cycle & 0x07) == 0`），全程用同一个 `_videoRamAddr` | `PixelPipeline`：同样的取指/装载/移位/绘制节奏，粗 X 在装载那个 dot 推进，滚动取 `v`/`t`/`x`；sprite 阶段的取指、逐 dot sprite 像素与 sprite 0 命中都在这里 | `4-scanline_timing`、`sprite_hit` 11/11，且 `nestest` 的帧与整行渲染器逐字节相同（那一份检查看不见属性取指，见 §7 末行） |
 | open bus | 每位一个时间戳（`_openBusDecayStamp`）、三帧衰减、`$2002` 低五位从中取，且用 PPU 自己的锁存而非 CPU 的 | 相同：`Ppu::drive_open_bus`/`open_bus_decay_stamp`，`$2002` 只驱动高三位，`$2007` 的调色板读只驱动六位 | `ppu_open_bus` 1/1 |
 | 预渲染行 | 流水线条件 `scanline < 240`，对预渲染行（-1）成立 | `drive_ppu_bus` 的 `in_vblank` 只排除 240..=260 | 同上 |
 | 奇数帧跳点 | 在处理 dot 339 时判定（`_cycle = 340`），被跳掉的是 340 | 相同，由 `NesBus::skip_odd_frame_dot` 承载 | `test_a_register_write_is_in_time_for_the_odd_frame_decision` |
@@ -80,6 +80,10 @@ Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTi
   表（`_ppuPaletteArgb[0]`），逐项相同，所以真正要改的只有强调：0.75 → 0.84、黑列例外，以及把逐
   像素浮点运算换成一次查表。
 - PAL 的 PPU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）缺失。
+- **背景取指的开关**。Mesen 的 `LoadTileInfo` 挂在 `IsRenderingEnabled()`（即
+  `BackgroundEnabled | SpritesEnabled`）上：关闭背景、只开 sprite 时它照样取背景瓦片、照样装载
+  移位寄存器、照样推进 `v`——而本内核把这整套挂在 `SHOW_BG` 上。可见后果是 A12（关闭背景时 MMC3
+  少一批时钟）与关闭背景期间的滚动推进；本地没有 ROM 覆盖这一条。
 
 ### 2.3 CPU：DMA 是事后补周期
 
@@ -188,6 +192,9 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   （`NES_TRACE_ROM`）与逐行 PPU 总线地址（`NES_A12_ROM`、`NES_A12_SKIP`、`NES_A12_LINE`）。
 - 测试 ROM 自带源码与 readme（`roms/blargg/*/source/`、`readme.txt`）：blargg 的套件写明精度是
   "一 PPU clock"，并打印期望轨迹。请与它们比对，而不是与我们的形状比对。
+- 把帧缓冲的 raw 存成 PNG 之前看清字节序：`PixelFormat::Argb8888` 的 `0xAARRGGBB` 在小端机上
+  按 **B, G, R, A** 落盘，脚本若按 `A, R, G, B` 读就会红蓝对调——颜色本来是对的，看起来却像调色板
+  坏了（本节这一条就是为此记的）。
 - `Nes::ppu_bus_trace()` / `Nes::clear_ppu_bus_trace()` / `Nes::set_ppu_bus_trace_capacity()`：
   PPU 的总线时间线，每 dot 一条采样，由机器在 dot 发生时填充（因此即使 CPU 以整条指令推进，
   顺序仍是机器顺序）。这与卡带看到的是同一个视图，`test_a12_clockings_per_frame` 就是通过它
@@ -253,6 +260,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | 带限重采样（§2.4） | 音频链路换成 blip 的形状：电平变化算阶跃，32 相位 × 16 抽头并在相位间线性插值，输出用积分器累加、再用一阶高通保持交流耦合（Mesen 的 `NesSoundMixer` + `blip_buf`）；直接重采样到宿主速率，没有 Mesen 那个 96 kHz 中间级 | ROM 基线零移动（没有 ROM 听声音）；单元测试 592 → 597，含这一项的要害——30 kHz 输入折成的 18 kHz 在采样保持下是满强度，带限之后至少低 20 dB；帧耗时 1.69 → 1.82 ms；存档版本 11 → 12 |
 | APU 挪到 CPU 周期的开头 | 芯片在该周期自身的访问**之前**给 APU 打点（Mesen 的 `ProcessCpuClock`，由 `StartCpuCycle` 调用），而不是在它之后。先按 ROM 量：tick 落在访问之后时，`5-branch_delays_irq` 第 0 行中断的是 `begin` 末尾那条 `RTS`，比标志置位晚两个周期，而 readme 要的是它后面那条 `NOP`、即晚四个周期——那张表里对不上的四行差的是同一个周期 | **`cpu_interrupts_v2` 2/5 → 5/5**：`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` 全部通过。其余零移动——`apu_test` 8/8、`ppu_vbl_nmi` 9/10、`mmc3_test_2` 5/6、AccuracyCoin 的 34 项失败都不变，而把标志钉在 `$4017` 写入上的三个套件保持全绿，因为标志是**跟着 APU 一起**挪的。单元测试 597 → 598（新增一条钉住 APU 在周期里的位置）；帧耗时 1.82 → 1.86 ms（五次中位，抖动 ±0.06） |
 | sprite 图案的第二个平面 | sprite 阶段读 high 平面时也用了 low 平面的地址（`addr + row`），等于把 low 平面读了两遍。两个平面是 (0, 1) 的像素本该是颜色 2，读成 (0, 0) 就成了**透明**——于是 sprite 四种颜色里有两色是窟窿，游戏人物看起来一块块透明。high 平面是 tile 的后八个字节（`addr + row + 8`），背景取指一直就是这么做的 | **没有一个套件看见它**：本地没有 ROM 会去看自己画出来的像素，所以带着这个 bug，`sprite_hit` 11/11、`sprite_overflow` 5/5、所有 blargg 套件与 AccuracyCoin 的 34 项与修好之后一字不差。回归测试渲染一个两平面不同的 sprite，在旧代码上断言失败（那个像素是 `0xFF000000`，即背景色——sprite 在那里是隐形的）。帧耗时 1.83 ms（五次中位；与改动前 1.86 的差在抖动范围内） |
+| 背景属性的粗 X | 粗 X 原先紧跟 nametable 取指自增，而 Mesen 在**每组的最后一个 dot**（`(_cycle & 0x07) == 0`，本内核的装载 dot）才推进它：属性取指在 nametable 之后两个 dot，读的却是 `v` 的粗 X 位 1（象限）与粗 X 位 2-4（属性字节地址）。于是每个背景瓦片都拿到**右邻**的调色板，跨四瓦片边界时还多读一个属性字节；图案取指不受影响（行号取自 fine Y）。症状只落在调色板边界：SMB 1-1 的 `?` 砖右半、砖行末尾与标题画面 "1 PLAYER GAME" 末尾的 "E" 都变成天空那一档的绿 | **没有一个 ROM 看见它**——本地 ROM 不看自己画出来的像素，blargg 全套与 AccuracyCoin 的 143 跑 94 过 34 失败在改前改后一字不差。与整行渲染器逐像素比：`894cc07`（逐 dot 之前）与修好后**完全一致**，而 `5dc9e32`（逐 dot 背景）已经差 304 像素——这个缺陷是逐 dot 背景流水线带进来的，`nestest` 的逐字节比对看不见它。三条回归测试（自增的 dot、象限、属性字节地址）在旧代码上全部失败。SMB 的标题画面与 1-1 都恢复原色（同一帧 248 / 283 个像素变化，全部落在调色板边界上）。帧耗时：同机各三次中位 3.68 ms，未修 3.84 ms（抖动 ±0.3 ms；本机当前绝对值约为上表的 2 倍） |
 
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
@@ -363,8 +371,9 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
 `sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
 `ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过——与 APU 挪位之前
-一模一样的 34 项）。单元测试 598 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
-抖动 ±0.06）。工作分支 `codex/mesen-alignment`。
+一模一样的 34 项）。单元测试 602 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+抖动 ±0.06）——本会话这台机器跑同一项是 3.68 ms，所以数字只在同一台机器上可比。
+工作分支 `codex/mesen-alignment`。
 
 | # | 事项 | 状态 | 证据（提交 / 实测） | 下一步 |
 | --- | --- | --- | --- | --- |
@@ -379,6 +388,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P7 | 音频重采样 | 完成 | `e33ebeb`，见 §7 的行：带限重采样器；四个单元测试盯滤波器本身（阶跃幅度、交流耦合、带内幅度、带外折返）加一个整机静音测试 | 本地 ROM 侧没有欠账；与 Mesen 两级链路剩下的差异只能靠参考录音判断 |
 | P3c | `cpu_interrupts_v2` 剩下的三张表 | **完成** | 链条按周期量了一遍（§7），缺的那一个周期是 APU 在周期里的位置：芯片在 CPU 周期的**开头**给 APU 打点（Mesen 的 `ProcessCpuClock`），而不是末尾。**`cpu_interrupts_v2` 2/5 → 5/5**——`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` 全部通过，而把标志钉在 `$4017` 写入上的那些一条没动。见 §2.4；两个撤回的旋钮实验在 §7 里都得到了解释 | 无；相邻项是 sprite 的**求值**仍是逐行（P1） |
 | B1 | 游戏里 sprite 一块块透明（"人物像透明的"） | **完成** | sprite 取指的 high 平面用了 low 平面的地址（§7），颜色 2 的像素读成颜色 0 而消失。改成 `addr + row + 8`；单元测试 `test_a_sprites_high_plane_is_the_tiles_second_half` 在旧代码上失败 | 无。值得记住：ROM 基线看不见"画出来的像素"，这类问题靠游戏或单元测试来抓 |
+| B2 | 背景瓦片拿到右邻的调色板（`?` 砖、砖行末尾、标题文字末尾变绿） | **完成** | 粗 X 在属性取指之前自增（§7 那一行）；回归测试三条在旧代码上失败 | 无；相邻项是 §2.2 里背景取指的开关（关背景时 Mesen 仍取指） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 
 **取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：
