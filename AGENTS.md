@@ -11,6 +11,13 @@
 - `web/` — React + Vite + TypeScript front end: `src/emulator/`, `src/hooks/`,
   `src/components/`. `src/wasm/` and `crates/nes-wasm/pkg/` are generated, not
   committed.
+- `ios/` — the iOS app (Swift) and `ios/build-core.sh`, which cross-compiles the core
+  and generates the Swift bindings into `ios/NesApp/Generated/` (not committed).
+- `android/` — the Android TV app (Kotlin + Compose) and `android/build-core.sh`, which
+  cross-compiles the core for three ABIs and generates the Kotlin bindings into
+  `android/app/src/main/java/uniffi/` (not committed, like
+  `app/src/main/jniLibs/`). Needs JDK 17, the NDK and `cargo-ndk`; see
+  `android/README.md`.
 - `roms/` — local test ROMs. Tests skip when a ROM is absent; never commit ROMs.
 
 ## Build, Test, and Development Commands
@@ -25,6 +32,10 @@
   the "游戏列表" dialog) from a GitHub repository; needs network, no ROM data is stored.
 - `npm run build:wasm` — regenerate `web/src/wasm` from `nes-wasm` (needs network
   and `wasm-pack`).
+- `./android/build-core.sh` — cross-compile the core and generate the Kotlin bindings
+  (needs the NDK and `cargo-ndk`); `cd android && ./gradlew :app:assembleDebug` — the APK
+  (needs JDK 17); `./gradlew :app:testDebugUnitTest` — the app's JVM tests. Run
+  `build-core.sh` before Gradle on a fresh clone: it produces what Gradle compiles against.
 
 ## Coding Style & Naming Conventions
 

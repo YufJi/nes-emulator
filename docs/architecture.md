@@ -641,7 +641,7 @@ allocation, and `no_std`-compatible.
 | --- | --- | --- | --- |
 | Web | `requestAnimationFrame` | `AudioWorklet` (falls back to `ScriptProcessorNode`) | Implemented, see section 12 |
 | iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` render callback | Bindings are ready (`nes-uniffi`, see §11.2); feed the callback timestamp (seconds → milliseconds) to `FrameClock` |
-| Android | `Choreographer` | Oboe (low latency) | The same `nes-uniffi`, using `--language kotlin`; put the emulator on its own thread and let the audio callback do nothing but `fill_audio` |
+| Android | `Choreographer` | `AudioTrack` (float samples, low-latency mode where the device has it) | Implemented: [`android/`](../android/README.md). The same `nes-uniffi` through `--language kotlin`; `Choreographer` runs on the main thread and hands timestamps to a dedicated emulation thread, and the audio thread only ever touches the host's ring |
 | macOS / Windows | `CVDisplayLink` / a timer | CoreAudio / WASAPI | Same as iOS/native: timestamps + pull audio |
 
 What all three share: **the core never calls back into the host; the host feeds timestamps
@@ -758,7 +758,20 @@ cargo run -p nes-uniffi --bin uniffi-bindgen -- \
 ```
 
 For device builds, point at the matching artifact (a `.a` for a real iOS device, a `.dylib`
-for the simulator).
+for the simulator, a `.so` for Android).
+
+Two things are Kotlin's own, and both are why the Android app looks slightly different from
+the iOS one:
+
+- **The bindings are JNA**, so a host reads a `Vec<u8>` as a `ByteArray` in one go, but it
+  cannot dereference [`Nes::frame_buffer_ptr`] — a `Long` is all it sees. `frame_buffer()`
+  would be worse: UniFFI marshals a `Vec<u32>` as a `List<UInt>`, one boxed integer per
+  pixel, 61,440 of them per frame. That is what `frame_buffer_bytes()` is for: the same
+  picture as the little-endian image of those pixels, one array per frame.
+- **A variant field may not be called `message`.** UniFFI generates a Kotlin error variant
+  as `class Foo(val message: String) : NesError()` next to `override val message`, which the
+  Kotlin compiler rejects as a duplicate; the text fields of `NesError` are therefore
+  `reason`. Swift does not care either way.
 
 ---
 
@@ -922,6 +935,8 @@ flowchart LR
 | `cd web && npm run build` | Typecheck + production build |
 | `cd web && npm run build:wasm` | Regenerate the WASM bindings (needs `wasm-pack`) |
 | `cd web && npm run build:games` | Regenerate the game-list JSON (needs network) |
+| `./android/build-core.sh` | Cross-compile the core for Android and generate the Kotlin bindings (needs the NDK and `cargo-ndk`) |
+| `cd android && ./gradlew :app:assembleDebug` | Build the Android TV APK (needs JDK 17) |
 
 `web/src/wasm/` and `crates/nes-wasm/pkg/` are generated and not committed, so a fresh
 clone needs `npm run build:wasm` before building the front end.
@@ -1092,8 +1107,10 @@ backlog, so they are written down here to stop them being re-litigated:
 1. **Add a fingerprint to save states** (low cost, fixes the correctness problem with
    cross-device sync).
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
-4. **First native front end** (iOS or Android, to prove the section 10 contract really is
-   "platform-agnostic").
+4. ~~**First native front end** (iOS or Android, to prove the section 10 contract really is
+   "platform-agnostic").~~ Done: the Android TV app implements the four channels with a
+   `Choreographer`, a GLES2 surface and an `AudioTrack` (`android/README.md`), and the iOS
+   app implements the same contract with `CADisplayLink`, Metal and `AVAudioEngine`.
 5. **The accuracy backlog the test ROMs now name**: the remaining cases in §13.1 —
    `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s last one — plus MMC5's
    extended attributes, the five mappers §8 defers, and the PAL dot ratio. The register writes,

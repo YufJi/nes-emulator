@@ -141,6 +141,8 @@ crates/nes-core/   emulator core: CPU / PPU / APU / bus / mappers / save-state e
 crates/nes-wasm/   wasm-bindgen bindings (Nes), a thin wrapper over the core
 crates/nes-uniffi/ UniFFI bindings, for iOS / macOS (Swift) and Android (Kotlin)
 web/               React + Vite + TypeScript front end
+ios/               iOS app (SwiftUI, Metal, AVAudioEngine)
+android/           Android TV app (Compose, GLES2, AudioTrack; Kotlin bindings)
 docs/              architecture notes (docs/architecture.md), the Mesen alignment
                    document (docs/mesen-alignment.md), embedded handheld plan
                    (docs/embedded-handheld.md), UI screenshots (docs/img/)
@@ -150,10 +152,12 @@ roms/              local test ROMs (optional; tests that need them are skipped w
 ## Requirements
 
 - Rust, pinned to 1.97.0 by `rust-toolchain.toml` (with `rustfmt`, `clippy` and the
-  WASM/iOS targets). rustup installs all of it on the first cargo command, so there is
-  nothing to do by hand; the crates still keep a 1.70 MSRV.
+  WASM/iOS/Android targets). rustup installs all of it on the first cargo command, so there
+  is nothing to do by hand; the crates still keep a 1.70 MSRV.
 - Node.js 18+
 - `wasm-pack` (only needed when regenerating the WASM bindings)
+- JDK 17, the Android SDK with platform 34, the NDK, and `cargo-ndk` (only needed for the
+  Android app; see [`android/README.md`](android/README.md))
 
 ## Building and running
 
@@ -174,6 +178,18 @@ npm run build:wasm   # generate web/src/wasm with wasm-pack (needs network)
 npm run dev          # dev server at http://localhost:5173
 npm run build        # typecheck + production build
 ```
+
+Android TV app (generate the Kotlin bindings first; neither the `.so` nor the bindings are
+under version control):
+
+```bash
+./android/build-core.sh            # cross-compile the core, generate the Kotlin API
+cd android
+./gradlew :app:assembleDebug       # APK
+./gradlew :app:testDebugUnitTest   # the app's own tests
+```
+
+See [`android/README.md`](android/README.md) for the NDK and emulator setup.
 
 ## Deployment (GitHub Pages)
 
@@ -249,8 +265,9 @@ mobile page at [`/m`](#web-front-end). More front-end detail is in
 
 A personal, non-commercial study project: there is no commercial activity of any kind, no
 ROM or game files are provided or distributed, and the project is not affiliated with
-Nintendo. The same statement covers the repository, the web UI, the iOS app, and the other
-front ends and bindings; see [`DISCLAIMER.md`](DISCLAIMER.md) for the full text.
+Nintendo. The same statement covers the repository, the web UI, the iOS and Android apps,
+and the other front ends and bindings; see [`DISCLAIMER.md`](DISCLAIMER.md) for the full
+text.
 
 ## License
 

@@ -89,3 +89,51 @@ jobs:
       - name: Typecheck and build the site
         working-directory: web
         run: npm run build
+
+  android:
+    name: Android (core, bindings, APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # `rustup show` also installs the Android targets declared in
+      # `rust-toolchain.toml`, which are what `build-core.sh` cross-compiles to.
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner image carries an SDK but not the NDK version this repository
+      # builds against; pinning it keeps the artifact the same from run to run.
+      - name: Install the NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             --install "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0"
+
+      # Points the linker at the NDK for each ABI, then generates the Kotlin API.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Build the Rust core and generate the Kotlin bindings
+        run: ./android/build-core.sh
+
+      - name: Build the debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Run the app's unit tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      # So a TV or a box can be updated without a local Android toolchain.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nes-tv-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk

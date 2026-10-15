@@ -10,3 +10,12 @@ ios/Artifacts/
 ios/NesApp/Generated/
 # Xcode drops these into the project directory when it cannot use $HOME.
 ios/com.apple.DeveloperTools/
+
+# The Android front end's generated pieces: the Rust library `build-core.sh`
+# cross-compiles and the Kotlin bindings it generates from it.
+android/app/src/main/jniLibs/
+android/app/src/main/java/uniffi/
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/

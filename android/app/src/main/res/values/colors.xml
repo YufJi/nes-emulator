@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The palette the Compose side mirrors in `ui/Theme.kt`. -->
+    <color name="console_red">#FFB3232B</color>
+    <color name="crt_black">#FF14100E</color>
+</resources>

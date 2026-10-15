@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      A placeholder theme, replaced the moment Compose draws: the launch window
+      is the CRT black the boot sequence starts from, so nothing flashes white
+      between tapping the icon and the first frame.
+    -->
+    <style name="Theme.NesTv" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/crt_black</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

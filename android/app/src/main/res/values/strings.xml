@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The interface is Chinese, like the iOS app's. Only strings the framework
+  itself reads (the launcher label) live here; everything the Compose UI shows is
+  written where it is used, so a screen and its wording stay in one file.
+-->
+<resources>
+    <string name="app_name">NES 模拟器</string>
+</resources>

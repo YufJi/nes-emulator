@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher glyph, drawn as a vector so the icon is source, not a binary.
+  108x108 with the art inside the 72x72 safe zone an adaptive icon masks.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Cream console body. -->
+    <path
+        android:fillColor="#F2E4C8"
+        android:pathData="M26,34h56v40h-56z" />
+    <!-- Cartridge slot and a cartridge poking out of it. -->
+    <path
+        android:fillColor="#1A1614"
+        android:pathData="M32,40h44v8h-44z" />
+    <path
+        android:fillColor="#E0B23C"
+        android:pathData="M42,24h24v16h-24z" />
+    <path
+        android:fillColor="#8A2B22"
+        android:pathData="M48,29h12v6h-12z" />
+    <!-- Screen with two scanlines. -->
+    <path
+        android:fillColor="#1A1614"
+        android:pathData="M32,52h44v16h-44z" />
+    <path
+        android:fillColor="#2C6E3C"
+        android:pathData="M34,54h40v12h-40z" />
+    <path
+        android:fillColor="#BF2C6E3C"
+        android:pathData="M34,57h40v2h-40z" />
+    <path
+        android:fillColor="#BF2C6E3C"
+        android:pathData="M34,61h40v2h-40z" />
+    <!-- Two buttons. -->
+    <path
+        android:fillColor="#B3232B"
+        android:pathData="M36,72h8v6h-8z" />
+    <path
+        android:fillColor="#B3232B"
+        android:pathData="M50,72h8v6h-8z" />
+</vector>

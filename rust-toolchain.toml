@@ -15,4 +15,7 @@ targets = [
     "wasm32-unknown-unknown", # crates/nes-wasm, for the web front end
     "aarch64-apple-ios",      # ios/build-core.sh, device
     "aarch64-apple-ios-sim",  # ios/build-core.sh, Apple Silicon simulator
+    "aarch64-linux-android",  # android/build-core.sh, devices and TV boxes
+    "x86_64-linux-android",   # android/build-core.sh, 64-bit emulator images
+    "i686-linux-android",     # android/build-core.sh, the Android TV emulator
 ]

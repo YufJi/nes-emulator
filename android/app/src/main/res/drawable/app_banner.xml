@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Android TV home-screen banner, 320x180. Drawn as a vector so the picture
+  is reviewable in the repository like any other source file: a red console
+  shell, a cream cartridge slot, a black screen, and two controllers. No text —
+  which is also why nothing here needs a font — and no resemblance to any real
+  brand's logo.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Shell. -->
+    <path
+        android:fillColor="#B3232B"
+        android:pathData="M0,0h320v180h-320z" />
+    <!-- Highlight band, the way the plastic catches light on those machines. -->
+    <path
+        android:fillColor="#C8342F"
+        android:pathData="M0,0h320v26h-320z" />
+
+    <!-- Cartridge slot. -->
+    <path
+        android:fillColor="#F2E4C8"
+        android:pathData="M24,34h272v34h-272z" />
+    <path
+        android:fillColor="#1A1614"
+        android:pathData="M32,42h256v18h-256z" />
+    <!-- A cartridge sitting in it. -->
+    <path
+        android:fillColor="#E0B23C"
+        android:pathData="M132,14h56v28h-56z" />
+    <path
+        android:fillColor="#8A2B22"
+        android:pathData="M144,24h32v10h-32z" />
+
+    <!-- Screen. -->
+    <path
+        android:fillColor="#1A1614"
+        android:pathData="M48,84h224v56h-224z" />
+    <path
+        android:fillColor="#2C6E3C"
+        android:pathData="M56,92h208v40h-208z" />
+    <!-- Scanlines. -->
+    <path android:fillColor="#BF2C6E3C" android:pathData="M56,98h208v3h-208z" />
+    <path android:fillColor="#BF2C6E3C" android:pathData="M56,106h208v3h-208z" />
+    <path android:fillColor="#BF2C6E3C" android:pathData="M56,114h208v3h-208z" />
+    <path android:fillColor="#BF2C6E3C" android:pathData="M56,122h208v3h-208z" />
+
+    <!-- Two controllers on the bottom rail. -->
+    <path android:fillColor="#F2E4C8" android:pathData="M34,152h44v20h-44z" />
+    <path android:fillColor="#1A1614" android:pathData="M40,160h10v4h-10z" />
+    <path android:fillColor="#1A1614" android:pathData="M46,154h4v16h-4z" />
+    <path android:fillColor="#1A1614" android:pathData="M64,156h8v8h-8z" />
+    <path android:fillColor="#1A1614" android:pathData="M56,164h8v8h-8z" />
+    <path android:fillColor="#F2E4C8" android:pathData="M242,152h44v20h-44z" />
+    <path android:fillColor="#1A1614" android:pathData="M248,160h10v4h-10z" />
+    <path android:fillColor="#1A1614" android:pathData="M254,154h4v16h-4z" />
+    <path android:fillColor="#1A1614" android:pathData="M272,156h8v8h-8z" />
+    <path android:fillColor="#1A1614" android:pathData="M264,164h8v8h-8z" />
+</vector>

@@ -105,6 +105,8 @@ crates/nes-core/   模拟器内核：CPU / PPU / APU / 总线 / mapper / 存档�
 crates/nes-wasm/   wasm-bindgen 绑定（Nes），对内核的薄封装
 crates/nes-uniffi/ UniFFI 绑定，供 iOS / macOS（Swift）与 Android（Kotlin）接入
 web/               React + Vite + TypeScript 前端
+ios/               iOS 应用（SwiftUI、Metal、AVAudioEngine）
+android/           Android TV 应用（Compose、GLES2、AudioTrack，Kotlin 绑定）
 docs/              架构说明（docs/architecture.zh-CN.md）、与 Mesen 的对齐文档
                    （docs/mesen-alignment.zh-CN.md）、嵌入式掌机方案
                    （docs/embedded-handheld.zh-CN.md）、界面截图（docs/img/）
@@ -113,10 +115,13 @@ roms/              本地测试 ROM（可选；缺失时相关测试会跳过）
 
 ## 环境要求
 
-- Rust，由 `rust-toolchain.toml` 固定为 1.97.0（含 `rustfmt`、`clippy` 与 WASM/iOS target）。
-  首次执行 cargo 命令时 rustup 会自动装好，无需手工操作；各 crate 自身仍保留 1.70 MSRV。
+- Rust，由 `rust-toolchain.toml` 固定为 1.97.0（含 `rustfmt`、`clippy` 与 WASM/iOS/Android
+  target）。首次执行 cargo 命令时 rustup 会自动装好，无需手工操作；各 crate 自身仍保留
+  1.70 MSRV。
 - Node.js 18+
 - `wasm-pack`（仅在重新生成 WASM 绑定时需要）
+- JDK 17、Android SDK（platform 34）、NDK 与 `cargo-ndk`（仅供 Android 应用使用，
+  见 [`android/README.zh-CN.md`](android/README.zh-CN.md)）
 
 ## 构建与运行
 
@@ -136,6 +141,17 @@ npm run build:wasm   # 用 wasm-pack 生成 web/src/wasm（需要联网）
 npm run dev          # 开发服务器 http://localhost:5173
 npm run build        # 类型检查 + 生产构建
 ```
+
+Android TV 应用（首次需生成 Kotlin 绑定，`.so` 与绑定都未纳入版本控制）：
+
+```bash
+./android/build-core.sh            # 交叉编译内核并生成 Kotlin API
+cd android
+./gradlew :app:assembleDebug       # 出 APK
+./gradlew :app:testDebugUnitTest   # 跑应用自己的测试
+```
+
+NDK 与模拟器的准备见 [`android/README.zh-CN.md`](android/README.zh-CN.md)。
 
 ## 部署（GitHub Pages）
 
@@ -202,7 +218,7 @@ Pages 是纯静态托管，没有服务端 rewrite，所以构建会额外产出
 ## 免责声明
 
 纯个人学习研究项目：不涉及任何商业行为，不提供也不分发任何 ROM / 游戏文件，与任天堂没有
-任何关联。该声明同时覆盖仓库、Web UI、iOS 应用，以及其他前端与绑定；完整内容见
+任何关联。该声明同时覆盖仓库、Web UI、iOS 与 Android 应用，以及其他前端与绑定；完整内容见
 [`DISCLAIMER.zh-CN.md`](DISCLAIMER.zh-CN.md)。
 
 ## 许可

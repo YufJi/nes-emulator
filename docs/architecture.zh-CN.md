@@ -587,7 +587,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | Web | `requestAnimationFrame` | `AudioWorklet`（回退 `ScriptProcessorNode`） | 已实现，见第 12 节 |
 | iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` 渲染回调 | 绑定已就绪（`nes-uniffi`，见 §11.2）；把回调时间戳（秒→毫秒）喂给 `FrameClock` |
-| Android | `Choreographer` | Oboe（低延迟） | 同一份 `nes-uniffi`，换 `--language kotlin`；建议模拟器放独立线程，音频回调只做 `fill_audio` |
+| Android | `Choreographer` | `AudioTrack`（浮点采样，设备支持时走低延迟） | 已实现：[`android/`](../android/README.md)。同一份 `nes-uniffi`，换 `--language kotlin`；`Choreographer` 跑在主线程，把时间戳交给专用模拟线程，音频线程只碰宿主自己的环形缓冲 |
 | macOS / Windows | `CVDisplayLink` / 定时器 | CoreAudio / WASAPI | 与 iOS/Native 一致：时间戳 + 拉音频 |
 
 三者共同点：**内核不主动回调宿主，宿主主动喂时间戳并拉数据**。因此新增平台不需要改内核，
@@ -687,7 +687,18 @@ cargo run -p nes-uniffi --bin uniffi-bindgen -- \
     --language swift --out-dir out/swift      # Android 用 --language kotlin
 ```
 
-设备构建请指向对应的产物（iOS 真机是 `.a`，模拟器是 `.dylib`）。
+设备构建请指向对应的产物（iOS 真机是 `.a`，模拟器是 `.dylib`，Android 是 `.so`）。
+
+有两件事是 Kotlin 独有的，也是 Android 应用与 iOS 应用看起来略有差异的原因：
+
+- **绑定走 JNA**：宿主读 `Vec<u8>` 是一次拿到 `ByteArray`，但解不了
+  `Nes::frame_buffer_ptr`——它只看到一个 `Long`。而 `frame_buffer()` 更糟：UniFFI 会把
+  `Vec<u32>` 编组成 `List<UInt>`，每个像素一个装箱整数，一帧 61440 个。
+  `frame_buffer_bytes()` 就是为此而生：同一幅画面，按这些小端字节给出，一帧一个数组。
+- **变体字段不能叫 `message`**：UniFFI 生成的 Kotlin 错误变体是
+  `class Foo(val message: String) : NesError()`，与 `override val message` 并列，
+  Kotlin 编译器会以重复声明拒绝；因此 `NesError` 的文本字段叫 `reason`。
+  Swift 两种叫法都无所谓。
 
 ---
 
@@ -837,6 +848,8 @@ flowchart LR
 | `cd web && npm run build` | 类型检查 + 生产构建 |
 | `cd web && npm run build:wasm` | 重新生成 WASM 绑定（需要 `wasm-pack`） |
 | `cd web && npm run build:games` | 重新生成游戏列表 JSON（需要网络） |
+| `./android/build-core.sh` | 为 Android 交叉编译内核并生成 Kotlin 绑定（需要 NDK 与 `cargo-ndk`） |
+| `cd android && ./gradlew :app:assembleDebug` | 构建 Android TV 的 APK（需要 JDK 17） |
 
 `web/src/wasm/` 与 `crates/nes-wasm/pkg/` 是生成物且不入库，克隆后需先跑 `npm run build:wasm`。
 
@@ -968,7 +981,9 @@ flowchart LR
 
 1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
-4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
+4. ~~**原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。~~
+   已完成：Android TV 应用用 `Choreographer`、GLES2 画面与 `AudioTrack` 实现了这四条通道
+   （`android/README.md`），iOS 应用用 `CADisplayLink`、Metal 与 `AVAudioEngine` 实现了同一份契约。
 5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`ppu_vbl_nmi` 的最后 1 项、
    `mmc3_test_2` 的 1 项——外加 MMC5 的扩展属性、§8 里说明延后的 5 个 Mapper、PAL 的 dot
    比例。寄存器写入、`$2002`/`$2007` 读、DMA 与 DMC 现在都落在各自 cycle 的 dot 上；剩下的
