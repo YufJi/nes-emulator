@@ -80,3 +80,73 @@ fn trace_a_rom() {
 
     println!("{instructions} instructions traced");
 }
+
+/// Dump the PPU bus address the cartridge is being handed, one line per
+/// instruction.
+///
+/// This is the view an A12-sensitive mapper has: which address is on the bus,
+/// and when it changes. The pipeline drives it at fixed dots, so instruction
+/// granularity (a third of a dot-per-cycle rate) is enough to see which dots a
+/// rise lands on and how long the low run before it was.
+///
+/// ```text
+/// NES_A12_ROM=roms/blargg/mmc3_test_2/rom_singles/4-scanline_timing.nes \
+/// NES_A12_FRAMES=2 NES_A12_LINE=239 \
+///   cargo test -p nes-core --test cycle_trace -- --ignored --nocapture a12
+/// ```
+#[test]
+#[ignore = "a diagnostic tool: set NES_A12_ROM to the .nes file to trace"]
+fn trace_a12_for_a_scanline() {
+    let Some(requested) = std::env::var("NES_A12_ROM").ok() else {
+        println!("set NES_A12_ROM=<path to a .nes file> to trace its PPU bus");
+        return;
+    };
+    let mut path = std::path::PathBuf::from(&requested);
+    if !path.exists() {
+        let mut root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        root.pop();
+        root.pop();
+        path = root.join(&requested);
+    }
+    let frames: u64 = std::env::var("NES_A12_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let want: i64 = std::env::var("NES_A12_LINE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(239);
+
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+
+    println!(
+        "{}: tracing line {want} of {frames} frame(s)",
+        path.display()
+    );
+    println!(
+        "{:>6} {:>3} {:>3} {:>6} {:>4}",
+        "pc", "ln", "dot", "a12addr", "a12"
+    );
+
+    let mut frame = nes.frame_number();
+    let mut printed = 0;
+    let mut last = u16::MAX;
+    while nes.frame_number() < frame + frames {
+        let (scanline, dot) = nes.ppu_position();
+        let addr = nes.ppu_bus_address();
+        if scanline as i64 == want && addr != last {
+            println!(
+                "{:04X} {scanline:>3} {dot:>3} {addr:04X} {:>4}",
+                nes.cpu_pc(),
+                if addr & 0x1000 != 0 { "high" } else { "low" }
+            );
+            last = addr;
+            printed += 1;
+        }
+        nes.step_instruction();
+        frame = nes.frame_number();
+    }
+    println!("{printed} bus changes on that line");
+}

@@ -1449,6 +1449,15 @@ impl Nes {
         self.cpu.pc()
     }
 
+    /// The address the PPU is driving for the cartridge right now.
+    ///
+    /// What an A12-sensitive mapper sees: the address of the last access the
+    /// chip made, held between accesses (Mesen's `_ppuBusAddress`). Bit 12 is
+    /// A12.
+    pub fn ppu_bus_address(&self) -> u16 {
+        self.bus.bus_address
+    }
+
     /// Clear the frame-ready flag.
     pub fn clear_frame_ready(&mut self) {
         self.bus.frame_ready = false;
