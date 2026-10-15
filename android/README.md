@@ -84,7 +84,7 @@ focus and `KEYCODE_MENU` opens the settings or the in-game menu.
 
 | File | What it owns |
 | --- | --- |
-| `NesSession.kt` | The console and its thread: `Choreographer` on the main thread hands timestamps to a dedicated emulation thread, which runs frames, pushes sound into the ring and hands pictures to the surface |
+| `NesSession.kt` | The console and its thread: a dedicated emulation thread runs frames, pushes sound into the ring and hands pictures to the surface, and the GL thread's swap — one frame in flight — is what lets it run the next one |
 | `VideoSurface.kt` | A `GLSurfaceView` in `WHEN_DIRTY` mode: one GLES2 texture, whole-multiple scaling, optional scanlines |
 | `AudioOutput.kt` | An `AudioTrack` draining `AudioRing` on its own thread, at the device's own sample rate |
 | `InputMapper.kt` | Key and joystick events to the console's eight buttons, turbo included |
@@ -95,8 +95,8 @@ focus and `KEYCODE_MENU` opens the settings or the in-game menu.
 Three things are worth knowing before changing any of it:
 
 - **The core is single-owner.** Every call into `Nes` happens on the emulation thread
-  (`docs/architecture.md` §10.5); the audio thread only ever touches the ring, and the
-  main thread only ever posts timestamps. `NesSession` is the only place that has a `Nes`.
+  (`docs/architecture.md` §10.5); the audio thread only ever touches the ring, and the GL
+  thread only ever reports that a picture went up. `NesSession` is the only place that has a `Nes`.
 - **The picture crosses as bytes.** Kotlin cannot dereference `frame_buffer_ptr()`, and
   `frame_buffer()` would marshal 61,440 pixels across the boundary as individual boxed
   integers, so the binding grew `frame_buffer_bytes()` for it: one `ByteArray` per frame,
@@ -108,14 +108,25 @@ Three things are worth knowing before changing any of it:
 
 ## Performance on a TV
 
-Two decisions in this front end were worth real frames on the target hardware, and both were
-measured on a Sony BRAVIA 4K VH22 (ARMv8 cores at 1.8 GHz, 32-bit Android userspace, 1080p):
+Three decisions in this front end were worth real frames on the target hardware, all measured
+on a Sony BRAVIA 4K VH22 (four Cortex-A55 at 1.8 GHz, 32-bit Android userspace, 1080p):
 
-- **The pacemaker is a timer on the emulation thread, not the display link.** That TV delivers
-  a `Choreographer` callback every ~84 ms — one in five vsyncs — so `FrameClock` was handed a
-  fifth of the timestamps, spent its four-frame catch-up budget on each of them and settled at
-  a hard 50 fps. A timer is not the display's business to throttle, and the picture is
-  presented on demand anyway, so pacing and presentation stay independent.
+- **The display is the pacemaker, and the swap is the beat.** Nothing runs on a timer. The GL
+  thread reports each picture it puts up, and that report — not a clock — is what lets the
+  emulation thread run the next frame, so a frame reaches the screen the vsync after it was
+  made, and a surface that stops presenting stops the console instead of letting it run unseen.
+  The two earlier designs both failed on this hardware. `Choreographer` callbacks arrived every
+  ~84 ms — one vsync in five, the system throttling a link whose app it is not compositing — so
+  `FrameClock` was handed a fifth of the timestamps and settled at a hard 50 fps. A
+  `System.nanoTime()` timer was worse in a way that did not show: a frame takes ~15 ms to
+  emulate, so the timer ran a batch of them per wake-up and handed over only the newest, and the
+  surface received 17 pictures a second while the on-screen counter said 60 — that counter was
+  counting emulated frames rather than presented ones, and no longer is.
+- **The core's sample rate follows the panel.** Pacing an NTSC cartridge to a 60.000004 Hz panel
+  runs it 0.16% slow — the same trade RetroArch makes on this box — so the core is asked for
+  48079 samples per emulated second where the device plays 48000; without that the ring runs
+  dry after about twenty minutes. `AudioRate` holds the arithmetic, and 0.16% of pitch is
+  inaudible.
 - **The core's PPU bus trace is switched off.** It writes a sample on every one of the 89,342
   dots in a frame, and this front end never reads it. Worth 5–8%.
 
@@ -123,16 +134,28 @@ What is left is the emulation itself:
 
 | | Per frame |
 | --- | --- |
-| Emulation (`Nes::frame`) | ~13.4 ms |
-| This front end (picture + audio plumbing) | ~1.4 ms |
-| Budget at 60 Hz | 16.6 ms |
+| Emulation (`Nes::frame`, plus input) | ~14.4 ms |
+| This front end (picture + audio plumbing) | ~1.7 ms |
+| Budget at 60 Hz | 16.67 ms |
 
-So a TV of that class runs NTSC at ~96% of real time — Super Mario Bros measures ~58 fps with
-sound on. The wall is the core's per-dot PPU and CPU work, not this host; the same build on a
-phone, a 64-bit box or an emulator has headroom, and a PAL cartridge (50 Hz) is comfortable.
-Two things that did *not* help, worth recording so nobody tries them again: enabling
-NEON/ARMv8 codegen for `armeabi-v7a` changed nothing measurable, and neither did turning the
-core's audio capture off (the resampler is not what costs the time).
+That is ~95% of one core, and it is why the loop lands at ~59.5 fps rather than 60.0: a vsync
+has room for the emulation *or* for the emulation plus an upload, so a frame that meets a
+scheduler hitch is shown one vsync late rather than dropped. The wall is the core's per-dot PPU
+and CPU work, not this host — the same build on a phone, a 64-bit box or an emulator has
+headroom, and a PAL cartridge (50 Hz) just skips one vsync in six. Two things that did *not*
+help, worth recording so nobody tries them again: enabling NEON/ARMv8 codegen for
+`armeabi-v7a` changed nothing measurable, and neither did turning the core's audio capture off
+(the resampler is not what costs the time).
+
+To see the presentation rate for yourself: `adb shell dumpsys SurfaceFlinger --latency-clear
+"<layer>"`, play for a few seconds, then `--latency` again. On this television that dump is
+*not* evidence of the app's frame rate: it reports one entry per vsync for as long as the layer
+holds any buffer at all, so sampling it with the game paused gives the same 127 entries over
+the same 2.1 s. It does catch a front end that queues nothing for whole vsyncs — the previous
+one here measured 85 entries in a five-second window — but it cannot tell 55 fps of queued
+pictures from 60. The honest readouts are the on-screen counter (presented frames, not emulated
+ones) and the per-frame cost table above; a one-off pair of `System.nanoTime()` calls around
+`frame()` and around the rest of the turn reproduces it.
 
 ## Keys
 

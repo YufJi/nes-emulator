@@ -449,6 +449,30 @@ impl Nes {
         out
     }
 
+    /// Drain audio straight into a host buffer instead of into a `Vec`.
+    ///
+    /// The same samples as [`Nes::fill_audio`], written where the host says,
+    /// for a host that pays for the `Vec`: crossing the boundary as a
+    /// `sequence<f32>` allocates one boxed `Float` per sample on the Kotlin side
+    /// — 4096 of them per frame at 60 frames a second — where an address costs
+    /// nothing to pass. Android's `NesSession` pulls into a JNA `Memory` this
+    /// way; iOS and the web keep using [`Nes::fill_audio`].
+    ///
+    /// `address` must point at `max_samples` writable `f32`s that stay valid for
+    /// the call. Like [`Nes::frame_buffer_ptr`], it travels as a `u64` because
+    /// that is what a binding without a pointer type can carry. A null address
+    /// or a zero size writes nothing and returns 0.
+    pub fn fill_audio_into(&self, address: u64, max_samples: u32) -> u32 {
+        if address == 0 || max_samples == 0 {
+            return 0;
+        }
+        // SAFETY: the caller promises `max_samples` writable floats at
+        // `address`, and the slice does not outlive the call.
+        let out =
+            unsafe { std::slice::from_raw_parts_mut(address as *mut f32, max_samples as usize) };
+        self.machine().fill_audio(out) as u32
+    }
+
     /// Drop every queued audio sample, e.g. when loading a cartridge.
     pub fn clear_audio_samples(&self) {
         self.machine().clear_audio_samples();
@@ -732,6 +756,55 @@ mod tests {
         assert_eq!(nes.fill_audio(100).len(), 100, "a short request is filled");
         assert!(nes.fill_audio(4096).len() > 100);
         assert_eq!(nes.fill_audio(4096).len(), 0, "the queue drains dry");
+    }
+
+    #[test]
+    fn audio_can_be_pulled_straight_into_a_host_buffer() {
+        // Two machines in the same state, pulled two ways: the address-taking
+        // path has to hand back exactly what the copying one does.
+        let direct = Nes::new();
+        direct.load_rom(tiny_rom()).unwrap();
+        direct.set_sample_rate(44_100);
+        direct.frame().expect("frame should run");
+
+        let copying = Nes::new();
+        copying.load_rom(tiny_rom()).unwrap();
+        copying.set_sample_rate(44_100);
+        copying.frame().expect("frame should run");
+
+        let mut buffer = vec![-1.0f32; 4096];
+        let written = direct.fill_audio_into(buffer.as_mut_ptr() as u64, 4096) as usize;
+        assert!(written > 100, "a frame should carry audio, got {written}");
+        assert_eq!(written % 2, 0, "the count is whole stereo frames");
+
+        let copied = copying.fill_audio(4096);
+        assert_eq!(copied.len(), written);
+        assert_eq!(copied.as_slice(), &buffer[..written]);
+        assert_eq!(
+            direct.fill_audio_into(buffer.as_mut_ptr() as u64, 4096),
+            0,
+            "the queue drains dry"
+        );
+    }
+
+    #[test]
+    fn a_null_or_empty_direct_pull_writes_nothing() {
+        let nes = Nes::new();
+        nes.load_rom(tiny_rom()).unwrap();
+        nes.frame().expect("frame should run");
+
+        let mut buffer = vec![0.0f32; 64];
+        assert_eq!(
+            nes.fill_audio_into(0, 64),
+            0,
+            "a null address writes nothing"
+        );
+        assert_eq!(
+            nes.fill_audio_into(buffer.as_mut_ptr() as u64, 0),
+            0,
+            "a zero-sized pull writes nothing"
+        );
+        assert_eq!(buffer, vec![0.0f32; 64], "and leaves the buffer alone");
     }
 
     #[test]

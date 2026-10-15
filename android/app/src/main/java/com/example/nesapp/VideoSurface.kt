@@ -14,19 +14,28 @@ import uniffi.nes_uniffi.frameWidth
 /**
  * The picture: a texture upload driven by the console's own frame buffer.
  *
- * `RENDERMODE_WHEN_DIRTY` on purpose. The emulation thread knows when a new
- * picture exists, so the GL thread is woken with `requestRender()` instead of
- * re-uploading the same frame at the display's pace — which also means a slow
- * frame is drawn once rather than twice, and a 50 Hz PAL cartridge is not
- * forced through a 60 Hz redraw loop.
+ * `RENDERMODE_WHEN_DIRTY` on purpose, and it is load-bearing: the emulation
+ * thread knows when a new picture exists, so the GL thread is woken with
+ * `requestRender()` rather than left to redraw the old one at the display's pace,
+ * and the swap that follows is the beat the whole front end runs on. So a draw
+ * that uploads a picture reports it through [FrameGate] — which is what releases
+ * the next frame for the emulation thread — while a draw that uploads nothing (a
+ * surface being created, a cleared picture) presents nothing and releases
+ * nothing. A slow frame is drawn once rather than twice, and a 50 Hz PAL
+ * cartridge is not forced through a 60 Hz redraw loop.
  *
  * The view is one instance for the life of the app: android's `GLSurfaceView`
  * recreates its EGL context on re-attach, so leaving a game and starting another
  * reuses it rather than leaking contexts.
  */
-class VideoSurface(context: Context, private val settings: Settings) : GLSurfaceView(context) {
+class VideoSurface(
+    context: Context,
+    private val settings: Settings,
+    private val gate: FrameGate,
+    private val onPresented: () -> Unit,
+) : GLSurfaceView(context) {
 
-    private val renderer = FrameRenderer(settings)
+    private val renderer = FrameRenderer(settings, gate, onPresented)
 
     init {
         setEGLContextClientVersion(2)
@@ -40,6 +49,18 @@ class VideoSurface(context: Context, private val settings: Settings) : GLSurface
     }
 
     /**
+     * How many pictures the GL thread has uploaded, ever.
+     *
+     * Written on the GL thread and read on the emulation thread for the status
+     * bar, hence `@Volatile` and a single writer. Counting uploads rather than
+     * emulated frames is the point: it is the rate the display actually took,
+     * which is what the viewer is looking at. (Measured on the Sony BRAVIA before
+     * this change, the two numbers disagreed by a factor of three.)
+     */
+    val presentedCount: Long
+        get() = renderer.presented
+
+    /**
      * The buffer the GL thread is holding, if any.
      *
      * The emulation thread fills a reused buffer instead of allocating a new one
@@ -48,7 +69,13 @@ class VideoSurface(context: Context, private val settings: Settings) : GLSurface
      */
     fun pendingBuffer(): ByteArray? = renderer.pending
 
-    /** Drop the picture, so a new game does not start on the last one's last frame. */
+    /**
+     * Drop the picture, so a new game does not start on the last one's last frame.
+     *
+     * The draw this asks for uploads nothing, so it presents nothing and releases
+     * no frame. Nothing is waiting on one by then: the session is paused before
+     * the picture is cleared.
+     */
     fun clearPicture() {
         renderer.pending = null
         renderer.discard()
@@ -63,11 +90,19 @@ class VideoSurface(context: Context, private val settings: Settings) : GLSurface
  * exactly the pixels that belong on screen, so there is nothing to rasterise,
  * only to place — by whole pixels where the screen allows it.
  */
-private class FrameRenderer(private val settings: Settings) : GLSurfaceView.Renderer {
+private class FrameRenderer(
+    private val settings: Settings,
+    private val gate: FrameGate,
+    private val onPresented: () -> Unit,
+) : GLSurfaceView.Renderer {
 
     /** The newest frame from the emulation thread; the GL thread takes it. */
     @Volatile
     var pending: ByteArray? = null
+
+    /** Pictures uploaded; read by the emulation thread for the frame-rate readout. */
+    @Volatile
+    var presented = 0L
 
     private var program = 0
     private var texture = 0
@@ -155,7 +190,15 @@ private class FrameRenderer(private val settings: Settings) : GLSurfaceView.Rend
         val frame = pending
         if (frame != null && frame.size == width * height * PIXEL_BYTES) {
             pending = null
-            upload(frame)
+            if (upload(frame)) {
+                presented++
+                // The new picture is up, and the swap that follows it is the
+                // display taking it, so only now may the console produce the
+                // next one. Reported after the upload rather than before it, so
+                // the emulation thread cannot start rewriting the buffer this
+                // thread is still reading.
+                if (gate.onPresented()) onPresented()
+            }
         }
 
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -199,8 +242,9 @@ private class FrameRenderer(private val settings: Settings) : GLSurfaceView.Rend
         GLES20.glDisableVertexAttribArray(uvAttrib)
     }
 
-    private fun upload(frame: ByteArray) {
-        if (!allocated) return
+    /** Put [frame] in the texture; false when there is nowhere to put it yet. */
+    private fun upload(frame: ByteArray): Boolean {
+        if (!allocated) return false
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
         GLES20.glTexSubImage2D(
             GLES20.GL_TEXTURE_2D,
@@ -213,6 +257,7 @@ private class FrameRenderer(private val settings: Settings) : GLSurfaceView.Rend
             GLES20.GL_UNSIGNED_BYTE,
             ByteBuffer.wrap(frame),
         )
+        return true
     }
 
     private fun buildProgram(): Int {

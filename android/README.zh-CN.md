@@ -76,7 +76,7 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 | 文件 | 负责什么 |
 | --- | --- |
-| `NesSession.kt` | 机器和它的线程：主线程的 `Choreographer` 把时间戳交给专用模拟线程，由它跑帧、把声音推进环形缓冲、把画面交给画面表面 |
+| `NesSession.kt` | 机器和它的线程：专用模拟线程跑帧、把声音推进环形缓冲、把画面交给画面表面；GL 线程的 swap（同一时刻只有一帧在飞）才是放行下一帧的东西 |
 | `VideoSurface.kt` | `WHEN_DIRTY` 模式的 `GLSurfaceView`：一张 GLES2 纹理、整数倍缩放、可选扫描线 |
 | `AudioOutput.kt` | 独立线程里的 `AudioTrack`，按设备自己的采样率抽干 `AudioRing` |
 | `InputMapper.kt` | 按键与摇杆事件映射到主机那八个键，含连发 |
@@ -87,8 +87,8 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 动手改之前，有三件事值得先知道：
 
 - **内核是单一属主的。** 每一次进入 `Nes` 的调用都发生在模拟线程上
-  （`docs/architecture.md` §10.5）；音频线程只碰环形缓冲，主线程只投时间戳。
-  整个应用里只有 `NesSession` 持有 `Nes`。
+  （`docs/architecture.md` §10.5）；音频线程只碰环形缓冲，GL 线程只负责报告
+  "一帧画面已经上屏"。整个应用里只有 `NesSession` 持有 `Nes`。
 - **画面是以字节过去的。** Kotlin 解不了 `frame_buffer_ptr()`，而 `frame_buffer()` 会
   把 61440 个像素逐个装箱跨越边界，所以绑定层为它加了 `frame_buffer_bytes()`：每帧一个
   `ByteArray`，按 `GL_RGBA` 上传，在片元着色器里用 `.bgr` 调回来（字节是
@@ -98,13 +98,21 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 ## 电视上的性能
 
-这个前端里有两处决定在目标硬件上真正换回了帧，都是在索尼 BRAVIA 4K VH22 上量的
-（ARMv8 核心 1.8GHz、32 位 Android 用户态、1080p）：
+这个前端里有三处决定在目标硬件上真正换回了帧，都是在索尼 BRAVIA 4K VH22 上量的
+（四核 Cortex-A55 1.8GHz、32 位 Android 用户态、1080p）：
 
-- **节拍器是模拟线程上的定时器，而不是显示链路。** 那台电视每 ~84ms 才给一次
-  `Choreographer` 回调（五个 vsync 里只给一个），于是 `FrameClock` 只拿到五分之一的
-  时间戳，每次都把四帧的追帧预算用光，稳稳地卡在 50fps。定时器不是显示链路能节流的
-  东西，而画面本来就是按需呈现的，所以节拍与呈现互不干扰。
+- **显示链路就是节拍器，swap 就是那一拍。** 这里没有任何定时器。GL 线程每上屏一帧就
+  报告一次，是这个报告——而不是某个时钟——放行模拟线程跑下一帧；于是刚做好的那一帧在
+  下一个 vsync 就上屏，而画面表面一旦停止呈现，机器也就停下来，而不是自己空转下去。
+  之前两版设计在这台机器上都失败了。`Choreographer` 每 ~84ms 才给一次回调（五个 vsync
+  里只给一个：系统会节流一个并非正在被合成的应用的显示链路），`FrameClock` 只拿到五分之一
+  的时间戳，稳稳卡在 50fps。换成 `System.nanoTime()` 定时器后问题更隐蔽：一帧要 ~15ms 才能
+  模拟完，于是每次唤醒都跑一批、只把最新的一帧交出去，画面表面每秒只收到 17 张图，而屏幕
+  上的计数器还写着 60——它数的是模拟帧，不是呈现帧（现在数呈现帧了）。
+- **内核采样率跟着面板走。** 把 NTSC 卡带按 60.000004Hz 的面板来跑，游戏会慢 0.16%——
+  这也是 RetroArch 在这台电视上的取舍——所以设备放 48000 时，内核被要求每个"模拟秒"产出
+  48079 个采样；不这么做，环形缓冲大约二十分钟后就会见底。算式的归属在 `AudioRate` 里，
+  代价是 0.16% 的音高，听不出来。
 - **关掉内核的 PPU 总线轨迹。** 它一帧要在 89342 个 dot 上各记一条样本，而这个前端
   从来不读它。值 5–8%。
 
@@ -112,15 +120,23 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 | | 每帧 |
 | --- | --- |
-| 模拟（`Nes::frame`） | 约 13.4ms |
-| 本前端（画面 + 音频管道） | 约 1.4ms |
-| 60Hz 的预算 | 16.6ms |
+| 模拟（`Nes::frame` 加输入） | 约 14.4ms |
+| 本前端（画面 + 音频管道） | 约 1.7ms |
+| 60Hz 的预算 | 16.67ms |
 
-所以这个级别的电视跑 NTSC 大约是实时的 96%——超级玛丽开着声音量到约 58fps。瓶颈是内核
-逐 dot 的 PPU 与 CPU 工作，不是这个宿主；同一份构建在手机、64 位盒子或模拟器上都有余量，
-PAL 卡带（50Hz）则很宽裕。另外两件**没有**效果的事也记在这里，免得再试一遍：给
-`armeabi-v7a` 打开 NEON / ARMv8 代码生成没有任何可测量的变化，关掉内核的音频采集也一样
-（重采样不是耗时所在）。
+也就是说一个核心的约 95% 都被占满，这正是循环落在 ~59.5fps 而不是 60.0 的原因：一个 vsync
+只够"模拟"，不够"模拟 + 上传"，所以撞上调度抖动的那些帧会晚一个 vsync 上屏，而不是被丢掉。
+瓶颈是内核逐 dot 的 PPU 与 CPU 工作，不是这个宿主——同一份构建在手机、64 位盒子或模拟器上
+都有余量，PAL 卡带（50Hz）更是每六个 vsync 跳一个而已。另外两件**没有**效果的事也记在这里，
+免得再试一遍：给 `armeabi-v7a` 打开 NEON / ARMv8 代码生成没有任何可测量的变化，关掉内核的
+音频采集也一样（重采样不是耗时所在）。
+
+想自己看呈现速率：先 `adb shell dumpsys SurfaceFlinger --latency-clear "<layer>"`，玩几秒，
+再 `--latency` 一次。在这台电视上，这份 dump **不是**应用帧率的证据：只要该 layer 手上还有
+任何 buffer，它就每个 vsync 记一条——暂停游戏再采样，同样会得到 2.1 秒内 127 条。它能抓到
+"整几个 vsync 都没排队任何东西"的前端（改之前这里量到五秒 85 条），但分辨不出每秒排队 55 帧
+和 60 帧。靠谱的读数是屏幕上的计数器（呈现帧，不是模拟帧），以及上面那张每帧成本表；在
+`frame()` 前后和这一轮其余部分前后临时插一对 `System.nanoTime()` 就能复现。
 
 ## 按键
 

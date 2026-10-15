@@ -587,7 +587,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | Web | `requestAnimationFrame` | `AudioWorklet`（回退 `ScriptProcessorNode`） | 已实现，见第 12 节 |
 | iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` 渲染回调 | 绑定已就绪（`nes-uniffi`，见 §11.2）；把回调时间戳（秒→毫秒）喂给 `FrameClock` |
-| Android | `Choreographer` | `AudioTrack`（浮点采样，设备支持时走低延迟） | 已实现：[`android/`](../android/README.md)。同一份 `nes-uniffi`，换 `--language kotlin`；`Choreographer` 跑在主线程，把时间戳交给专用模拟线程，音频线程只碰宿主自己的环形缓冲 |
+| Android | GL 表面 swap 后的回执，报告给模拟线程 | `AudioTrack`（浮点采样，设备支持时走低延迟） | 已实现：[`android/`](../android/README.md)。同一份 `nes-uniffi`，换 `--language kotlin`。这里的节奏不来自任何回调：同一时刻只允许一帧在飞，模拟线程要等 swap 完成的回执才继续，而喂给 `FrameClock` 的是一条「每轮一个显示周期」的合成时间线——所以它依然回答「现在到期几帧」，也依然让 PAL 卡带在 60Hz 面板上按 50Hz 跑。音频线程只碰宿主自己的环形缓冲 |
 | macOS / Windows | `CVDisplayLink` / 定时器 | CoreAudio / WASAPI | 与 iOS/Native 一致：时间戳 + 拉音频 |
 
 三者共同点：**内核不主动回调宿主，宿主主动喂时间戳并拉数据**。因此新增平台不需要改内核，
@@ -982,8 +982,8 @@ flowchart LR
 1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. ~~**原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。~~
-   已完成：Android TV 应用用 `Choreographer`、GLES2 画面与 `AudioTrack` 实现了这四条通道
-   （`android/README.md`），iOS 应用用 `CADisplayLink`、Metal 与 `AVAudioEngine` 实现了同一份契约。
+   已完成：Android TV 应用用「以 GL 表面 swap 为节拍」的 GLES2 画面与 `AudioTrack` 实现了这四条
+   通道（`android/README.md`），iOS 应用用 `CADisplayLink`、Metal 与 `AVAudioEngine` 实现了同一份契约。
 5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`ppu_vbl_nmi` 的最后 1 项、
    `mmc3_test_2` 的 1 项——外加 MMC5 的扩展属性、§8 里说明延后的 5 个 Mapper、PAL 的 dot
    比例。寄存器写入、`$2002`/`$2007` 读、DMA 与 DMC 现在都落在各自 cycle 的 dot 上；剩下的

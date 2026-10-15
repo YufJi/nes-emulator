@@ -15,8 +15,11 @@ import android.os.Build
  * keeps a blocking device write away from the emulation loop.
  *
  * The sample rate is the device's own, read from `AudioManager` before any
- * cartridge is loaded and handed to the core through `Config.sampleRate`, so the
- * core resamples once, into the rate the speaker actually runs at.
+ * cartridge is loaded. It is the rate the *speaker* runs at, not necessarily the
+ * rate the core is asked for: with the loop paced by the display, a second of
+ * emulation is not quite a second of real time, and `NesSession` retunes the core
+ * to match (see `AudioRate`). Both ends of the ring therefore count the same
+ * number of samples per second, and the ring's level stays where it should.
  */
 class AudioOutput(
     context: Context,
@@ -24,7 +27,7 @@ class AudioOutput(
     private val settings: Settings,
 ) {
 
-    /** The rate the device wants; also what the core is asked to produce. */
+    /** The rate the device plays at; the rate the core is asked for follows it. */
     val sampleRate: Int = run {
         val manager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         manager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48_000
@@ -115,10 +118,23 @@ class AudioOutput(
                 sleep(SILENT_SLEEP_MS)
                 continue
             }
-            val count = ring.read(scratch, scratch.size)
-            if (count <= 0) {
+            val first = ring.read(scratch, scratch.size)
+            if (first <= 0) {
                 sleep(SILENT_SLEEP_MS)
                 continue
+            }
+            // A device period is what the track wants to be handed, and with the
+            // display pacing the loop, a period now arrives in one frame-sized
+            // piece that does not divide it evenly. Writing the piece that is
+            // there would be a short write every period, which the speaker hears
+            // as a click; so wait for the rest — but not for ever, because a
+            // stalled emulation thread must not leave the device silent either.
+            var count = first
+            var waited = 0L
+            while (count < scratch.size && waited < AUDIO_FILL_TIMEOUT_MS && running && !settings.muted) {
+                sleep(FILL_RETRY_MS)
+                waited += FILL_RETRY_MS
+                count += ring.read(scratch, scratch.size - count, count)
             }
             writeBlocking(device, scratch, count)
         }
@@ -226,5 +242,18 @@ class AudioOutput(
          * long enough not to spin a core while idle.
          */
         const val SILENT_SLEEP_MS = 4L
+
+        /** How long to wait between looks for the rest of a device period. */
+        const val FILL_RETRY_MS = 1L
+
+        /**
+         * How long the audio thread may wait for a whole device period before it
+         * writes what it has.
+         *
+         * Two and a half periods at 60 Hz, so a hiccup is ridden out rather than
+         * turned into a burst of silence, and a stopped console is still heard as
+         * silence rather than as a hang of the audio thread.
+         */
+        const val AUDIO_FILL_TIMEOUT_MS = 40L
     }
 }

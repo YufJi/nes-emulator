@@ -641,7 +641,7 @@ allocation, and `no_std`-compatible.
 | --- | --- | --- | --- |
 | Web | `requestAnimationFrame` | `AudioWorklet` (falls back to `ScriptProcessorNode`) | Implemented, see section 12 |
 | iOS | `CADisplayLink` | `AVAudioEngine` / `AudioUnit` render callback | Bindings are ready (`nes-uniffi`, see §11.2); feed the callback timestamp (seconds → milliseconds) to `FrameClock` |
-| Android | `Choreographer` | `AudioTrack` (float samples, low-latency mode where the device has it) | Implemented: [`android/`](../android/README.md). The same `nes-uniffi` through `--language kotlin`; `Choreographer` runs on the main thread and hands timestamps to a dedicated emulation thread, and the audio thread only ever touches the host's ring |
+| Android | The GL surface's swap, reported back to the emulation thread | `AudioTrack` (float samples, low-latency mode where the device has it) | Implemented: [`android/`](../android/README.md). The same `nes-uniffi` through `--language kotlin`. Pacing does not come from a callback: one frame is allowed in flight, the emulation thread waits to be told the swap happened, and `FrameClock` is fed a composed timeline of one display period per turn — so it still answers "how many frames are due", and it still runs a PAL cartridge at 50 Hz on a 60 Hz panel. The audio thread only ever touches the host's ring |
 | macOS / Windows | `CVDisplayLink` / a timer | CoreAudio / WASAPI | Same as iOS/native: timestamps + pull audio |
 
 What all three share: **the core never calls back into the host; the host feeds timestamps
@@ -1108,8 +1108,8 @@ backlog, so they are written down here to stop them being re-litigated:
    cross-device sync).
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. ~~**First native front end** (iOS or Android, to prove the section 10 contract really is
-   "platform-agnostic").~~ Done: the Android TV app implements the four channels with a
-   `Choreographer`, a GLES2 surface and an `AudioTrack` (`android/README.md`), and the iOS
+   "platform-agnostic").~~ Done: the Android TV app implements the four channels with a GLES2
+   surface whose swap paces the loop, plus an `AudioTrack` (`android/README.md`), and the iOS
    app implements the same contract with `CADisplayLink`, Metal and `AVAudioEngine`.
 5. **The accuracy backlog the test ROMs now name**: the remaining cases in §13.1 —
    `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s last one — plus MMC5's
