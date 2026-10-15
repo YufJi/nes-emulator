@@ -167,6 +167,13 @@ struct RomHeader {
     prg_rom_size: usize,
     chr_rom_size: usize,
     mapper_number: u16,
+    /// NES 2.0's submapper, or 0 for a plain iNES header.
+    ///
+    /// It picks which board *within* a mapper a cartridge is, which is what the
+    /// discrete boards' bus conflicts and MMC6's protection depend on. A plain
+    /// iNES file has no such field, so this is only non-zero when the header is
+    /// NES 2.0.
+    submapper: u8,
     mirroring: Mirroring,
     region: Region,
     has_battery: bool,
@@ -187,21 +194,49 @@ impl RomHeader {
             ));
         }
 
-        let prg_rom_size = data[4] as usize * 16 * 1024; // 16KB units
-        let chr_rom_size = data[5] as usize * 8 * 1024; // 8KB units
+        let flags6 = data[6];
+        let flags7 = data[7];
+        let flags8 = data[8];
+
+        // iNES and NES 2.0 differ in byte 7's bits 2-3: 0b10 marks NES 2.0.
+        // Nothing else about the layout changes for the fields read here, and a
+        // plain iNES file's byte 8 is not part of the header at all — reading a
+        // submapper out of it would be reading whatever the unused byte holds.
+        let nes2 = (flags7 & 0x0C) == 0x08;
+
+        // Byte 9's two nibbles carry the high bits of the PRG and CHR sizes in
+        // NES 2.0; in iNES that byte is the TV-system flag and must not be read
+        // as sizes.
+        let (prg_banks, chr_banks) = if nes2 {
+            if data[9] & 0x0F == 0x0F || data[9] & 0xF0 == 0xF0 {
+                // The exponent-multiplier encoding: a 6-bit exponent and a
+                // 2-bit multiplier. No cartridge here uses it, and a wrong size
+                // would read ROM data out of the header's own bytes, so it is
+                // refused rather than guessed at.
+                return Err(NesError::InvalidRomFormat(
+                    "NES 2.0 exponent-multiplier ROM sizes are not supported".to_string(),
+                ));
+            }
+            (
+                data[4] as usize | (((data[9] & 0x0F) as usize) << 8),
+                data[5] as usize | (((data[9] >> 4) as usize) << 8),
+            )
+        } else {
+            (data[4] as usize, data[5] as usize)
+        };
+
+        let prg_rom_size = prg_banks * 16 * 1024; // 16KB units
+        let chr_rom_size = chr_banks * 8 * 1024; // 8KB units
 
         // Every cartridge carries at least one PRG bank, and mappers address
         // PRG with `% prg_rom.len()`. A header claiming zero banks slips past
         // the size check below and divides by zero the moment the reset vector
         // is read, so reject it here rather than let a crafted header panic.
-        if data[4] == 0 {
+        if prg_banks == 0 {
             return Err(NesError::InvalidRomFormat(
                 "ROM declares no PRG-ROM".to_string(),
             ));
         }
-
-        let flags6 = data[6];
-        let flags7 = data[7];
 
         let mirroring = if flags6 & 0x08 != 0 {
             Mirroring::FourScreen
@@ -214,14 +249,38 @@ impl RomHeader {
         let has_trainer = flags6 & 0x04 != 0;
         let has_battery = flags6 & 0x02 != 0;
 
-        // Mapper number from flags6 (high nibble) and flags7 (high nibble)
-        let mapper_number = ((flags7 & 0xF0) as u16) | ((flags6 & 0xF0) as u16 >> 4);
+        // Mapper number from flags6 (high nibble) and flags7 (high nibble),
+        // plus flags8's high nibble for NES 2.0's four extra bits.
+        let mapper_number = ((flags7 & 0xF0) as u16)
+            | ((flags6 & 0xF0) as u16 >> 4)
+            | if nes2 {
+                ((flags8 & 0xF0) as u16) << 4
+            } else {
+                0
+            };
+        let submapper = if nes2 { flags8 & 0x0F } else { 0 };
 
-        // TV system: byte 9 bit 0 is the classic PAL flag, byte 10 bits 0-1
-        // encode it more reliably (0b10 = PAL).
+        // TV system: NES 2.0 states it outright in byte 12's low two bits
+        // (0 = NTSC, 1 = PAL, 2 = both, 3 = Dendy); otherwise byte 9 bit 0 is
+        // the classic PAL flag and byte 10 bits 0-1 encode it more reliably
+        // (0b10 = PAL).
         let flags9 = data[9];
         let flags10 = data[10];
-        let region = if flags9 & 0x01 != 0 || (flags10 & 0x03) == 0x02 {
+        let region = if nes2 {
+            match data[12] & 0x03 {
+                1 => Region::Pal,
+                // 2 means "the cartridge runs on both", so the header's own
+                // flags decide. Dendy is a PAL clock with NTSC-shaped timing,
+                // which this core has no model for: it runs as NTSC.
+                _ => {
+                    if flags9 & 0x01 != 0 || (flags10 & 0x03) == 0x02 {
+                        Region::Pal
+                    } else {
+                        Region::Ntsc
+                    }
+                }
+            }
+        } else if flags9 & 0x01 != 0 || (flags10 & 0x03) == 0x02 {
             Region::Pal
         } else {
             Region::Ntsc
@@ -231,6 +290,7 @@ impl RomHeader {
             prg_rom_size,
             chr_rom_size,
             mapper_number,
+            submapper,
             mirroring,
             region,
             has_battery,
@@ -333,6 +393,11 @@ struct NesBus {
     open_bus: u8,
     /// Whether the cartridge declares battery-backed work RAM
     has_battery: bool,
+    /// The cartridge's NES 2.0 submapper, or 0 for a plain iNES header.
+    ///
+    /// Kept so a host can see which board a NES 2.0 file says it is; nothing
+    /// dispatches on it yet (see the note in `RomHeader`).
+    submapper: u8,
     frame_ready: bool,
 }
 
@@ -399,6 +464,7 @@ impl NesBus {
             enable_audio: true,
             open_bus: 0,
             has_battery: false,
+            submapper: 0,
             frame_ready: false,
         }
     }
@@ -459,6 +525,7 @@ impl NesBus {
         self.pipeline.set_mirroring(header.mirroring);
         self.region = self.region_override.unwrap_or(header.region);
         self.has_battery = header.has_battery;
+        self.submapper = header.submapper;
 
         Ok(())
     }
@@ -947,6 +1014,15 @@ impl NesBus {
             // Cartridge space
             _ => {
                 if let Some(ref mut mapper) = self.mapper {
+                    // On the discrete boards the cartridge's data lines are on
+                    // the same bus as the CPU's, so a register write carries
+                    // whatever both of them drive: bitwise AND. The board's own
+                    // byte is what it would hand back for that address.
+                    let value = if mapper.has_bus_conflicts() {
+                        value & mapper.read(addr)
+                    } else {
+                        value
+                    };
                     mapper.write(addr, value);
                 }
             }
@@ -1491,6 +1567,17 @@ impl Nes {
     /// Whether the cartridge keeps battery-backed save RAM.
     pub fn has_battery(&self) -> bool {
         self.bus.has_battery()
+    }
+
+    /// The cartridge's NES 2.0 submapper, or 0 for a plain iNES file.
+    ///
+    /// A submapper says which board *within* a mapper a cartridge is — the
+    /// distinction the discrete boards' variants turn on. Hosts can show it;
+    /// nothing in the core dispatches on it yet, because the titles that need
+    /// it (`6-MMC3_alt` and friends) carry plain iNES headers, where the choice
+    /// lives in a database rather than in the file.
+    pub fn rom_submapper(&self) -> u8 {
+        self.bus.submapper
     }
 
     /// Snapshot of the cartridge's battery RAM, or `None` when it has none.
@@ -2061,8 +2148,156 @@ mod tests {
         );
     }
 
-    /// Minimal battery-backed NROM cartridge: it copies $6000 into $0010 and
-    /// then writes $42 to $6000.
+    /// A synthetic cartridge image with the given header bytes and one PRG bank.
+    fn rom_with_header(header: [u8; 16]) -> Vec<u8> {
+        let mut rom = header.to_vec();
+        rom.extend_from_slice(&vec![0u8; 16 * 1024]);
+        rom
+    }
+
+    /// A register write on a board with bus conflicts carries the AND of what
+    /// the CPU drove and what the ROM holds at that address — which is how a
+    /// UxROM game selects a bank: the number has to be in the ROM's byte too.
+    #[test]
+    fn test_bus_conflicts_mask_a_bank_write() {
+        fn uxrom(bank_zero_byte: u8) -> Nes {
+            let mut image = Vec::new();
+            image.extend_from_slice(b"NES\x1a");
+            image.push(4); // 64KB PRG: four 16KB banks
+            image.push(0); // CHR-RAM
+            image.push(0x20); // mapper 2 (UxROM) in flags6's high nibble
+            image.push(0x00); // and nothing in flags7's
+            image.extend_from_slice(&[0u8; 8]);
+
+            let mut prg = vec![0u8; 4 * 16 * 1024];
+            prg[0] = bank_zero_byte;
+            // Each bank starts with a marker so the mapped bank is visible.
+            for bank in 0..4 {
+                prg[bank * 16 * 1024] = 0x20 | bank as u8;
+            }
+            prg[0] = bank_zero_byte;
+            image.extend_from_slice(&prg);
+
+            let mut nes = Nes::new();
+            nes.load_rom(&image).expect("load");
+            nes
+        }
+
+        let probe = uxrom(0xFF);
+        assert!(
+            probe.bus.mapper.as_ref().unwrap().has_bus_conflicts(),
+            "an UxROM board has bus conflicts"
+        );
+        // Bank 0 starts with 0b0000_0010, so a write of 3 is masked to 2 and
+        // selects bank 2.
+        let mut nes = uxrom(0x02);
+        nes.bus.write(0x8000, 0x03);
+        assert_eq!(
+            nes.bus.read(0x8000),
+            0x22,
+            "the AND of 3 and the ROM's 2 selects bank 2"
+        );
+
+        // With 0b0000_0011 in the ROM's byte the write passes through whole.
+        let mut nes = uxrom(0x03);
+        nes.bus.write(0x8000, 0x03);
+        assert_eq!(nes.bus.read(0x8000), 0x23, "3 AND 3 is 3: bank 3");
+    }
+
+    #[test]
+    fn test_nes2_header_carries_the_submapper_and_the_region() {
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 1; // one 16KB PRG bank
+        header[6] = 0x00; // mapper low nibble 0
+        header[7] = 0x08; // bits 2-3 = 0b10: NES 2.0
+        header[8] = 0x04; // submapper 4, mapper high nibble 0
+        header[12] = 0x01; // PAL
+
+        let mut nes = Nes::new();
+        nes.load_rom(&rom_with_header(header)).expect("load");
+        assert_eq!(nes.rom_submapper(), 4, "the submapper is read from byte 8");
+        assert_eq!(nes.region(), Region::Pal, "and byte 12 states the region");
+    }
+
+    #[test]
+    fn test_ines_headers_have_no_submapper() {
+        // A plain iNES file's byte 8 is not a header field at all: it can hold
+        // anything, and none of it may leak into the mapper or the submapper.
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 1;
+        header[6] = 0x20; // mapper low nibble = 2
+        header[7] = 0x00; // iNES
+        header[8] = 0xFF; // garbage, as real images have
+
+        let mut nes = Nes::new();
+        nes.load_rom(&rom_with_header(header)).expect("load");
+        assert_eq!(nes.rom_submapper(), 0, "iNES has no submapper");
+        assert_eq!(nes.region(), Region::Ntsc);
+        assert!(
+            nes.bus.mapper.is_some(),
+            "the cartridge still loads from an iNES header"
+        );
+    }
+
+    #[test]
+    fn test_nes2_sizes_use_byte_9s_nibbles() {
+        // 256 * 16KB = 4 MiB of PRG: a size a plain byte 4/5 pair cannot
+        // express, so NES 2.0 puts the high bits in byte 9's low nibble (and
+        // the CHR size's in the high one).
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 0x00; // low byte of the PRG size
+        header[5] = 0x00; // low byte of the CHR size
+        header[6] = 0x00;
+        header[7] = 0x08; // NES 2.0
+        header[9] = 0x01; // PRG size bits 8-11 = 1, CHR's = 0 (CHR-RAM)
+
+        let mut rom = header.to_vec();
+        rom.extend_from_slice(&vec![0u8; 256 * 16 * 1024]);
+
+        let mut nes = Nes::new();
+        nes.load_rom(&rom).expect("load");
+        // Loading at all means the four megabytes the header asked for were
+        // found, and the reset vector came out of the last bank.
+        assert_eq!(nes.cpu_pc(), 0x0000, "the vector is zero in a blank image");
+    }
+
+    #[test]
+    fn test_nes2_exponent_sizes_are_refused_not_guessed() {
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 0x1C; // exponent 7, multiplier 4
+        header[6] = 0x00;
+        header[7] = 0x08; // NES 2.0
+        header[9] = 0x0F; // the exponent-multiplier marker
+
+        let mut nes = Nes::new();
+        assert!(
+            nes.load_rom(&rom_with_header(header)).is_err(),
+            "a size this core cannot work out has to be refused"
+        );
+    }
+
+    #[test]
+    fn test_ines_headers_do_not_read_byte_9_as_sizes() {
+        // Byte 9 bit 0 is the classic PAL flag; a PAL iNES image with a large
+        // value in the byte's high nibble must still load with its declared
+        // size rather than four megabytes of PRG.
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 1; // 16KB, the one bank the image carries
+        header[5] = 1;
+        header[6] = 0x00;
+        header[7] = 0x00; // iNES
+        header[9] = 0xF1; // "PAL" plus junk in the high nibble
+
+        let mut nes = Nes::new();
+        nes.load_rom(&rom_with_header(header)).expect("load");
+        assert_eq!(nes.region(), Region::Pal);
+    }
+
     fn battery_rom() -> Vec<u8> {
         let mut rom = Vec::new();
         rom.extend_from_slice(b"NES\x1a");

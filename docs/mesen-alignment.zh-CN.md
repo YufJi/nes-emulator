@@ -93,12 +93,14 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 
 ### 2.5 Mapper
 
-- **不解析 NES 2.0 submapper**。Mesen 用它决定板级行为，116、176 因此被挡住。`6-MMC3_alt` 是
-  另一回事，动手写解析器之前值得先知道：它的头部是**纯 iNES**（`flags7` = $00，没有 NES 2.0
-  字段，也就没有 submapper），文件里根本没有可解析的东西。Mesen 是靠它的 game database（按 CRC
-  索引的逐 ROM 覆盖表）够到它的——这是唯一可行的机制，也正是"备用 IRQ 版本"需要那张表或一张小的
-  逐 ROM 清单、而不是一个头部字段的原因。
-- **总线冲突未建模**（没有 `HasBusConflicts`），即 2/3/7 这类离散板。
+- ~~**不解析 NES 2.0 submapper**~~ 现在会解析：byte 7 的 bit 2-3 判定版本，byte 8 携带 submapper
+  与 mapper 号的高四位，byte 9 的两个半字节是尺寸的高位，byte 12 直接给出制式；指数-乘数形式的
+  尺寸编码会被明确拒绝而不是误读（`Nes::rom_submapper` 把它暴露出来）。**没有**做的是按它分派：
+  需要这件事的作品用的都是纯 iNES 头部，选择信息在数据库里而不在文件里——`6-MMC3_alt` 就是例子，
+  116/176 同理。
+- ~~**总线冲突未建模**~~ 已建模：`Mapper::has_bus_conflicts`，在每次写到卡带的路径上
+  （`NesBus::write_now`）按"CPU 的值 AND 板子在该地址返回的字节"计算——即 Mesen 的
+  `HasBusConflicts`。确实带冲突的离散板会声明：2、3、7、11、66、71。
 - 缺失的板：64（RAMBO-1，158 随之）、115、116、176、185（需要 pattern-data-from-VRAM 窗口）。
 - MMC5：扩展属性模式（`$5104 = 3`）缺失；竖向分屏已决定不做。
 - 钩子粒度：`on_ppu_bus` 已是逐 dot，但 `on_scanline` 与 `on_cpu_cycles` 仍是近似，Mesen 是每
@@ -119,7 +121,8 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 5. **PAL**。比例已完成——PAL 跑 16/5，启用分数 dot 累加器，一帧是 33247.5 个 CPU 周期，音频时钟
    也改成按真实的 3.2 推导而不是照 NTSC 形状的常量。剩下的是 PAL 专属的 PPU/APU 规则
    （`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）；没有 PAL 测试 ROM 就无法验收。
-6. **Mapper**（§2.5）：先做 submapper 表（一次解锁三个板），再总线冲突，再 64/158/185/115。
+6. **Mapper**（§2.5）：NES 2.0 头部与总线冲突已完成。剩下的是按 submapper 分派（需要 Mesen 放在
+   数据库里的逐 ROM 数据，而不是头部字段），以及 64/158/185/115 四个板。
 7. **音频重采样**对齐 Mesen 的带限参考。
 
 ## 4. 有意保留的偏差（未经决策不要"修正"）

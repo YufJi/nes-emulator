@@ -68,6 +68,20 @@ pub trait Mapper: Send + Sync + Debug {
         None
     }
 
+    /// Whether the board's PRG-ROM output fights the CPU's on a register write.
+    ///
+    /// The discrete boards put the ROM's data lines and the CPU's on the same
+    /// bus, so the value that reaches the register is the bitwise AND of the
+    /// two — which is why a UNROM/CNROM/AxROM game that writes a bank number
+    /// has to have that number already sitting in ROM at the address it writes
+    /// to. Mesen models this as `HasBusConflicts`, and the boards that have it
+    /// lean on the cartridge's own bytes rather than on the CPU's alone.
+    ///
+    /// The default is `false`: a board says so only where the hardware does.
+    fn has_bus_conflicts(&self) -> bool {
+        false
+    }
+
     /// Current expansion-audio level, mixed in with the APU output.
     ///
     /// Mappers with extra sound hardware (VRC6, MMC5, FDS, Sunsoft 5B, N163)

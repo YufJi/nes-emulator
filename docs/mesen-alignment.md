@@ -107,14 +107,16 @@ randomised CPU/PPU alignment (this core has offset 0).
 
 ### 2.5 Mappers
 
-- **NES 2.0 submappers are not parsed.** Mesen uses them to pick board behaviour, which blocks
-  116 and 176. `6-MMC3_alt` is a different case, and worth knowing before writing the parser:
-  its header is *plain iNES* (`flags7` = $00, so no NES 2.0 field, no submapper), so there is
-  nothing in the file to decode. Mesen reaches it through its game database — a CRC-keyed table
-  of per-ROM overrides — which is the only mechanism that can, and which is why the alternate
-  IRQ revision needs either that table or a small per-ROM list rather than a header field.
-- **Bus conflicts are not modelled** (`HasBusConflicts` is absent), which is the discrete boards
-  (2/3/7 and friends).
+- ~~**NES 2.0 submappers are not parsed.**~~ Parsed now: byte 7's bits 2-3 spot the version,
+  byte 8 carries the submapper and the mapper's top four bits, byte 9's nibbles carry the sizes'
+  high bits, byte 12 states the region, and the exponent-multiplier size encoding is refused
+  rather than mis-read (`Nes::rom_submapper` exposes it). What is *not* done is dispatching on
+  it: the titles that need that carry plain iNES headers, where the choice lives in a database
+  rather than in the file — `6-MMC3_alt` is the example, and 116/176 need the same treatment.
+- ~~**Bus conflicts are not modelled**~~ Modelled: `Mapper::has_bus_conflicts`, applied where
+  every write reaches a cartridge (`NesBus::write_now`) as the bitwise AND of the CPU's value
+  and the byte the board returns for that address — Mesen's `HasBusConflicts`. The discrete
+  boards that have them say so: 2, 3, 7, 11, 66 and 71.
 - Missing boards: 64 (RAMBO-1, and 158 with it), 115, 116, 176, 185 (needs the
   pattern-data-from-VRAM window).
 - MMC5: extended attribute mode (`$5104 = 3`) is missing; the vertical split is declined.
@@ -138,8 +140,9 @@ randomised CPU/PPU alignment (this core has offset 0).
    frame is 33247.5 CPU cycles and the audio clock derives from the real 3.2 rather than from
    the NTSC-shaped constant. What is left is PAL's own PPU/APU rules (`_nmiScanline`,
    `_vblankEnd`, PAL's OAM refresh); none of it is verifiable without a PAL test ROM.
-6. **Mappers** (§2.5): the submapper table first (it unblocks three boards at once), then bus
-   conflicts, then 64/158/185/115.
+6. **Mappers** (§2.5): the NES 2.0 header and bus conflicts are in. What is left is dispatching
+   on the submapper (which needs the per-ROM data Mesen keeps in its database, not the header),
+   and the boards 64/158/185/115.
 7. **Audio resampling** against Mesen's band-limited reference.
 
 ## 4. Deliberate deviations (do not "fix" these without a decision)

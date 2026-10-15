@@ -94,6 +94,11 @@ impl Mapper for Mapper3 {
         }
     }
 
+    /// CNROM: the same bus conflict a UxROM board has.
+    fn has_bus_conflicts(&self) -> bool {
+        true
+    }
+
     fn write(&mut self, addr: u16, value: u8) {
         match addr {
             // $0000-$1FFF: CHR-RAM uploads land on the cartridge image; on

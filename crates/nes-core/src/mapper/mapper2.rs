@@ -76,6 +76,13 @@ impl Mapper for Mapper2 {
         }
     }
 
+    /// UxROM: the ROM's data lines are on the CPU's bus, so a bank write
+    /// carries the AND of what the CPU drove and what the ROM holds at that
+    /// address.
+    fn has_bus_conflicts(&self) -> bool {
+        true
+    }
+
     fn write(&mut self, addr: u16, value: u8) {
         match addr {
             // CHR-RAM writes
@@ -121,6 +128,15 @@ impl Mapper for Mapper2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A UxROM board's ROM data lines are on the CPU's bus, so a bank write is
+    /// masked by what the ROM holds at the address the write lands on. This is
+    /// the board's own claim; the bus applies it (`NesBus::write_now`).
+    #[test]
+    fn test_uxrom_reports_bus_conflicts() {
+        let mapper = Mapper2::new(vec![0u8; 0x40000], vec![]);
+        assert!(mapper.has_bus_conflicts());
+    }
 
     #[test]
     fn test_mapper2_new() {

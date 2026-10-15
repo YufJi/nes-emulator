@@ -95,6 +95,11 @@ impl Mapper for Mapper66 {
         }
     }
 
+    /// GxROM: the same bus conflict the discrete boards have.
+    fn has_bus_conflicts(&self) -> bool {
+        true
+    }
+
     fn write(&mut self, addr: u16, value: u8) {
         match addr {
             // CHR-RAM writes (if enabled)

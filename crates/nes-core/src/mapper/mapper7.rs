@@ -69,6 +69,11 @@ impl Mapper for Mapper7 {
         }
     }
 
+    /// AxROM: the same bus conflict a UxROM board has.
+    fn has_bus_conflicts(&self) -> bool {
+        true
+    }
+
     fn write(&mut self, addr: u16, value: u8) {
         match addr {
             // CHR-RAM writes
