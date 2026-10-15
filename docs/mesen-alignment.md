@@ -119,7 +119,11 @@ randomised CPU/PPU alignment (this core has offset 0).
     at 135.3 periods, 110 cycles late.
   Before implementing Mesen's version, work out which of the two the hardware does — the ROM
   and the source disagree, and `7-dmc_basics` check 19 reads the *same* two bits at a point
-  where Mesen's model and the playback model give opposite answers.
+  where Mesen's model and the playback model give opposite answers. A third variable has since
+  been ruled out: a fetched byte used to halt the CPU *twice* for four cycles on the bus (§7's
+  last row), which made a byte cost 440 cycles instead of 432 and stretched every sample. With
+  that fixed, the only thing left for these two numbers to disagree about is where the
+  channel's counter moves — so Mesen's read-time counter is worth retrying.
 - ~~**DMC's PAL period table**~~ Done: `DmcChannel::set_region` picks Mesen's
   `_dmcPeriodLookupTablePal` (`398, 354, ... 50`) on PAL, and the console hands the region
   down when a cartridge is loaded.
@@ -262,6 +266,15 @@ several runs.
 | NES 2.0 header + bus conflicts | The header parses the version, the submapper, byte 9's size bits and byte 12's region (and refuses the exponent-multiplier encoding); `Mapper::has_bus_conflicts` makes a cartridge write the AND of the CPU's value and the board's byte, for 2/3/7/11/66/71 | No ROM moved (the local suites use mappers 0/1/4, none of which has the conflict trap); `Nes::rom_submapper` exposes what was parsed |
 | PPU register details (§2.2) | Read from Mesen's own sources (`NesPpu.cpp`, `BaseNesPpu.cpp`): a `$2007` access on a drawing line advances the scroll both ways, a second `$2007` access within six dots is ignored, palette reads take the grayscale mask, PAL/Dendy swap the emphasis bits; OAM decay turns out to be off by default | No ROM moved (`blargg_ppu_tests` covers the `$2007` paths); three unit tests pin the behaviours |
 | Mesen's DMC source | `Core/NES/APU/DeltaModulationChannel.cpp` read (the manifest listed the path; the file was fetched): status = `_bytesRemaining > 0`; the counter and the IRQ move in `SetDmcReadBuffer`, i.e. at the fetch; the register takes the buffer when `_bitsRemaining` hits 0, with a silence flag holding the DAC; `SetEnabled` delays its transfer 2/3 cycles by parity; PAL has its own period table | The Mesen-shaped implementation was tried and **withdrawn**: it puts `8-dmc_rates` at ~128 periods where the ROM's window wants ~135, and `7-dmc_basics` regresses to its 2nd check. The tree keeps the playback-based counter (135.3 periods) |
+| DMC fetch charged twice | The channel's request latch stayed set until the byte was supplied, and the bus re-armed its pending transfer from it on every cycle the APU ticked — so the transfer's own four cycles armed a second one. Two four-cycle transfers per byte, and no CPU read of `$4000` ever saw the byte on the bus. The bus now *takes* the request (`Apu::take_dmc_dma_request`), which is Mesen's one-shot halt latch | **AccuracyCoin boots again**: 155 tests ran, 85 passed, 43 failing (the rows above recorded 46); every other suite unchanged; frame cost 1.72 → 1.70 ms; two new unit tests (the latch, and a hand-built ROM that polls `$4000` the way AccuracyCoin's boot-time sync does) |
+
+**One stale number, corrected.** From `8ec693d` (DMA inside `MemoryRead`) until the row above,
+AccuracyCoin never ran: the ROM hung inside its own DMA-sync loop while booting, `$37` stayed
+zero, and the harness read that as "no ROM here" and skipped itself — so the rows in between
+repeated the 46 it had at `30b7267` without measuring it (re-measuring at `0934d3a`, the commit
+before this session, puts the menu back on screen, so the hang came from the DMA move, not from
+the per-dot renderer). The harness now fails when the ROM reports nothing, and the number in this
+row is measured.
 
 ### Experiments that were implemented, measured and reverted
 
@@ -322,6 +335,12 @@ Their value is the evidence; do not retry them without reading this first.
   different one on an odd clock, which is what holding the counter for 3 cycles (4 on the odd
   phase) produces. The lesson for the next attempt here: read the ROM's source and its
   comments first, and print the cycle the event lands on.
+- **The DMC's ~7-period disagreement, diagnosed (not an experiment).** Both DMC verdicts were
+  reading the bus side and the channel side at once: the channel was handing the CPU *two*
+  four-cycle transfers per fetched byte (see §7's last row), so a byte cost 440 CPU cycles
+  instead of 432 and every sample ran long. With the transfer charged once, the channel's own
+  numbers are the thing to compare again — which is why Mesen's read-time counter (§2.4) is
+  worth a second attempt instead of another guess.
 
 ## 8. Decisions still open
 
@@ -348,21 +367,28 @@ header is plain iNES, which §2.5 now records.
 (the numbers move with the machine; the set of suites should not), then pick a row. Nothing goes
 into this document without a measurement behind it.
 
+**The harness fails rather than skips when a ROM stops reporting**: `accuracy_coin_matches_its_baseline`
+now distinguishes "the ROM is not on this checkout" from "the ROM never ran its suite", because the
+second one is what a boot-time hang looks like (`$37` stays zero). If a future change hangs the ROM
+before the menu, that test goes red instead of quietly passing — which is exactly how the DMC's
+double-charged fetch hid here for several steps (§7).
+
 **Current baseline** (last measured this session, `cargo test -p nes-core --test rom_tests --
 --nocapture`): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
 `blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **6/8**, `cpu_interrupts_v2`
-2/5, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin 46 failing. Unit tests: 584.
-Frame cost: about 1.72 ms (release, 600 frames of nestest, median). Branch:
+2/5, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **43 failing** (155 ran, 85 passed,
+0 skipped). Unit tests: 587. Frame cost: about 1.70 ms (release, 600 frames of nestest, median).
+Branch:
 `codex/mesen-alignment`.
 
 | # | Item | Status | Evidence (commit / measurement) | Next step |
 | --- | --- | --- | --- | --- |
 | S0 | Public per-dot observation API (`Nes::ppu_bus_trace`, `step_dot`, exported from wasm and uniffi) | Done | `c8957a7`; four unit tests | Use it for a differential when one is needed |
 | P1 | Per-dot PPU renderer (background + sprites), A12 from real fetches | Done | `5dc9e32`, `30b7267`: `4-scanline_timing` green; `RenderTiming`, `ppu.render_v` and the whole-line renderer deleted | The sprite *evaluation* is still per line (§2.1), when it is wanted |
-| P2 | DMA inside `MemoryRead` (`process_pending_dma`) | Done | `8ec693d`: `4-irq_and_dma`'s trace is byte-identical | Nothing (DMC's prerequisite is in) |
+| P2 | DMA inside `MemoryRead` (`process_pending_dma`) | Done | `8ec693d`: `4-irq_and_dma`'s trace is byte-identical | Nothing (DMC's prerequisite is in) — but it is also where the DMC's double-charged fetch came in; see the last §7 row |
 | P3a | APU frame counter phase (`$4017` three cycles late, IRQ flag three cycles in a row) | Done | `a1fbaa3`: `4-jitter`, `5-len_timing`, `6-irq_flag_timing` green | Nothing |
-| P3b | DMC | **Stuck** | `f9984d4` (two semantics bugs fixed, two-stage buffer) plus two withdrawals; `7-dmc_basics` reaches check 19, `8-dmc_rates` stays on the baseline | Explain the ~7-period disagreement first: Mesen counts a byte when it is **read** (~128 periods) where the ROM's window wants the end of its playback (~135) — §2.4/§7 |
+| P3b | DMC | In progress (one real bug fixed) | `f9984d4` (two semantics bugs fixed, two-stage buffer) plus two withdrawals; the double-charged fetch is fixed (§7's last row) and AccuracyCoin boots again; `7-dmc_basics` reaches check 19, `8-dmc_rates` stays on the baseline | The ~7-period disagreement is diagnosed as the double charge (440 vs 432 cycles per byte), so retry Mesen's read-time counter now — §2.4/§7 |
 | P4 | §2.2's register details: open-bus decay, rendering-time `$2007`, grayscale mask, PAL emphasis swap | Done | `af2f375`, `8247f10`: `ppu_open_bus` green; three unit tests | The RGB those nine colour bits resolve to (Mesen's 512-entry table lives in its video filter) |
 | P5 | PAL 16/5, fractional dot accumulator, region-correct audio clock | Done (the ratio) | `dbdf7cc`: a PAL frame is 33,247.5 CPU cycles | PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) — unverifiable without a PAL ROM |
 | P6 | Mappers: NES 2.0 header, bus conflicts | Partly done | `4e1c7a6`: conflicts for 2/3/7/11/66/71; five header and two conflict tests | Dispatching on the submapper (Mesen reads that from its CRC-keyed database, not the header); then boards 64/158/185/115 |

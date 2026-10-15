@@ -8,7 +8,7 @@ macOS / Windows）的工程师知道"该实现什么、不该实现什么"。
 
 - 适用版本：`main`（截至 2026-10-12）
 - 代码规模：Rust 约 3.1 万行（其中 `crates/nes-core/src` 约 2.5 万行）、TypeScript 约 2.8 千行
-- 测试规模：826 个测试（全部通过），含 nestest、blargg、AccuracyCoin
+- 测试规模：806 个测试（全部通过），含 nestest、blargg、AccuracyCoin
   真实 ROM 套件（`roms/` 为空时自动跳过）
 
 ---
@@ -775,7 +775,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 哪一项检查失败。AccuracyCoin 是菜单式 ROM：harness 会按 Start 跑完全部测试，
 再读它留在 `$0400` 页的结果表（`$FF` = 跳过，bit0 置位 = 通过，否则该值就是错误码）。
 
-2026-10-14 在本机的基线：
+2026-10-15 在本机的基线：
 
 | 套件 | 结果 |
 | --- | --- |
@@ -792,7 +792,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
 | `apu_test` | 6/8（帧计数器相位已对齐 Mesen，只剩两个 DMC 项） |
-| AccuracyCoin | 82 通过、0 跳过、46 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
+| AccuracyCoin | 共跑 155 项、85 通过、0 跳过、43 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
 `ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"；`cpu_interrupts_v2` 那三项每一项都只差一到

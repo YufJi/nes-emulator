@@ -9,7 +9,7 @@ platform (iOS / Android / macOS / Windows) to know what to implement and what no
 
 - Applies to: `main` (as of 2026-10-12)
 - Code size: ~31k lines of Rust (~25k of them in `crates/nes-core/src`), ~2.8k lines of TypeScript
-- Test suite: 826 tests (all passing), including the nestest, blargg and
+- Test suite: 806 tests (all passing), including the nestest, blargg and
   AccuracyCoin real-ROM suites (which skip without ROMs in `roms/`)
 
 ---
@@ -853,7 +853,7 @@ failure message names the ROM and the exact check that failed. AccuracyCoin is m
 the harness drives Start to run all tests, then reads the result table it leaves in page
 `$0400` (`$FF` = skipped, bit 0 set = passed, otherwise the value is an error code).
 
-Baseline as of 2026-10-14, measured on this checkout:
+Baseline as of 2026-10-15, measured on this checkout:
 
 | Suite | Result |
 | --- | --- |
@@ -870,7 +870,7 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper) |
 | `apu_test` | 6/8 (the frame counter's phase is Mesen's now; the two DMC cases are left) |
-| AccuracyCoin | 82 passed, 0 skipped, 46 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
+| AccuracyCoin | 155 ran, 85 passed, 0 skipped, 43 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
 submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on;

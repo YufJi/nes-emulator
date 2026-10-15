@@ -232,15 +232,14 @@ pub struct AccuracyCoinReport {
 /// Boot AccuracyCoin, run every test, and read the result table.
 ///
 /// The ROM is menu-driven, so this presses Start — which runs the whole suite
-/// from the initial cursor position — and then waits for it to finish.
-pub fn run_accuracy_coin(max_frames: u32) -> AccuracyCoinReport {
+/// from the initial cursor position — and then waits for it to finish. `None`
+/// means the ROM is not on this checkout.
+pub fn run_accuracy_coin(max_frames: u32) -> Option<AccuracyCoinReport> {
     const MENU_FRAMES: u32 = 90;
     const TESTS_RUN: u16 = 0x37;
     const RESULTS: std::ops::Range<u16> = 0x0400..0x0500;
 
-    let Some(path) = rom("accuracycoin/AccuracyCoin.nes") else {
-        return AccuracyCoinReport::default();
-    };
+    let path = rom("accuracycoin/AccuracyCoin.nes")?;
     let mut nes = console(&path);
 
     // Let the menu come up, then press and release Start.
@@ -267,12 +266,12 @@ pub fn run_accuracy_coin(max_frames: u32) -> AccuracyCoinReport {
         }
     }
 
-    AccuracyCoinReport {
+    Some(AccuracyCoinReport {
         tests_run: nes.peek(TESTS_RUN),
         passed,
         skipped,
         failures,
-    }
+    })
 }
 
 /// One line for the test output.

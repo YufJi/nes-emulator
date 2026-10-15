@@ -788,7 +788,10 @@ impl NesBus {
 
         // The DMC asks the bus for sample bytes. The fetch happens at the
         // CPU's next memory access, where the chip halts it for four cycles.
-        if let Some(addr) = self.apu.dmc_dma_request() {
+        // The request is taken rather than read: one request is answered by one
+        // transfer, even though the APU keeps ticking through the cycles the
+        // transfer itself takes.
+        if let Some(addr) = self.apu.take_dmc_dma_request() {
             self.pending_dmc_dma = Some(addr);
         }
 
@@ -2344,6 +2347,61 @@ mod tests {
         rom
     }
 
+    /// ROM that lines the CPU up with the DMC's fetch the way AccuracyCoin
+    /// does at boot, then writes `$5A` to zero page once it has seen it.
+    ///
+    /// `$4000` is write-only, so reading it returns whatever is on the data
+    /// bus. The CPU's own operand fetches put the instruction's high byte
+    /// there, so the loop only ends while the chip is halted for a DMC fetch on
+    /// the read itself: one request, one four-cycle transfer, byte on the bus.
+    /// A one-byte sample of `$00` at `$FFC0`, looping at the fastest rate, is
+    /// therefore enough to tell a fetch that reaches the CPU apart from one
+    /// charged to the wrong cycle - or charged twice.
+    fn dmc_sync_rom() -> Vec<u8> {
+        let mut rom = Vec::new();
+        rom.extend_from_slice(b"NES\x1a");
+        rom.push(1); // 16KB PRG, mirrored over $8000-$FFFF
+        rom.push(1); // 8KB CHR
+        rom.extend_from_slice(&[0u8; 10]);
+
+        let mut prg = vec![0u8; 0x4000];
+        let mut code: Vec<u8> = vec![
+            0x78, // SEI
+            0xD8, // CLD
+            0xA9, 0x40, 0x8D, 0x17, 0x40, // $4017: 4-step, frame IRQ inhibited
+            0xA9, 0x00, 0x8D, 0x00, 0x20, // LDA #$00 / STA $2000
+            0x8D, 0x01, 0x20, // STA $2001
+            0xA9, 0x4F, 0x8D, 0x10, 0x40, // $4010: loop, fastest rate
+            0xA9, 0x00, 0x8D, 0x11, 0x40, // $4011: DAC 0
+            0xA9, 0xFF, 0x8D, 0x12, 0x40, // $4012: sample at $FFC0
+            0xA9, 0x00, 0x8D, 0x13, 0x40, // $4013: one byte
+            0xA9, 0x10, 0x8D, 0x15, 0x40, // $4015: enable the DMC
+            0xEA, 0xEA, // NOP NOP, as the ROM has them
+            0xAD, 0x00, 0x40, // loop: LDA $4000
+            0xD0, 0xFB, //         BNE loop
+            0xA9, 0x5A, 0x85, 0x10, // LDA #$5A / STA $10
+        ];
+        let hang = 0x8000u16 + code.len() as u16;
+        code.extend_from_slice(&[0x4C, hang as u8, (hang >> 8) as u8]);
+        prg[..code.len()].copy_from_slice(&code);
+
+        // The sample byte the DMC fetches: $4012 = $FF puts it at $FFC0, which
+        // is this one 16KB bank's offset $3FC0. Zero, so a read that sees it
+        // sees the byte the DMA put on the bus.
+        prg[0x3FC0] = 0x00;
+        // NMI and IRQ return immediately; $BF00 is inside the bank.
+        prg[0x3F00] = 0x40;
+        prg[0x3FFA] = 0x00;
+        prg[0x3FFB] = 0xBF;
+        prg[0x3FFC] = 0x00;
+        prg[0x3FFD] = 0x80;
+        prg[0x3FFE] = 0x00;
+        prg[0x3FFF] = 0xBF;
+        rom.extend_from_slice(&prg);
+        rom.extend_from_slice(&[0u8; 0x2000]);
+        rom
+    }
+
     /// A cartridge whose first act is to turn the background off after a short
     /// delay, so the frame shows where that write landed.
     fn background_off_rom() -> Vec<u8> {
@@ -2889,6 +2947,48 @@ mod tests {
         forced.load_rom(&rom).unwrap();
         assert_eq!(forced.region(), Region::Ntsc);
         assert_eq!(forced.config().region_override, Some(Region::Ntsc));
+    }
+
+    #[test]
+    fn test_a_dmc_fetch_reaches_a_cpu_read_of_the_bus() {
+        let mut nes = Nes::new();
+        nes.load_rom(&dmc_sync_rom()).expect("load NROM");
+
+        // The ROM's loop ends on the read the fetch is halted for, so the
+        // marker is what says the transfer landed there. A fetch charged to a
+        // later access - or charged twice per request - leaves the loop
+        // spinning, which is the hang this test exists to catch.
+        for _ in 0..20 {
+            nes.frame();
+            if nes.peek(0x10) == 0x5A {
+                return;
+            }
+        }
+        panic!(
+            "the DMA's byte never reached a `$4000` read: pc={:#06X}",
+            nes.cpu_pc()
+        );
+    }
+
+    #[test]
+    fn test_taking_the_dmc_request_consumes_it() {
+        // Mesen's halt latch is one-shot: the CPU clears it when the transfer
+        // starts, so the APU ticking through the transfer's own cycles cannot
+        // arm a second one. `test_a_dmc_fetch_reaches_a_cpu_read_of_the_bus`
+        // is where that shows up end to end; this pins the latch itself.
+        use crate::apu::AudioChannel;
+        let mut dmc = crate::apu::DmcChannel::new();
+        dmc.write_register(0x4010, 0x4F); // loop, fastest rate
+        dmc.write_register(0x4012, 0xFF); // sample at $FFC0
+        dmc.write_register(0x4013, 0x00); // one byte
+        dmc.write_register(0x4015, 0x10); // enable
+
+        let address = dmc.take_dma_request().expect("the channel asks for a byte");
+        assert_eq!(address, 0xFFC0);
+        assert_eq!(dmc.dma_request(), None, "taking the request consumes it");
+
+        dmc.supply_dma_byte(0x00);
+        assert_eq!(dmc.last_fetched_byte(), 0x00);
     }
 
     #[test]

@@ -340,6 +340,18 @@ impl DmcChannel {
         self.dma_request
     }
 
+    /// Take the pending fetch request, leaving the channel waiting for the
+    /// byte the bus owes it.
+    ///
+    /// Mesen's halt latch is one-shot: the CPU clears `_needHalt` when it
+    /// starts the transfer, so one request is answered by exactly one transfer.
+    /// Taking the request here is what keeps the cycles the transfer itself
+    /// takes — during which the APU keeps ticking — from arming it a second
+    /// time, which would fetch (and charge the CPU for) the same byte twice.
+    pub fn take_dma_request(&mut self) -> Option<u16> {
+        self.dma_request.take()
+    }
+
     /// Follow the console's TV system, whose APU has its own set of periods.
     pub fn set_region(&mut self, region: Region) {
         self.period_table = dmc_period_table(region);

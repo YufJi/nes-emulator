@@ -133,17 +133,19 @@ fn blargg_apu() {
     );
 }
 
-/// AccuracyCoin's baseline: the suite runs, and 47 of its tests fail.
+/// AccuracyCoin's baseline: the suite runs, and 43 of its tests fail.
 ///
 /// The failure count is a ratchet in both directions — a *higher* one is a
 /// regression, a *lower* one means the baseline needs updating — and it doubles
 /// as the liveness check that matters for a menu-driven ROM: if the harness
 /// stops booting the menu or pressing Start, the ROM stops reporting results
-/// and this fails loudly instead of quietly measuring nothing.
+/// and `MINIMUM_TESTS` fails loudly instead of measuring nothing. (The ROM
+/// hanging before the menu is a real failure mode here: it happened when the
+/// DMC's fetch was charged to the CPU twice, and the counter stayed at zero.)
 #[test]
 fn accuracy_coin_matches_its_baseline() {
     /// Tests AccuracyCoin reports as failing on this checkout.
-    const BASELINE_FAILURES: usize = 46;
+    const BASELINE_FAILURES: usize = 43;
     /// The ROM runs its suite one test per frame; this is the floor that says
     /// it really got going (the counter itself is reset whenever the results
     /// screen redraws, so its final value is timing-dependent).
@@ -151,11 +153,10 @@ fn accuracy_coin_matches_its_baseline() {
 
     // A generous budget: the ROM's own vblank waits get longer as emulation
     // gets more faithful, and a slow run must not look like a broken one.
-    let report = common::run_accuracy_coin(3600);
-    if report.tests_run == 0 {
+    let Some(report) = common::run_accuracy_coin(3600) else {
         println!("skipped: no roms/accuracycoin/AccuracyCoin.nes");
         return;
-    }
+    };
 
     println!("AccuracyCoin: {}", report.summary());
     for (addr, value) in &report.failures {

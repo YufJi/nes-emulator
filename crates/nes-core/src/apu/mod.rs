@@ -360,7 +360,7 @@ impl Apu {
     /// alongside it and drives the envelope, sweep and length units.
     ///
     /// If the DMC needs a sample byte it publishes the address through
-    /// [`Apu::dmc_dma_request`]; the caller must answer with
+    /// [`Apu::take_dmc_dma_request`]; the caller must answer with
     /// [`Apu::supply_dmc_byte`].
     pub fn tick(&mut self) {
         self.pulse1.tick();
@@ -397,6 +397,13 @@ impl Apu {
     /// Address of the byte the DMC channel is waiting for, if any.
     pub fn dmc_dma_request(&self) -> Option<u16> {
         self.dmc.dma_request()
+    }
+
+    /// Take that request when the CPU is about to service it.
+    ///
+    /// One request, one transfer: see [`DmcChannel::take_dma_request`].
+    pub fn take_dmc_dma_request(&mut self) -> Option<u16> {
+        self.dmc.take_dma_request()
     }
 
     /// Clock the units driven by the current frame counter step.
