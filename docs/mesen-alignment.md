@@ -88,14 +88,19 @@ Smaller CPU differences: Mesen runs eight warm-up cycles after reset and sets it
 to `-1` (this core ticks neither); Mesen has a `_ppuOffset` (1 by default) and an optional
 randomised CPU/PPU alignment (this core has offset 0).
 
-### 2.4 APU: the frame counter's phase, and DMC
+### 2.4 APU: DMC, resampling and expansion audio
 
-- The frame counter's phase is the whole of `apu_test`'s remaining failures except DMC: the
-  `$4017` restart is delayed (the mode and IRQ inhibit apply at once, the counter passes its
-  boundaries three cycles later, four on the other half of the APU clock), the IRQ flag is set
-  three cycles after the step that asks for it, and the sequence asks again on its last two
-  ticks.
-- DMC is "not working well enough" by the ROM's own report; it needs the DMA work in §2.3.
+- ~~The frame counter's phase.~~ Done: a `$4017` restart holds the counter 3 cycles (4 on the
+  other half of the APU clock), and the frame IRQ flag goes up for three cycles in a row
+  starting 29831 clocks after the write — both taken from blargg's own measured cycles in
+  `roms/blargg/apu_test/source/`, not from a guess. `4-jitter`, `5-len_timing` and
+  `6-irq_flag_timing` are green.
+- **DMC**: the channel's own timing is right (a 17-byte sample at rate 0 plays for 135
+  periods), and the write/read semantics bugs the ROMs found are fixed — `$4015`'s bit 4 was
+  never set at all (`write_4015` did not set the enable flag), and reading `$4015` wrongly
+  cleared the DMC's IRQ flag. What is left is `7-dmc_basics`'s last check (a byte fetched
+  while the buffer is empty has to be in the buffer before the next fetch begins) and
+  `8-dmc_rates`'s rate-0 window, which the sample overshoots.
 - Resampling is sample-and-hold decimation; Mesen uses a band-limited (blip) resampler.
 - Expansion audio (VRC6, MMC5, Sunsoft 5B) exists but has never been compared against a
   reference recording; N163 and FDS are missing.
@@ -120,9 +125,9 @@ randomised CPU/PPU alignment (this core has offset 0).
    §2.1 that is still line-at-a-time.
 2. ~~**DMA inside `MemoryRead`** (§2.3)~~ — done, and it moved no ROM: `4-irq_and_dma`'s trace is
    byte-identical, which matches §7's L4a finding. What it buys is the shape DMC needs.
-3. **The APU frame counter's phase, then DMC** (§2.4). Buys `4-jitter`, `5-len_timing`,
-   `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates`. Two attempts have now been withdrawn
-   (§7); the first thing to do is settle which event each suite reads.
+3. **The APU frame counter's phase, then DMC** (§2.4). The frame counter is done — `4-jitter`,
+   `5-len_timing` and `6-irq_flag_timing` are green. DMC is down to two checks
+   (`7-dmc_basics`'s one-byte buffer, `8-dmc_rates`'s rate-0 window).
 4. **OAM decay** (§2.2). The open-bus half is done — `ppu_open_bus` is green; what is left is
    the decay of OAM itself, the rendering-time `$2007` timing, and the grayscale/emphasis bits.
 5. **PAL** (16/5 with a fractional dot accumulator, then PAL's own PPU/APU rules). Needs PAL test
@@ -216,6 +221,8 @@ several runs.
 | Per-dot sprites | The sprite phase's pattern fetches, per-dot pixels, and the sprite-0 hit on its own dot; the whole-line renderer (`BackgroundRenderer`, `SpriteRenderer`, `ScanlineProcessor`) is deleted | No ROM moved (baseline unchanged, AccuracyCoin 46); frame cost 1.80 → 1.68 ms |
 | DMA inside `MemoryRead` | `NesBus::process_pending_dma` (Mesen's `ProcessPendingDma`): a `$4014` write and a DMC request only leave a pending transfer, spent at the CPU's next access in real machine cycles | No ROM moved — `4-irq_and_dma`'s trace is byte-identical, which matches the L4a finding that its offset is the frame counter's phase |
 | Open-bus decay | The PPU's own bus latch; a per-bit three-frame stamp; `$2007` driving the byte it returns; palette reads driving six bits and taking two from the bus; `$2002` driving three | **`ppu_open_bus` green** (0/1 → 1/1) |
+| Frame counter phase | `$4017` holds the counter 3 cycles (4 on the odd APU phase); the frame IRQ flag goes up for three cycles in a row starting 29831 clocks after the write | **`4-jitter`, `5-len_timing` and `6-irq_flag_timing` green** (apu_test 3/8 → 6/8); rest of the baseline unchanged |
+| DMC fixes | `write_4015` now sets the enable flag (`$4015` bit 4 was never set at all), a read of `$4015` no longer clears the DMC IRQ flag, and the byte counter follows *played* bytes with a two-stage buffer | `7-dmc_basics` from its 2nd check to its 19th; `8-dmc_rates` still on the baseline (rate 0's window) |
 
 ### Experiments that were implemented, measured and reverted
 
@@ -247,17 +254,16 @@ Their value is the evidence; do not retry them without reading this first.
   read had to take its top two bits from the open bus while driving only its low six, with
   `$2002` driving only its top three so its low five keep decaying.
 
-- **The frame counter's phase, again (§2.4).** The obvious reading of Mesen — request the IRQ
-  on the sequence's last two ticks and let the flag appear three cycles later, with `$4017`
-  starting the counter 3 (or 4) cycles late — was implemented and measured. It moves
-  `4-jitter` from "Frame irq is set too soon" to "Odd jitter not handled properly" (i.e. its
-  early checks go green) and `5-len_timing` from its 2nd to its 7th sub-test, but every
-  variant that satisfies `4-jitter` leaves `6-irq_flag_timing` saying "Flag first set too
-  late", and the one that satisfies `6-irq_flag_timing` puts `4-jitter` back to "too soon".
-  The two suites are not reading the same event, which is what §7 of the earlier attempt
-  concluded too: settle that question first — read both ROMs' sources and print the cycle the
-  flag lands on, side by side — before touching the counter again. The experiment was
-  withdrawn; nothing of it is in the tree.
+- **The frame counter's phase, twice withdrawn (§2.4).** Two rounds of guessing at Mesen's
+  ordering moved one suite forward and the other back. What settled it was reading blargg's
+  *source*, which is in `roms/blargg/apu_test/source/`: `6-irq_flag_timing.s` says in its
+  header that the flag "is set three times in a row 29831 clocks after writing $00 to $4017",
+  and its checks read `$4015` at 29830/29831/29832/29833 to confirm it — so the flag is not
+  set once but held for three cycles, starting 29831 after the write. `4-jitter.s` then shows
+  the restart's jitter: its read at 29831 has to see the same value on an even clock and a
+  different one on an odd clock, which is what holding the counter for 3 cycles (4 on the odd
+  phase) produces. The lesson for the next attempt here: read the ROM's source and its
+  comments first, and print the cycle the event lands on.
 
 ## 8. Decisions still open
 

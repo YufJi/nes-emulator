@@ -870,14 +870,13 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper) |
-| `apu_test` | 3/8 (`5-len_timing` moved onto this list when the `$4015` read started landing on its own cycle; the frame counter's phase is what it is waiting for) |
+| `apu_test` | 6/8 (the frame counter's phase is Mesen's now; the two DMC cases are left) |
 | AccuracyCoin | 82 passed, 0 skipped, 46 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 
-The failures are the roadmap, not a mystery: `mmc3_test_2` and `ppu_vbl_nmi`'s last case need
-the exact dot a PPU event lands on - the A12 hook and the odd-frame skip, both of which want
-per-dot rendering; `cpu_interrupts_v2`'s four are down to one or two instructions each and
-track the frame counter's phase, which is also what the `apu_test` failures are; and the two
-remaining CPU failures are cycle-count bugs the ROMs localise precisely.
+The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
+submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on;
+`cpu_interrupts_v2`'s three are down to one or two instructions each; and `apu_test`'s two are
+the DMC's one-byte buffer and its rate-0 sample window.
 
 The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
 asserted in both directions: a failure outside it is a regression, and an entry that starts
@@ -1083,9 +1082,9 @@ backlog, so they are written down here to stop them being re-litigated:
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
-5. **The accuracy backlog the test ROMs now name**: the eleven remaining cases in §13.1 —
-   `cpu_interrupts_v2`'s four, `apu_test`'s four, `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s
-   two — plus MMC5's extended attributes, sprite 0 hit timing, the five mappers §8 defers, and
+5. **The accuracy backlog the test ROMs now name**: the remaining cases in §13.1 —
+   `cpu_interrupts_v2`'s three, `apu_test`'s two DMC cases, `ppu_vbl_nmi`'s last one,
+   `mmc3_test_2`'s last one — plus MMC5's extended attributes, the five mappers §8 defers, and
    the PAL dot ratio. The register writes and the `$2002`/`$2007` reads are on their cycles
    and dots now; what is left mostly comes down to the same thing one level down: the
    interrupt sequence's own cycle, the frame counter's phase, DMA, and a renderer that draws

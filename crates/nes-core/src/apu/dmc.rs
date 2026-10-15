@@ -232,11 +232,21 @@ impl DmcChannel {
             self.bits_remaining -= 1;
         }
 
-        // If shift register is empty, load from sample buffer
+        // The memory reader is clocked one output clock ahead of the shifter:
+        // it counts the byte as played and fetches the next one while the
+        // current byte's last bit is still on its way out. That is what makes a
+        // 17-byte sample 135 periods long rather than 128 or 136, which is the
+        // number `8-dmc_rates` measures.
         if self.bits_remaining == 0 {
-            self.has_sample = false;
+            if self.bytes_remaining > 0 {
+                self.bytes_remaining -= 1;
+            }
             self.end_of_sample();
-            self.bits_remaining = 8;
+            if self.has_sample {
+                self.shift_register = self.sample_buffer;
+                self.bits_remaining = 8;
+                self.has_sample = false;
+            }
         }
 
         // Trigger IRQ if flag is set
@@ -247,20 +257,20 @@ impl DmcChannel {
         }
     }
 
-    /// Handle end of sample (shift register empty)
-    ///
-    /// This is called when the shift register runs out of bits.
-    /// It either loops the sample, fetches more data, or generates IRQ.
+    /// A byte has finished playing: fetch the next one, loop, or end.
     fn end_of_sample(&mut self) {
-        // Check if we need to loop
-        if self.bytes_remaining == 0 && self.play_mode == PlayMode::Loop {
-            // Restart from beginning
-            self.sample_address = self.sample_start_address;
-            self.bytes_remaining = self.sample_length;
+        if self.bytes_remaining == 0 {
+            // The last byte has played out.
+            if self.play_mode == PlayMode::Loop {
+                self.sample_address = self.sample_start_address;
+                self.bytes_remaining = self.sample_length;
+                self.fetch_next_sample();
+            } else if self.play_mode == PlayMode::Irq {
+                self.irq_generated = true;
+            }
+            return;
         }
-
-        // If there are bytes remaining, fetch the next sample
-        if self.bytes_remaining > 0 {
+        if !self.has_sample {
             self.fetch_next_sample();
         }
     }
@@ -288,20 +298,20 @@ impl DmcChannel {
         self.sample_buffer = byte;
         self.last_fetched_byte = byte;
         self.has_sample = true;
-        self.shift_register = byte;
 
-        // Decrement bytes remaining and increment address
-        self.bytes_remaining = self.bytes_remaining.saturating_sub(1);
+        // A byte fetched while the register is dry starts playing at once;
+        // otherwise it waits in the buffer for the register to run out.
+        if self.bits_remaining == 0 {
+            self.shift_register = byte;
+            self.bits_remaining = 8;
+            self.has_sample = false;
+        }
+
         self.sample_address = self.sample_address.wrapping_add(1);
 
         // Wrap address from $FFFF to $8000
         if self.sample_address == 0x0000 {
             self.sample_address = 0x8000;
-        }
-
-        // Generate an IRQ once the final byte has been consumed.
-        if self.bytes_remaining == 0 && self.play_mode == PlayMode::Irq {
-            self.irq_generated = true;
         }
     }
 
@@ -414,8 +424,11 @@ impl DmcChannel {
         // Writing $4015 always clears the DMC IRQ flag first
         self.irq_generated = false;
 
-        // Bit 4: DMC enable
+        // Bit 4: DMC enable. The status register reports the channel as active
+        // only while it is enabled *and* has bytes left, so this flag is what
+        // `$4015`'s bit 4 follows.
         let dmc_enabled = (value & 0x10) != 0;
+        self.is_enabled = dmc_enabled;
 
         if !dmc_enabled {
             // Disable: clear bytes remaining
@@ -429,8 +442,6 @@ impl DmcChannel {
                 // If sample buffer is empty, trigger immediate DMA fetch
                 if !self.has_sample && self.bytes_remaining > 0 {
                     self.fetch_next_sample();
-                    self.bits_remaining = 8;
-                    self.timer_counter = self.timer_period;
                 }
             }
         }
@@ -747,10 +758,15 @@ mod tests {
         // Fetch sample
         dmc.fetch_next_sample();
 
-        // Verify the sample was loaded
+        // The fetched byte is what the channel will play: with the shift
+        // register dry it starts right away, otherwise it waits in the buffer.
         assert_eq!(dmc.sample_buffer, 0xAB);
         assert_eq!(dmc.last_fetched_byte, 0xAB);
-        assert!(dmc.has_sample);
+        assert_eq!(
+            dmc.shift_register, 0xAB,
+            "a byte fetched while the register is dry plays immediately"
+        );
+        assert!(!dmc.has_sample, "and it is no longer waiting in the buffer");
     }
 
     #[test]

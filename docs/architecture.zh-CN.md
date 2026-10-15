@@ -790,13 +790,12 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
-| `apu_test` | 3/8（`$4015` 读开始落在自己的周期上之后，`5-len_timing` 移入本清单；它等的是帧计数器的相位） |
+| `apu_test` | 6/8（帧计数器相位已对齐 Mesen，只剩两个 DMC 项） |
 | AccuracyCoin | 82 通过、0 跳过、46 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
-这些失败不是谜团，就是路线图：`mmc3_test_2` 与 `ppu_vbl_nmi` 最后一项需要 PPU 事件落在
-哪个 dot 上（A12 钩子与奇数帧跳点，两者都要逐 dot 渲染）；`cpu_interrupts_v2` 那四项
-每一项都只差一到两条指令，且都与帧计数器相位有关，`apu_test` 那几项也是；剩下的两处
-CPU 失败则是 ROM 已经精确定位到具体指令的周期计数 bug。
+这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
+`ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"；`cpu_interrupts_v2` 那三项每一项都只差一到
+两条指令；`apu_test` 的两项则是 DMC 的一字节缓冲与 rate 0 的样本窗口。
 
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。

@@ -276,12 +276,13 @@ impl Apu {
                     status |= 0x80;
                 }
 
-                // Frame IRQ flag (bit 6). Reading $4015 clears both IRQ flags.
+                // Frame IRQ flag (bit 6). A read clears the *frame* IRQ flag,
+                // and only that one: the DMC's own flag is cleared by a write
+                // to $4015, which is what blargg's `7-dmc_basics` checks.
                 if self.frame_counter_irq {
                     status |= 0x40;
                 }
                 self.frame_counter_irq = false;
-                self.dmc.clear_irq();
 
                 status
             }

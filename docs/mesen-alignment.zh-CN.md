@@ -78,12 +78,16 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 较小的 CPU 差异：Mesen 复位后跑八个预热周期并把周期计数置为 `-1`（内核两者都没做）；Mesen 有
 `_ppuOffset`（默认 1）与可选的 CPU/PPU 随机对齐（内核偏移为 0）。
 
-### 2.4 APU：帧计数器相位与 DMC
+### 2.4 APU：DMC、重采样与扩展音源
 
-- 帧计数器相位几乎是 `apu_test` 除 DMC 外全部剩余失败：`$4017` 重启被延迟（模式与 IRQ 禁止
-  立即生效，计数器在三个周期后才过边界，落在 APU 时钟另一半时是四个），IRQ 标志在请求它的那一步
-  之后三个周期才置位，且序列在最后两个 tick 会再请求一次。
-- DMC 按 ROM 自己的报告 "isn't working well enough"，需要 §2.3 的 DMA 工作。
+- ~~帧计数器相位~~ 已完成：`$4017` 重启让计数器迟 3 个周期起步（APU 奇数相位时 4 个），帧 IRQ
+  标志从写入后第 29831 个周期起**连续三个周期**置位——两个数字都取自 blargg 自己在
+  `roms/blargg/apu_test/source/` 里写下的实测 cycle，而不是猜的。`4-jitter`、`5-len_timing`、
+  `6-irq_flag_timing` 转绿。
+- **DMC**：通道自身的时序已经对了（17 字节的样本在 rate 0 下播放 135 个周期），ROM 找出的两个
+  读写语义 bug 也已修——`$4015` 的 bit 4 此前**从未置位**（`write_4015` 没设 enable 标志），
+  且读 `$4015` 会错误地清掉 DMC 的 IRQ 标志。剩下 `7-dmc_basics` 的最后一项检查（缓冲区为空时
+  取回的字节必须先落进缓冲区）与 `8-dmc_rates` 的 rate 0 窗口（样本超出窗口）。
 - 重采样是采样保持抽取；Mesen 用带限（blip）重采样。
 - 扩展音源（VRC6、MMC5、Sunsoft 5B）有实现，但从未与参考录音比对过；N163 与 FDS 缺失。
 
@@ -104,9 +108,9 @@ CPU 侧最大的差距，DMC 的工作依赖它。
    sprite 的**求值**仍是逐行。
 2. ~~**DMA 移进 `MemoryRead`**（§2.3）~~ —— 已完成，但没有 ROM 移动：`4-irq_and_dma` 的轨迹
    逐字节未变，与 §7 的 L4a 结论一致。它买到的是 DMC 需要的那套形状。
-3. **APU 帧计数器相位，然后 DMC**（§2.4）。拿回 `4-jitter`、`5-len_timing`、
-   `6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates`。两次尝试都已撤回（§7）；下一次动它之前，
-   先弄清两个套件各自读的是哪个事件。
+3. **APU 帧计数器相位，然后 DMC**（§2.4）。帧计数器已完成——`4-jitter`、`5-len_timing`、
+   `6-irq_flag_timing` 转绿。DMC 只剩两项检查（`7-dmc_basics` 的一字节缓冲、
+   `8-dmc_rates` 的 rate 0 窗口）。
 4. **OAM 衰减**（§2.2）。open bus 那一半已完成（`ppu_open_bus` 转绿），剩下的是 OAM 自身的
    衰减、渲染期 `$2007` 的时序，以及灰阶/强调色。
 5. **PAL**（16/5 加分数 dot 累加器，然后 PAL 专属的 PPU/APU 规则）。没有 PAL ROM 就无法验收。
@@ -188,6 +192,8 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | 逐 dot sprite | sprite 阶段的图案取指、逐 dot 像素、以及落在自己那个 dot 上的 sprite 0 命中；整行渲染器（`BackgroundRenderer`、`SpriteRenderer`、`ScanlineProcessor`）删除 | ROM 无移动（基线不变，AccuracyCoin 46）；帧耗时 1.80 → 1.68 ms |
 | DMA 移进 `MemoryRead` | `NesBus::process_pending_dma`（Mesen 的 `ProcessPendingDma`）：`$4014` 写与 DMC 请求只留下待办，在 CPU 下一次访问时以真实机器周期完成 | ROM 无移动——`4-irq_and_dma` 的轨迹逐字节相同，与 L4a 的结论一致：它的偏移来自帧计数器相位 |
 | open bus 衰减 | 换成 PPU 自己的总线锁存；每位三帧时间戳；`$2007` 用它返回的字节驱动总线；调色板读只驱动六位、另两位取自总线；`$2002` 只驱动三位 | **`ppu_open_bus` 转绿**（0/1 → 1/1） |
+| 帧计数器相位 | `$4017` 让计数器迟 3 个周期起步（奇数 APU 相位时 4 个）；帧 IRQ 标志从写入后第 29831 个周期起连续三个周期置位 | **`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿**（apu_test 3/8 → 6/8）；其余基线不变 |
+| DMC 修复 | `write_4015` 现在会置 enable 标志（此前 `$4015` 的 bit 4 从未置位）；读 `$4015` 不再清 DMC 的 IRQ 标志；字节计数按**已播放**的字节走，并改成两级缓冲 | `7-dmc_basics` 从第 2 项推进到第 19 项；`8-dmc_rates` 仍在基线（rate 0 的窗口） |
 
 ### 实现、实测、随后撤回的实验
 
@@ -212,13 +218,13 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
   第一个该查的点）；`$2007` 的读必须用它返回的那个字节去驱动这条锁存；调色板的读要从 open bus
   取高两位、却只驱动低六位，而 `$2002` 只驱动高三位，好让低五位继续衰减。
 
-- **帧计数器的相位，第二次尝试（§2.4）**。按对 Mesen 最直接的理解实现——序列在最后两个 tick
-  请求、标志三个周期后置位，`$4017` 让计数器迟 3（或 4）个周期起步——实测确实有推进：
-  `4-jitter` 从"Frame irq is set too soon"走到"Odd jitter not handled properly"（前半段转绿），
-  `5-len_timing` 从第 2 子项走到第 7 子项；但凡是能让 `4-jitter` 满足的变体，`6-irq_flag_timing`
-  都报"Flag first set too late"，而能让 `6-irq_flag_timing` 满足的那个又把 `4-jitter` 打回
-  "too soon"。两个套件读的不是同一个事件——与上一轮的结论一致。因此下一次动计数器之前，先读这两个
-  ROM 的源码、把它们测到的标志所在 cycle 并排打出来。本次实验已撤回，树里没有留下任何东西。
+- **帧计数器的相位，两次撤回（§2.4）**。两轮对 Mesen 顺序的猜测都是"一个套件前进、另一个后退"。
+  真正解决它的是读 blargg 的**源码**，它就在 `roms/blargg/apu_test/source/` 里：
+  `6-irq_flag_timing.s` 的头几行写着标志"is set three times in a row 29831 clocks after
+  writing $00 to $4017"，其检查分别在 29830/29831/29832/29833 读 `$4015`——所以标志不是置一次，
+  而是保持三个周期，从写入后 29831 开始。`4-jitter.s` 则给出重启的抖动：它在 29831 的读必须在
+  偶相位与奇相位下得到不同的值，这正是把计数器 hold 住 3（奇相位 4）个周期所产生的结果。下一次
+  在这里动手的教训是：先读 ROM 的源码与注释，并把事件落在哪个 cycle 打出来。
 
 ## 8. 仍需拍板的决策
 

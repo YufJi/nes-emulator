@@ -121,11 +121,14 @@ fn blargg_apu() {
     common::check_blargg_directory(
         "blargg/apu_test/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // The frame counter's phase is now Mesen's — a `$4017` restart is three
-        // cycles late (four on the other APU clock phase) and the IRQ flag goes
-        // up for three cycles in a row — which is what `4-jitter`,
-        // `5-len_timing` and `6-irq_flag_timing` measure. What is left is the
-        // DMC itself.
+        // The frame counter's phase is now blargg's own measured one — a
+        // `$4017` restart is three cycles late (four on the other APU clock
+        // phase) and the IRQ flag goes up for three cycles in a row — which is
+        // what `4-jitter`, `5-len_timing` and `6-irq_flag_timing` measure.
+        // What is left is the DMC's one-byte buffer (`7-dmc_basics`, whose last
+        // check wants a byte fetched into an empty buffer to be there before
+        // the next fetch begins) and its rate-0 sample window
+        // (`8-dmc_rates`).
         &["7-dmc_basics.nes", "8-dmc_rates.nes"],
     );
 }

@@ -19,6 +19,80 @@ use nes_core::apu::{
     Apu, AudioChannel, FrameCounter, FrameCounterMode,
 };
 
+/// A DMC channel with a byte supplier that answers every request at once, the
+/// way the bus answers one within a few cycles.
+fn dmc_with_samples() -> DmcChannel {
+    let mut dmc = DmcChannel::new();
+    dmc.write_register(0x4012, 0x00);
+    dmc
+}
+
+/// Run `cycles` DMC clocks, answering the memory reader as the bus would.
+fn run_dmc(dmc: &mut DmcChannel, cycles: u32) {
+    for _ in 0..cycles {
+        if let Some(addr) = dmc.dma_request() {
+            dmc.supply_dma_byte((addr & 0xFF) as u8);
+        }
+        dmc.clock_timer();
+    }
+}
+
+/// `$4015`'s DMC-active bit follows the sample, and the sample lasts as long as
+/// its bytes say: 17 bytes at rate 0 is 135 periods, not 128 or 136. That is
+/// the number `8-dmc_rates` measures.
+#[test]
+fn test_dmc_plays_17_bytes_for_135_periods() {
+    let mut dmc = dmc_with_samples();
+    dmc.write_register(0x4013, 1); // length = 17 bytes
+    dmc.write_register(0x4010, 0x00); // rate 0: 428 cycles per output clock
+    dmc.write_register(0x4015, 0x10);
+    assert!(dmc.is_active(), "enabling the DMC has to start the sample");
+
+    let mut cycle = 0u32;
+    let mut last_active = 0u32;
+    while cycle < 200_000 {
+        if dmc.is_active() {
+            last_active = cycle;
+        }
+        run_dmc(&mut dmc, 1);
+        cycle += 1;
+    }
+
+    let periods = last_active as f64 / 428.0;
+    assert!(
+        (134.0..136.0).contains(&periods),
+        "a 17-byte sample should play for 135 periods, got {periods}"
+    );
+}
+
+/// Reading `$4015` clears the frame counter's IRQ flag and *not* the DMC's:
+/// only a write to `$4015` clears that one.
+#[test]
+fn test_reading_4015_does_not_clear_the_dmc_irq() {
+    let mut apu = Apu::new();
+    apu.dmc.write_register(0x4010, 0x8F); // rate 15, IRQ enabled
+    apu.dmc.write_register(0x4013, 0);
+    apu.dmc.write_register(0x4015, 0x10);
+
+    // A one-byte sample ends quickly and raises the DMC's flag.
+    for _ in 0..2000 {
+        apu.tick();
+    }
+    assert_eq!(apu.read_register(0x4015) & 0x80, 0x80, "the flag is raised");
+    assert_eq!(
+        apu.read_register(0x4015) & 0x80,
+        0x80,
+        "and a read does not clear it"
+    );
+
+    apu.write_register(0x4015, 0x10);
+    assert_eq!(
+        apu.read_register(0x4015) & 0x80,
+        0x00,
+        "a write to $4015 clears it"
+    );
+}
+
 // ============================================================================
 // Frame Counter Tests
 // ============================================================================
