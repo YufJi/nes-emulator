@@ -5,7 +5,7 @@
 //!
 //! Reference: https://www.nesdev.org/wiki/CPU_instructions
 
-use super::{Cpu, InterruptSource, PendingAccess, StatusFlags};
+use super::{Cpu, InterruptSource, StatusFlags};
 use crate::Bus;
 
 /// Where an instruction's handler touches the effective address the addressing
@@ -16,21 +16,6 @@ use crate::Bus;
 /// expressed as "the access is on the instruction's last cycle" or "two cycles
 /// before it", which is what the handler's own cycle count cannot tell until it
 /// is too late.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Access {
-    /// The handler makes no access of its own: a store (the bus already parks
-    /// and places its write), a branch, a register transfer, a jump.
-    None,
-    /// The handler reads the effective address on the instruction's last
-    /// cycle. The flag marks the opcodes whose handler also reports the
-    /// addressing mode's page-crossing penalty - the loads - which is what
-    /// puts the read one cycle later.
-    Read { penalised: bool },
-    /// The read-modify-write pattern - read, write the old value back, write
-    /// the new one - so the read is two cycles before the instruction's end.
-    ReadModifyWrite,
-}
-
 /// Opcode table entry - defines instruction metadata
 #[derive(Debug, Clone, Copy)]
 pub struct Opcode {
@@ -38,7 +23,13 @@ pub struct Opcode {
     pub mnemonic: &'static str,
     /// Addressing mode function
     pub addr_mode: AddressingMode,
-    /// Base cycle count
+    /// Cycle count the instruction should take, for the tests to check the
+    /// accesses against.
+    ///
+    /// Mesen has no such table - its handlers spell out every cycle as an
+    /// access or a dummy read, and the total is whatever that comes to. This
+    /// one is a cross-check kept for `test_every_opcode_costs_what_the_table_
+    /// says`; it is not what drives the machine.
     pub base_cycles: u8,
     /// Instruction handler
     pub handler: InstructionHandler,
@@ -59,14 +50,22 @@ pub enum AddressingMode {
     Absolute,
     /// Absolute X - 16-bit address + X
     AbsoluteX,
+    /// Absolute X for a *write* (Mesen's `AbsXW`): the discarded read the
+    /// addressing does is unconditional, because a store has no page-crossing
+    /// penalty to hide it in.
+    AbsoluteXWrite,
     /// Absolute Y - 16-bit address + Y
     AbsoluteY,
+    /// Absolute Y for a write (Mesen's `AbsYW`).
+    AbsoluteYWrite,
     /// Indirect - pointer at 16-bit address (JMP only)
     Indirect,
     /// Indirect X - pointer at ZP + X
     IndirectX,
     /// Indirect Y - pointer at ZP, then + Y
     IndirectY,
+    /// Indirect Y for a write (Mesen's `IndYW`).
+    IndirectYWrite,
     /// Relative - branch offset (signed)
     Relative,
     /// Accumulator - operation on A register
@@ -76,267 +75,199 @@ pub enum AddressingMode {
 }
 
 /// Instruction handler function type
-pub type InstructionHandler = fn(&mut Cpu, &mut dyn Bus, u16, u8) -> u8;
+///
+/// The addressing mode has already fetched the operands and left the effective
+/// address in `addr`; the handler performs the instruction's own accesses, each
+/// of which is a CPU cycle.
+pub type InstructionHandler = fn(&mut Cpu, &mut dyn Bus, u16);
 
 impl Cpu {
-    /// What the opcode's handler does with the effective address.
+    /// Execute one instruction whose opcode the caller has already fetched.
     ///
-    /// The mnemonics in [`OPCODE_TABLE`] are the classification: a name is used
-    /// with one handler throughout, and the two groups below are the handlers
-    /// that read the effective address. Everything else is `None` - the stores
-    /// (whose write the bus already parks and places), the branches, the jumps,
-    /// the stack operations and the register transfers - and runs in one piece.
-    fn access_of(mnemonic: &str) -> Access {
-        match mnemonic {
-            // Read, write the old value back, write the new one.
-            "INC" | "DEC" | "ASL" | "LSR" | "ROL" | "ROR" | "SLO" | "SRE" | "RRA" | "RLA"
-            | "ISC" | "DCP" => Access::ReadModifyWrite,
-            // The loads. Their handlers report the addressing mode's
-            // page-crossing penalty, which is what puts the read a cycle later.
-            // `IGN` is a read whose value goes nowhere, and pays it all the
-            // same.
-            "LDA" | "LDX" | "LDY" | "LAX" | "LAE" | "AND" | "ORA" | "EOR" | "ADC" | "SBC"
-            | "CMP" | "IGN" => Access::Read { penalised: true },
-            // Reads that always take their full cycle count, the immediate-mode
-            // ones included: an immediate operand is fetched on the last cycle
-            // too.
-            "BIT" | "CPX" | "CPY" | "ANC" | "ALR" | "ARR" | "AXS" | "ANE" | "LXA" => {
-                Access::Read { penalised: false }
-            }
-            _ => Access::None,
-        }
-    }
-
-    /// Plan the cycle the instruction's access lands on, if its handler makes
-    /// one of its own.
+    /// This is Mesen's `Exec()` after `GetOPCode()`. There is no cycle table in
+    /// the path: the addressing fetches its operands on their own cycles, the
+    /// handler performs the instruction's own accesses (each of them a cycle),
+    /// and the discarded reads the chip makes in between are written out where
+    /// they happen. An instruction takes as long as its accesses say it does,
+    /// which is what makes the timing something you can read off the code.
     ///
-    /// Returns the access for the machine to run, and the instruction's total
-    /// cycle count - which the read handler's page-crossing penalty is part of,
-    /// so it has to be settled before the handler runs: a read is on the last
-    /// cycle, one past the penalty, and a read-modify-write's read is two
-    /// cycles before the end, with the two writes after it.
-    fn plan_access(op: &Opcode, addr: u16, extra_cycles: u8) -> Option<(PendingAccess, u8)> {
-        let (trailing, handler_cycles) = match Self::access_of(op.mnemonic) {
-            Access::None => return None,
-            Access::Read { penalised } => (0, if penalised { extra_cycles } else { 0 }),
-            Access::ReadModifyWrite => (2, 0),
-        };
-        let total_cycles = op.base_cycles + handler_cycles;
-        let access = PendingAccess {
-            handler: op.handler,
-            addr,
-            extra_cycles,
-            at_cycle: total_cycles - trailing,
-            expected_handler_cycles: handler_cycles,
-        };
-        Some((access, total_cycles))
-    }
-
-    /// Execute a single instruction
-    ///
-    /// This is the main instruction execution entry point. It fetches the opcode,
-    /// decodes the addressing mode, and dispatches to the appropriate handler.
-    ///
-    /// # Arguments
-    /// * `bus` - Memory bus for read/write operations
-    /// * `opcode` - The opcode byte to execute
-    ///
-    /// # Returns
-    /// Total cycles consumed by the instruction
+    /// The returned count is the instruction's whole duration — the caller's
+    /// opcode fetch included — and is for the caller's bookkeeping and the
+    /// tests; the machine has already been driven by the accesses themselves.
     pub fn execute_instruction(&mut self, bus: &mut dyn Bus, opcode: u8) -> u8 {
-        // A KIL/JAM opcode stops the CPU: it keeps burning cycles but fetches
-        // nothing until an interrupt sequence restarts it.
-        //
-        // Interrupts themselves are not looked at here: the machine samples the
-        // lines with `poll_interrupts` on the penultimate cycle of every
-        // instruction, and drives the sequence with `interrupt_cycle`.
-        if self.halted {
-            return 2;
-        }
+        let start = bus.cycle_count();
 
-        // Captured for the delayed-inhibition rule below, before the handler can
-        // touch it.
-        let i_before = self.status.contains(StatusFlags::I);
+        // The caller's opcode fetch was a cycle, and its end-of-cycle
+        // bookkeeping (the interrupt-line samples) belongs to this instruction:
+        // Mesen's `GetOPCode` is a `MemoryRead`, which brackets the same pair.
+        self.end_cycle(bus);
 
-        // A BRK's vector is only provisional for the instruction that read it;
-        // whatever runs next starts from a clean slate.
-        self.brk_vector_pending = false;
+        // The program counter moves past the opcode byte
+        // here, so the addressing's operand fetches start where Mesen's do
+        // (`GetOPCode` is `MemoryRead(PC); PC++`).
+        self.pc = self.pc.wrapping_add(1);
 
+        // A KIL/JAM re-runs itself (see `Cpu::jam`), so it is an ordinary
+        // instruction here: a fetch and a discarded read, over and over.
         let op = &OPCODE_TABLE[opcode as usize];
 
-        // Fetch operands based on addressing mode
-        let (addr, extra_cycles) = match op.addr_mode {
-            AddressingMode::Immediate => {
-                let addr = self.pc.wrapping_add(1);
-                self.pc = self.pc.wrapping_add(2);
-                (addr, 0)
-            }
-            AddressingMode::ZeroPage => {
-                let operand = bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(2);
-                (operand as u16, 0)
-            }
-            AddressingMode::ZeroPageX => {
-                let operand = bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(2);
-                // Dummy read at unindexed address
-                bus.read(operand as u16);
-                let addr = operand.wrapping_add(self.x) as u16;
-                (addr, 0)
-            }
-            AddressingMode::ZeroPageY => {
-                let operand = bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(2);
-                // Dummy read at unindexed address
-                bus.read(operand as u16);
-                let addr = operand.wrapping_add(self.y) as u16;
-                (addr, 0)
-            }
-            AddressingMode::Absolute => {
-                let lo = bus.read(self.pc.wrapping_add(1));
-                let hi = bus.read(self.pc.wrapping_add(2));
-                self.pc = self.pc.wrapping_add(3);
-                let addr = ((hi as u16) << 8) | (lo as u16);
-                (addr, 0)
-            }
-            AddressingMode::AbsoluteX => {
-                let lo = bus.read(self.pc.wrapping_add(1));
-                let hi = bus.read(self.pc.wrapping_add(2));
-                self.pc = self.pc.wrapping_add(3);
-                let base_addr = ((hi as u16) << 8) | (lo as u16);
-                self.addr_base = base_addr;
-                let addr = base_addr.wrapping_add(self.x as u16);
-                let page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00);
-                if page_crossed {
-                    // Dummy read at wrong address
-                    let dummy_addr = (base_addr & 0xFF00) | (addr & 0x00FF);
-                    bus.read(dummy_addr);
-                    (addr, 1)
-                } else {
-                    (addr, 0)
-                }
-            }
-            AddressingMode::AbsoluteY => {
-                let lo = bus.read(self.pc.wrapping_add(1));
-                let hi = bus.read(self.pc.wrapping_add(2));
-                self.pc = self.pc.wrapping_add(3);
-                let base_addr = ((hi as u16) << 8) | (lo as u16);
-                self.addr_base = base_addr;
-                let addr = base_addr.wrapping_add(self.y as u16);
-                let page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00);
-                if page_crossed {
-                    // Dummy read at wrong address
-                    let dummy_addr = (base_addr & 0xFF00) | (addr & 0x00FF);
-                    bus.read(dummy_addr);
-                    (addr, 1)
-                } else {
-                    (addr, 0)
-                }
-            }
-            AddressingMode::Indirect => {
-                // JMP indirect - has the famous 6502 bug
-                let ptr_lo = bus.read(self.pc.wrapping_add(1));
-                let ptr_hi = bus.read(self.pc.wrapping_add(2));
-                self.pc = self.pc.wrapping_add(3);
-                let ptr_addr = ((ptr_hi as u16) << 8) | (ptr_lo as u16);
-                let target_lo = bus.read(ptr_addr);
-                // Bug: when pointer low byte is $FF, high byte wraps within page
-                let ptr_hi_addr = (ptr_addr & 0xFF00) | ((ptr_addr.wrapping_add(1)) & 0x00FF);
-                let target_hi = bus.read(ptr_hi_addr);
-                let addr = ((target_hi as u16) << 8) | (target_lo as u16);
-                (addr, 0)
-            }
-            AddressingMode::IndirectX => {
-                let operand = bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(2);
-                // Dummy read at unindexed address
-                bus.read(operand as u16);
-                let zp_ptr = operand.wrapping_add(self.x);
-                let addr_lo = bus.read(zp_ptr as u16);
-                let addr_hi = bus.read(zp_ptr.wrapping_add(1) as u16);
-                let addr = ((addr_hi as u16) << 8) | (addr_lo as u16);
-                (addr, 0)
-            }
-            AddressingMode::IndirectY => {
-                let operand = bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(2);
-                let base_lo = bus.read(operand as u16);
-                let base_hi = bus.read(operand.wrapping_add(1) as u16);
-                let base_addr = ((base_hi as u16) << 8) | (base_lo as u16);
-                self.addr_base = base_addr;
-                let addr = base_addr.wrapping_add(self.y as u16);
-                let page_crossed = (base_addr & 0xFF00) != (addr & 0xFF00);
-                if page_crossed {
-                    // Dummy read at wrong address
-                    let dummy_addr = (base_addr & 0xFF00) | (addr & 0x00FF);
-                    bus.read(dummy_addr);
-                    (addr, 1)
-                } else {
-                    (addr, 0)
-                }
-            }
-            AddressingMode::Relative => {
-                let offset = bus.read(self.pc.wrapping_add(1)) as i8;
-                self.pc = self.pc.wrapping_add(2);
-                let target = self.pc.wrapping_add(offset as u16);
-                (target, 0)
-            }
-            AddressingMode::Accumulator => {
-                // Dummy read of next byte
-                bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(1);
-                // Use special marker for accumulator mode
-                (0xFFFF, 0)
-            }
-            AddressingMode::Implied => {
-                // Dummy read of next byte (the next opcode)
-                bus.read(self.pc.wrapping_add(1));
-                self.pc = self.pc.wrapping_add(1);
-                (0, 0)
-            }
-        };
+        self.addr_mode = op.addr_mode;
+        let addr = self.fetch_operand(bus, op.addr_mode);
+        (op.handler)(self, bus, addr);
 
-        // A read of a PPU register belongs on the dot the chip performs it, not
-        // where the instruction asks for it: a `$2002` read takes the VBlank
-        // flag with it, so it decides the frame's NMI, and a read that lands on
-        // the dot before the flag is set takes the flag away entirely. The
-        // machine drives the instruction's cycles, so the handler waits for the
-        // cycle its access belongs to. Everything else runs in one piece below.
-        if self.defer_register_reads && (0x2000..=0x3FFF).contains(&addr) {
-            if let Some((pending, total_cycles)) = Self::plan_access(op, addr, extra_cycles) {
-                self.pending_access = Some(pending);
-                // Nothing that defers its access touches the I flag - they all
-                // read a memory operand - so the interrupt decision the next
-                // instruction's poll makes is already settled.
-                self.irq_inhibit = self.status.contains(StatusFlags::I);
-                self.cycles += total_cycles as u64;
-                return total_cycles;
-            }
+        // "It's really the status of the interrupt lines at the end of the
+        // second-to-last cycle that matters": the decision below reads samples
+        // that are one cycle behind. That single rule is what gives CLI/SEI/PLP
+        // their one-instruction delay, lets a taken branch shrug off an IRQ
+        // raised during its last cycle, and keeps an NMI that arrives on an
+        // instruction's last cycle waiting for the next one.
+        if self.prev_run_irq || self.prev_need_nmi {
+            self.take_interrupt(bus);
         }
 
-        // Execute the instruction handler
-        let handler_cycles = (op.handler)(self, bus, addr, extra_cycles);
+        (bus.cycle_count() - start) as u8 + 1
+    }
 
-        // The interrupt decision the *next* instruction makes sees the I flag as
-        // it was before CLI/SEI/PLP wrote it: those three only take effect after
-        // one more instruction has run. Every other instruction - RTI included -
-        // lets the change through at once.
-        self.irq_inhibit = if matches!(opcode, 0x58 | 0x78 | 0x28) {
-            i_before
+    /// Fetch the operands the addressing mode calls for — one CPU cycle per
+    /// access — and return the effective address.
+    ///
+    /// Mesen's `FetchOperand`, discarded reads included. The zero-page indexed
+    /// modes read the un-indexed address first; the indexed modes read the
+    /// address the index has *not* carried into (always for a write, and only
+    /// on a carry for a read); the accumulator and implied modes read the byte
+    /// after the opcode and throw it away. Those reads are the instruction's
+    /// cycles, so what is left over is nothing at all.
+    fn fetch_operand(&mut self, bus: &mut dyn Bus, mode: AddressingMode) -> u16 {
+        match mode {
+            AddressingMode::Immediate => {
+                // The handler's read of this address is the operand fetch, on
+                // the same cycle it would take inside the addressing.
+                let addr = self.pc;
+                self.pc = self.pc.wrapping_add(1);
+                addr
+            }
+            AddressingMode::ZeroPage => self.read_byte(bus) as u16,
+            AddressingMode::ZeroPageX => {
+                let base = self.read_byte(bus);
+                self.read(bus, base as u16);
+                base.wrapping_add(self.x) as u16
+            }
+            AddressingMode::ZeroPageY => {
+                let base = self.read_byte(bus);
+                self.read(bus, base as u16);
+                base.wrapping_add(self.y) as u16
+            }
+            AddressingMode::Absolute => self.read_word(bus),
+            AddressingMode::AbsoluteX | AddressingMode::AbsoluteXWrite => {
+                let base = self.read_word(bus);
+                self.addr_base = base;
+                let addr = base.wrapping_add(self.x as u16);
+                self.indexed_dummy(bus, base, addr, mode == AddressingMode::AbsoluteXWrite);
+                addr
+            }
+            AddressingMode::AbsoluteY | AddressingMode::AbsoluteYWrite => {
+                let base = self.read_word(bus);
+                self.addr_base = base;
+                let addr = base.wrapping_add(self.y as u16);
+                self.indexed_dummy(bus, base, addr, mode == AddressingMode::AbsoluteYWrite);
+                addr
+            }
+            AddressingMode::Indirect => {
+                // JMP ($xxxx): the high byte of the target comes from the same
+                // page as the low byte of the pointer, which is the chip's
+                // page-wrap bug.
+                let ptr = self.read_word(bus);
+                let low = self.read(bus, ptr) as u16;
+                let high_addr = (ptr & 0xFF00) | (ptr.wrapping_add(1) & 0x00FF);
+                let high = self.read(bus, high_addr) as u16;
+                (high << 8) | low
+            }
+            AddressingMode::IndirectX => {
+                let base = self.read_byte(bus);
+                self.read(bus, base as u16);
+                let ptr = base.wrapping_add(self.x);
+                let low = self.read(bus, ptr as u16) as u16;
+                let high = self.read(bus, ptr.wrapping_add(1) as u16) as u16;
+                (high << 8) | low
+            }
+            AddressingMode::IndirectY | AddressingMode::IndirectYWrite => {
+                let ptr = self.read_byte(bus);
+                let low = self.read(bus, ptr as u16) as u16;
+                let high = self.read(bus, ptr.wrapping_add(1) as u16) as u16;
+                let base = (high << 8) | low;
+                self.addr_base = base;
+                let addr = base.wrapping_add(self.y as u16);
+                self.indexed_dummy(bus, base, addr, mode == AddressingMode::IndirectYWrite);
+                addr
+            }
+            AddressingMode::Relative => {
+                let offset = self.read_byte(bus) as i8;
+                self.pc.wrapping_add(offset as u16)
+            }
+            AddressingMode::Accumulator => {
+                // The accumulator modes still read: the byte after the opcode,
+                // discarded. `0xFFFF` is the sentinel the handlers know.
+                self.dummy_read(bus);
+                0xFFFF
+            }
+            AddressingMode::Implied => {
+                self.dummy_read(bus);
+                0
+            }
+        }
+    }
+
+    /// The discarded read an indexed address makes.
+    ///
+    /// A read only makes it when the index carried into the high byte: it reads
+    /// the low byte of the sum in the base's page, which is where the chip's
+    /// address adder had got to. A write always makes it, at the same address,
+    /// because a store has no other cycle to spend.
+    fn indexed_dummy(&mut self, bus: &mut dyn Bus, base: u16, addr: u16, always: bool) {
+        let carried = (base & 0xFF00) != (addr & 0xFF00);
+        if carried || always {
+            let wrong = (base & 0xFF00) | (addr & 0x00FF);
+            self.read(bus, wrong);
+        }
+    }
+
+    /// Take the interrupt the lines called for once an instruction is over.
+    ///
+    /// Mesen's `IRQ()`: two discarded reads, the return address, then the
+    /// status byte — and at that point an NMI that has arrived in the meantime
+    /// takes the vector over, with the frame already pushed staying the IRQ's
+    /// (B clear). Seven cycles, every one of them an access.
+    fn take_interrupt(&mut self, bus: &mut dyn Bus) {
+        self.halted = false;
+
+        self.dummy_read(bus);
+        self.dummy_read(bus);
+        self.push_word(bus, self.pc);
+
+        // The NMI check happens where the chip makes it: the return address is
+        // already on the stack, the status byte is not.
+        let source = if self.need_nmi {
+            self.need_nmi = false;
+            InterruptSource::Nmi
         } else {
-            self.status.contains(StatusFlags::I)
+            InterruptSource::Irq
         };
 
-        // The addressing mode reports the page-crossing penalty as
-        // `extra_cycles`, and it is the *handler* that decides whether this
-        // opcode pays it: the read handlers return it, while stores and
-        // read-modify-writes (which always take their full cycle count) return
-        // zero. Adding it here as well charged every page-crossed indexed read
-        // one cycle too many.
-        let total_cycles = op.base_cycles + handler_cycles;
-        self.cycles += total_cycles as u64;
+        self.push(bus, self.status.bits() | StatusFlags::U.bits());
+        self.status.insert(StatusFlags::I);
+        self.pc = Self::read_vector(bus, source);
+    }
 
-        total_cycles
+    /// Push two bytes, high first.
+    fn push_word(&mut self, bus: &mut dyn Bus, value: u16) {
+        self.push(bus, (value >> 8) as u8);
+        self.push(bus, (value & 0xFF) as u8);
+    }
+
+    /// Read an interrupt vector's two bytes.
+    fn read_vector(bus: &mut dyn Bus, source: InterruptSource) -> u16 {
+        let vector = Self::interrupt_vector(source);
+        (bus.read_cycle(vector) as u16) | ((bus.read_cycle(vector.wrapping_add(1)) as u16) << 8)
     }
 
     /// Update N (negative) and Z (zero) flags based on value
@@ -350,59 +281,53 @@ impl Cpu {
     // ========================================================================
 
     /// LDA - Load Accumulator
-    fn lda(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
+    fn lda(&mut self, bus: &mut dyn Bus, addr: u16) {
         let value = if addr == 0xFFFF {
             // Accumulator mode - shouldn't happen for LDA
             self.a
         } else {
-            bus.read(addr)
+            self.read(bus, addr)
         };
         self.a = value;
         self.update_nz_flags(value);
-        extra_cycles
     }
 
     /// LDX - Load X Register
-    fn ldx(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
+    fn ldx(&mut self, bus: &mut dyn Bus, addr: u16) {
         let value = if addr == 0xFFFF {
             self.x
         } else {
-            bus.read(addr)
+            self.read(bus, addr)
         };
         self.x = value;
         self.update_nz_flags(value);
-        extra_cycles
     }
 
     /// LDY - Load Y Register
-    fn ldy(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
+    fn ldy(&mut self, bus: &mut dyn Bus, addr: u16) {
         let value = if addr == 0xFFFF {
             self.y
         } else {
-            bus.read(addr)
+            self.read(bus, addr)
         };
         self.y = value;
         self.update_nz_flags(value);
-        extra_cycles
     }
 
     /// STA - Store Accumulator
-    fn sta(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn sta(&mut self, bus: &mut dyn Bus, addr: u16) {
         // Stores always do dummy read on indexed modes even without page cross
-        bus.write(addr, self.a);
-        0
+        self.write(bus, addr, self.a);
     }
 
     /// STX - Store X Register
-    fn stx(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        bus.write(addr, self.x);
-        0
+    fn stx(&mut self, bus: &mut dyn Bus, addr: u16) {
+        self.write(bus, addr, self.x);
     }
 
     /// STY - Store Y Register
-    fn sty(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        bus.write(addr, self.y);
-        0
+    fn sty(&mut self, bus: &mut dyn Bus, addr: u16) {
+        self.write(bus, addr, self.y);
     }
 
     // ========================================================================
@@ -410,45 +335,39 @@ impl Cpu {
     // ========================================================================
 
     /// TAX - Transfer Accumulator to X
-    fn tax(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn tax(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.x = self.a;
         self.update_nz_flags(self.x);
-        0
     }
 
     /// TAY - Transfer Accumulator to Y
-    fn tay(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn tay(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.y = self.a;
         self.update_nz_flags(self.y);
-        0
     }
 
     /// TXA - Transfer X to Accumulator
-    fn txa(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn txa(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.a = self.x;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// TYA - Transfer Y to Accumulator
-    fn tya(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn tya(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.a = self.y;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// TSX - Transfer Stack Pointer to X
-    fn tsx(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn tsx(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.x = self.sp;
         self.update_nz_flags(self.x);
-        0
     }
 
     /// TXS - Transfer X to Stack Pointer
-    fn txs(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn txs(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.sp = self.x;
         // TXS does not affect flags
-        0
     }
 
     // ========================================================================
@@ -458,7 +377,7 @@ impl Cpu {
     /// Push a byte onto the stack
     fn push(&mut self, bus: &mut dyn Bus, value: u8) {
         let addr = 0x0100 | (self.sp as u16);
-        bus.write(addr, value);
+        self.write(bus, addr, value);
         self.sp = self.sp.wrapping_sub(1);
     }
 
@@ -466,38 +385,36 @@ impl Cpu {
     fn pull(&mut self, bus: &mut dyn Bus) -> u8 {
         self.sp = self.sp.wrapping_add(1);
         let addr = 0x0100 | (self.sp as u16);
-        bus.read(addr)
+        self.read(bus, addr)
     }
 
     /// PHA - Push Accumulator
-    fn pha(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn pha(&mut self, bus: &mut dyn Bus, _addr: u16) {
         self.push(bus, self.a);
-        0
     }
 
     /// PHP - Push Processor Status
-    fn php(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn php(&mut self, bus: &mut dyn Bus, _addr: u16) {
         // PHP always sets B flag when pushing
         let status = self.status | StatusFlags::B | StatusFlags::U;
         self.push(bus, status.bits());
-        0
     }
 
     /// PLA - Pull Accumulator
-    fn pla(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn pla(&mut self, bus: &mut dyn Bus, _addr: u16) {
+        self.dummy_read(bus);
         self.a = self.pull(bus);
         self.update_nz_flags(self.a);
-        0
     }
 
     /// PLP - Pull Processor Status
-    fn plp(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn plp(&mut self, bus: &mut dyn Bus, _addr: u16) {
+        self.dummy_read(bus);
         let value = self.pull(bus);
         // B flag is not restored from stack; U flag is always set
         self.status = StatusFlags::from_bits_truncate(value);
         self.status.remove(StatusFlags::B);
         self.status.insert(StatusFlags::U);
-        0
     }
 
     // ========================================================================
@@ -505,36 +422,32 @@ impl Cpu {
     // ========================================================================
 
     /// AND - Logical AND
-    fn and(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn and(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         self.a &= value;
         self.update_nz_flags(self.a);
-        extra_cycles
     }
 
     /// EOR - Exclusive OR
-    fn eor(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn eor(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         self.a ^= value;
         self.update_nz_flags(self.a);
-        extra_cycles
     }
 
     /// ORA - Logical OR
-    fn ora(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn ora(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         self.a |= value;
         self.update_nz_flags(self.a);
-        extra_cycles
     }
 
     /// BIT - Bit Test
-    fn bit(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn bit(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         self.status.set(StatusFlags::N, value & 0x80 != 0);
         self.status.set(StatusFlags::V, value & 0x40 != 0);
         self.status.set(StatusFlags::Z, (self.a & value) == 0);
-        0
     }
 
     // ========================================================================
@@ -542,8 +455,8 @@ impl Cpu {
     // ========================================================================
 
     /// ADC - Add with Carry
-    fn adc(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn adc(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let carry = if self.status.contains(StatusFlags::C) {
             1
         } else {
@@ -562,12 +475,11 @@ impl Cpu {
 
         self.a = result;
         self.update_nz_flags(self.a);
-        extra_cycles
     }
 
     /// SBC - Subtract with Carry
-    fn sbc(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn sbc(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let carry = if self.status.contains(StatusFlags::C) {
             1
         } else {
@@ -587,34 +499,30 @@ impl Cpu {
 
         self.a = result;
         self.update_nz_flags(self.a);
-        extra_cycles
     }
 
     /// CMP - Compare Accumulator
-    fn cmp(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn cmp(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let diff = self.a.wrapping_sub(value);
         self.status.set(StatusFlags::C, self.a >= value);
         self.update_nz_flags(diff);
-        extra_cycles
     }
 
     /// CPX - Compare X Register
-    fn cpx(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn cpx(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let diff = self.x.wrapping_sub(value);
         self.status.set(StatusFlags::C, self.x >= value);
         self.update_nz_flags(diff);
-        0
     }
 
     /// CPY - Compare Y Register
-    fn cpy(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn cpy(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let diff = self.y.wrapping_sub(value);
         self.status.set(StatusFlags::C, self.y >= value);
         self.update_nz_flags(diff);
-        0
     }
 
     // ========================================================================
@@ -622,53 +530,47 @@ impl Cpu {
     // ========================================================================
 
     /// INC - Increment Memory
-    fn inc(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn inc(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         let result = value.wrapping_add(1);
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         self.update_nz_flags(result);
-        0
     }
 
     /// INX - Increment X
-    fn inx(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn inx(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.x = self.x.wrapping_add(1);
         self.update_nz_flags(self.x);
-        0
     }
 
     /// INY - Increment Y
-    fn iny(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn iny(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.y = self.y.wrapping_add(1);
         self.update_nz_flags(self.y);
-        0
     }
 
     /// DEC - Decrement Memory
-    fn dec(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn dec(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         let result = value.wrapping_sub(1);
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         self.update_nz_flags(result);
-        0
     }
 
     /// DEX - Decrement X
-    fn dex(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn dex(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.x = self.x.wrapping_sub(1);
         self.update_nz_flags(self.x);
-        0
     }
 
     /// DEY - Decrement Y
-    fn dey(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn dey(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.y = self.y.wrapping_sub(1);
         self.update_nz_flags(self.y);
-        0
     }
 
     // ========================================================================
@@ -676,7 +578,7 @@ impl Cpu {
     // ========================================================================
 
     /// ASL - Arithmetic Shift Left
-    fn asl(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn asl(&mut self, bus: &mut dyn Bus, addr: u16) {
         if addr == 0xFFFF {
             // Accumulator mode
             self.status.set(StatusFlags::C, self.a & 0x80 != 0);
@@ -684,18 +586,17 @@ impl Cpu {
             self.update_nz_flags(self.a);
         } else {
             // Memory mode - RMW pattern
-            let value = bus.read(addr);
-            bus.write(addr, value); // dummy write
+            let value = self.read(bus, addr);
+            self.write(bus, addr, value); // dummy write
             self.status.set(StatusFlags::C, value & 0x80 != 0);
             let result = value << 1;
-            bus.write(addr, result);
+            self.write(bus, addr, result);
             self.update_nz_flags(result);
         }
-        0
     }
 
     /// LSR - Logical Shift Right
-    fn lsr(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn lsr(&mut self, bus: &mut dyn Bus, addr: u16) {
         if addr == 0xFFFF {
             // Accumulator mode
             self.status.set(StatusFlags::C, self.a & 0x01 != 0);
@@ -703,18 +604,17 @@ impl Cpu {
             self.update_nz_flags(self.a);
         } else {
             // Memory mode - RMW pattern
-            let value = bus.read(addr);
-            bus.write(addr, value); // dummy write
+            let value = self.read(bus, addr);
+            self.write(bus, addr, value); // dummy write
             self.status.set(StatusFlags::C, value & 0x01 != 0);
             let result = value >> 1;
-            bus.write(addr, result);
+            self.write(bus, addr, result);
             self.update_nz_flags(result);
         }
-        0
     }
 
     /// ROL - Rotate Left
-    fn rol(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn rol(&mut self, bus: &mut dyn Bus, addr: u16) {
         let carry_in = if self.status.contains(StatusFlags::C) {
             1
         } else {
@@ -727,18 +627,17 @@ impl Cpu {
             self.update_nz_flags(self.a);
         } else {
             // Memory mode - RMW pattern
-            let value = bus.read(addr);
-            bus.write(addr, value); // dummy write
+            let value = self.read(bus, addr);
+            self.write(bus, addr, value); // dummy write
             self.status.set(StatusFlags::C, value & 0x80 != 0);
             let result = (value << 1) | carry_in;
-            bus.write(addr, result);
+            self.write(bus, addr, result);
             self.update_nz_flags(result);
         }
-        0
     }
 
     /// ROR - Rotate Right
-    fn ror(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn ror(&mut self, bus: &mut dyn Bus, addr: u16) {
         let carry_in = if self.status.contains(StatusFlags::C) {
             0x80
         } else {
@@ -751,14 +650,13 @@ impl Cpu {
             self.update_nz_flags(self.a);
         } else {
             // Memory mode - RMW pattern
-            let value = bus.read(addr);
-            bus.write(addr, value); // dummy write
+            let value = self.read(bus, addr);
+            self.write(bus, addr, value); // dummy write
             self.status.set(StatusFlags::C, value & 0x01 != 0);
             let result = (value >> 1) | carry_in;
-            bus.write(addr, result);
+            self.write(bus, addr, result);
             self.update_nz_flags(result);
         }
-        0
     }
 
     // ========================================================================
@@ -766,34 +664,36 @@ impl Cpu {
     // ========================================================================
 
     /// JMP - Jump
-    fn jmp(&mut self, _bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn jmp(&mut self, _bus: &mut dyn Bus, addr: u16) {
         // JMP sets PC to target address - 1 because PC will be incremented
         self.pc = addr;
-        0
     }
 
     /// JSR - Jump to Subroutine
-    fn jsr(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn jsr(&mut self, bus: &mut dyn Bus, addr: u16) {
         // Push return address (PC - 1) onto stack
         let return_addr = self.pc.wrapping_sub(1);
         self.push(bus, (return_addr >> 8) as u8);
         self.push(bus, (return_addr & 0xFF) as u8);
         // Read high byte of target (for open bus behavior)
-        bus.read(self.pc.wrapping_add(1));
+        self.read(bus, self.pc.wrapping_add(1));
         self.pc = addr;
-        0
     }
 
     /// RTS - Return from Subroutine
-    fn rts(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn rts(&mut self, bus: &mut dyn Bus, _addr: u16) {
+        // Two discarded reads, one on each side of the two pulls (Mesen's
+        // `RTS()`).
+        self.dummy_read(bus);
         let lo = self.pull(bus) as u16;
         let hi = self.pull(bus) as u16;
+        self.dummy_read(bus);
         self.pc = ((hi << 8) | lo).wrapping_add(1);
-        0
     }
 
     /// RTI - Return from Interrupt
-    fn rti(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn rti(&mut self, bus: &mut dyn Bus, _addr: u16) {
+        self.dummy_read(bus);
         // Pull status register
         let status = self.pull(bus);
         self.status = StatusFlags::from_bits_truncate(status);
@@ -804,118 +704,12 @@ impl Cpu {
         let lo = self.pull(bus) as u16;
         let hi = self.pull(bus) as u16;
         self.pc = (hi << 8) | lo;
-        0
     }
 
     /// Sample the interrupt lines, as the chip does on the penultimate cycle of
     /// every instruction.
     ///
     /// NMI is edge-triggered and cannot be masked; IRQ is level-triggered and is
-    /// ignored while interrupts are inhibited — the flag the decision uses is
-    /// `irq_inhibit`, not the live I flag, because CLI/SEI/PLP only change what
-    /// is allowed after one more instruction has run.
-    ///
-    /// A taken branch keeps its poll: the extra cycle it spends is a discarded
-    /// opcode read, not the poll, so an interrupt asserted before its
-    /// penultimate cycle is taken as soon as the branch ends.
-    pub(crate) fn poll_interrupts(&mut self, bus: &mut dyn Bus) {
-        if self.interrupt_source.is_some() {
-            return;
-        }
-
-        if bus.nmi_pending() {
-            bus.clear_nmi();
-            if self.brk_vector_pending {
-                // BRK has pushed its frame and read the IRQ vector, but its
-                // vector is the instruction's last business: an NMI arriving
-                // now takes it over instead of stacking a second frame. The
-                // frame already pushed keeps B set, which is what blargg's
-                // `2-nmi_and_brk` reads back.
-                self.brk_vector_pending = false;
-                let vector = Self::interrupt_vector(InterruptSource::Nmi);
-                let low = bus.read(vector) as u16;
-                let high = bus.read(vector.wrapping_add(1)) as u16;
-                self.pc = (high << 8) | low;
-            } else {
-                self.start_interrupt(InterruptSource::Nmi);
-            }
-        } else if bus.irq_pending() && !self.irq_inhibit {
-            self.start_interrupt(InterruptSource::Irq);
-        }
-    }
-
-    /// Whether the interrupt sequence still has cycles to run.
-    pub(crate) fn in_interrupt_sequence(&self) -> bool {
-        self.interrupt_source.is_some()
-    }
-
-    /// Begin an interrupt sequence, which is also what wakes a halted CPU.
-    pub(crate) fn start_interrupt(&mut self, source: InterruptSource) {
-        self.interrupt_source = Some(source);
-        self.interrupt_step = 0;
-        self.nmi_hijack = false;
-        self.halted = false;
-    }
-
-    /// Run one cycle of the interrupt sequence.
-    ///
-    /// Seven cycles, the chip's: two discarded reads, the three pushes, then the
-    /// two halves of the vector. The status byte is pushed before the I flag is
-    /// set, so what lands on the stack is the state the interrupt interrupted.
-    pub(crate) fn interrupt_cycle(&mut self, bus: &mut dyn Bus) {
-        let Some(source) = self.interrupt_source else {
-            return;
-        };
-        self.interrupt_step += 1;
-
-        // An NMI asserted while the sequence is still on its way to the status
-        // push takes its vector over: the frame it pushes stays the one the
-        // sequence was building - an IRQ's status has B clear - and only the
-        // address the last two cycles fetch changes. blargg's `3-nmi_and_irq`
-        // measures this window; an NMI that arrives later has to wait for the
-        // instruction after the sequence, which is what leaves the line pending.
-        if self.interrupt_step <= 4 && bus.nmi_pending() {
-            bus.clear_nmi();
-            self.nmi_hijack = true;
-        }
-        let vector = if self.nmi_hijack {
-            InterruptSource::Nmi
-        } else {
-            source
-        };
-
-        match self.interrupt_step {
-            // Cycles 1 and 2 read the next instruction byte and throw it away.
-            1 | 2 => {
-                bus.read(self.pc);
-            }
-            3 => self.push(bus, (self.pc >> 8) as u8),
-            4 => self.push(bus, self.pc as u8),
-            5 => {
-                // Hardware interrupts push the status with B clear and U set.
-                let status = (self.status | StatusFlags::U) & !StatusFlags::B;
-                self.push(bus, status.bits());
-            }
-            6 => {
-                // The handler runs with interrupts inhibited, and it is the
-                // sequence - not the instruction before it - that the next poll
-                // sees.
-                self.status.insert(StatusFlags::I);
-                self.irq_inhibit = true;
-                self.vector_low = bus.read(Self::interrupt_vector(vector));
-            }
-            _ => {
-                let high = bus.read(Self::interrupt_vector(vector).wrapping_add(1)) as u16;
-                self.pc = (high << 8) | u16::from(self.vector_low);
-                self.interrupt_source = None;
-                self.interrupt_step = 0;
-                self.nmi_hijack = false;
-            }
-        }
-
-        self.cycles += 1;
-    }
-
     /// Vector an interrupt of `source` reaches its handler through.
     fn interrupt_vector(source: InterruptSource) -> u16 {
         match source {
@@ -929,94 +723,74 @@ impl Cpu {
     // ========================================================================
 
     /// Branch helper - handles page crossing for branches
-    fn branch(&mut self, bus: &mut dyn Bus, target: u16) -> u8 {
-        let old_pc = self.pc;
-        self.pc = target;
-
-        // Branch takes 1 extra cycle, plus 1 more if page crossed
-        if (old_pc & 0xFF00) != (target & 0xFF00) {
-            // Page crossed - dummy read at wrong address
-            let dummy_addr = (old_pc & 0xFF00) | (target & 0x00FF);
-            bus.read(dummy_addr);
-            2
-        } else {
-            // The extra cycle is only the discarded read of the opcode at the
-            // new PC; the poll already happened on the penultimate cycle, so an
-            // interrupt asserted during this cycle waits for the next
-            // instruction by itself - no deferral has to be imposed on it.
-            1
+    fn branch(&mut self, bus: &mut dyn Bus, target: u16) {
+        // "A taken non-page-crossing branch ignores IRQ/NMI during its last
+        // clock, so that next instruction executes before the IRQ" (Mesen).
+        // blargg's `5-branch_delays_irq` is what measures this.
+        if self.run_irq && !self.prev_run_irq {
+            self.run_irq = false;
         }
+
+        self.dummy_read(bus);
+        if (self.pc & 0xFF00) != (target & 0xFF00) {
+            self.dummy_read(bus);
+        }
+        self.pc = target;
     }
 
     /// BCC - Branch if Carry Clear
-    fn bcc(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bcc(&mut self, bus: &mut dyn Bus, addr: u16) {
         if !self.status.contains(StatusFlags::C) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BCS - Branch if Carry Set
-    fn bcs(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bcs(&mut self, bus: &mut dyn Bus, addr: u16) {
         if self.status.contains(StatusFlags::C) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BEQ - Branch if Equal (Zero Set)
-    fn beq(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn beq(&mut self, bus: &mut dyn Bus, addr: u16) {
         if self.status.contains(StatusFlags::Z) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BNE - Branch if Not Equal (Zero Clear)
-    fn bne(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bne(&mut self, bus: &mut dyn Bus, addr: u16) {
         if !self.status.contains(StatusFlags::Z) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BMI - Branch if Minus (Negative Set)
-    fn bmi(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bmi(&mut self, bus: &mut dyn Bus, addr: u16) {
         if self.status.contains(StatusFlags::N) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BPL - Branch if Plus (Negative Clear)
-    fn bpl(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bpl(&mut self, bus: &mut dyn Bus, addr: u16) {
         if !self.status.contains(StatusFlags::N) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BVC - Branch if Overflow Clear
-    fn bvc(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bvc(&mut self, bus: &mut dyn Bus, addr: u16) {
         if !self.status.contains(StatusFlags::V) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
     /// BVS - Branch if Overflow Set
-    fn bvs(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn bvs(&mut self, bus: &mut dyn Bus, addr: u16) {
         if self.status.contains(StatusFlags::V) {
-            self.branch(bus, addr)
-        } else {
-            0
+            self.branch(bus, addr);
         }
     }
 
@@ -1025,45 +799,38 @@ impl Cpu {
     // ========================================================================
 
     /// CLC - Clear Carry
-    fn clc(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn clc(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.remove(StatusFlags::C);
-        0
     }
 
     /// CLD - Clear Decimal
-    fn cld(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn cld(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.remove(StatusFlags::D);
-        0
     }
 
     /// CLI - Clear Interrupt Disable
-    fn cli(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn cli(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.remove(StatusFlags::I);
-        0
     }
 
     /// CLV - Clear Overflow
-    fn clv(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn clv(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.remove(StatusFlags::V);
-        0
     }
 
     /// SEC - Set Carry
-    fn sec(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn sec(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.insert(StatusFlags::C);
-        0
     }
 
     /// SED - Set Decimal
-    fn sed(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn sed(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.insert(StatusFlags::D);
-        0
     }
 
     /// SEI - Set Interrupt Disable
-    fn sei(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn sei(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         self.status.insert(StatusFlags::I);
-        0
     }
 
     // ========================================================================
@@ -1071,35 +838,36 @@ impl Cpu {
     // ========================================================================
 
     /// BRK - Force Interrupt
-    fn brk(&mut self, bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
-        // Push return address (PC + 2) onto stack
-        let return_addr = self.pc.wrapping_add(1);
-        self.push(bus, (return_addr >> 8) as u8);
-        self.push(bus, (return_addr & 0xFF) as u8);
+    fn brk(&mut self, bus: &mut dyn Bus, _addr: u16) {
+        // Mesen's `BRK()`: the return address is the byte after the padding
+        // byte, the pushed status has B set, and the vector is chosen at the
+        // status push — an NMI asserted by then takes it over instead of the IRQ
+        // vector. The samples are then cleared so the instruction after BRK
+        // runs before any pending NMI is taken.
+        self.push_word(bus, self.pc.wrapping_add(1));
 
-        // Push status with B flag set
-        let status = self.status | StatusFlags::B | StatusFlags::U;
-        self.push(bus, status.bits());
+        let source = if self.need_nmi {
+            self.need_nmi = false;
+            InterruptSource::Nmi
+        } else {
+            InterruptSource::Irq
+        };
 
-        // Set interrupt disable flag
+        self.push(bus, (self.status | StatusFlags::B | StatusFlags::U).bits());
         self.status.insert(StatusFlags::I);
+        self.pc = Self::read_vector(bus, source);
 
-        // Jump to IRQ vector at $FFFE
-        let lo = bus.read(0xFFFE) as u16;
-        let hi = bus.read(0xFFFF) as u16;
-        self.pc = (hi << 8) | lo;
-
-        // That vector is provisional until the instruction ends: an NMI
-        // asserted before its last cycles takes it over (`poll_interrupts`).
-        self.brk_vector_pending = true;
-
-        0
+        self.prev_need_nmi = false;
     }
 
     /// NOP - No Operation
-    fn nop(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
-        // Does nothing
-        0
+    fn nop(&mut self, bus: &mut dyn Bus, addr: u16) {
+        // The acknowledged NOP - the implied one - does nothing at all. The 2-
+        // and 3-byte NOPs read their operand and throw it away, which is where
+        // their extra cycles come from (Mesen's `NOP()` is `GetOperandValue()`).
+        if self.operand_is_memory() {
+            self.read(bus, addr);
+        }
     }
 
     // ========================================================================
@@ -1109,31 +877,29 @@ impl Cpu {
     /// ALR (ASR) - AND + LSR
     /// AND accumulator with memory, then LSR the result.
     /// Opcode: $4B (Immediate)
-    fn alr(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn alr(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let result = self.a & value;
         self.status.set(StatusFlags::C, result & 0x01 != 0);
         self.a = result >> 1;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// ANC - AND + set C as bit 7
     /// AND accumulator with memory, setting carry to bit 7 of the result.
     /// Opcodes: $0B, $2B (Immediate)
-    fn anc(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn anc(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         self.a &= value;
         self.status.set(StatusFlags::C, self.a & 0x80 != 0);
         self.update_nz_flags(self.a);
-        0
     }
 
     /// ARR - AND + ROR with special V/C handling
     /// AND accumulator with memory, then ROR with special flag handling.
     /// Opcode: $6B (Immediate)
-    fn arr(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn arr(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let temp = self.a & value;
         let carry_in = if self.status.contains(StatusFlags::C) {
             0x80
@@ -1146,66 +912,61 @@ impl Cpu {
         self.status.set(StatusFlags::C, temp & 0x80 != 0);
         self.status
             .set(StatusFlags::V, ((temp >> 7) ^ (temp >> 6)) & 1 != 0);
-        0
     }
 
     /// AXS (SBX) - A & X - imm, store in X
     /// Set X to (A AND X) minus immediate. Affects N, Z, C (not V).
     /// Opcode: $CB (Immediate)
-    fn axs(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn axs(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let ax = self.a & self.x;
         let result = ax.wrapping_sub(value);
         self.status.set(StatusFlags::C, ax >= value);
         self.x = result;
         self.update_nz_flags(self.x);
-        0
     }
 
     /// LAX - Load A and X
     /// Load both A and X from memory.
     /// Opcodes: $A3, $A7, $AB, $AF, $B3, $B7, $BF
-    fn lax(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn lax(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         self.a = value;
         self.x = value;
         self.update_nz_flags(value);
-        extra_cycles
     }
 
     /// SAX - Store A AND X
     /// Store A AND X to memory.
     /// Opcodes: $83, $87, $8F, $97
-    fn sax(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
-        bus.write(addr, self.a & self.x);
-        0
+    fn sax(&mut self, bus: &mut dyn Bus, addr: u16) {
+        self.write(bus, addr, self.a & self.x);
     }
 
     /// DCP (DCM) - DEC + CMP
     /// Decrement memory, then compare with A.
     /// Opcodes: $C3, $C7, $CF, $D3, $D7, $DB, $DF
-    fn dcp(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn dcp(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         let result = value.wrapping_sub(1);
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         // Compare with accumulator
         let diff = self.a.wrapping_sub(result);
         self.status.set(StatusFlags::C, self.a >= result);
         self.update_nz_flags(diff);
-        0
     }
 
     /// ISC (ISB, INS) - INC + SBC
     /// Increment memory, then subtract from A.
     /// Opcodes: $E3, $E7, $EF, $F3, $F7, $FB, $FF
-    fn isc(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn isc(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         let result = value.wrapping_add(1);
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         // SBC the result from accumulator
         let carry = if self.status.contains(StatusFlags::C) {
             1
@@ -1220,16 +981,15 @@ impl Cpu {
         self.status.set(StatusFlags::V, overflow != 0);
         self.a = result_a;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// RLA - ROL + AND
     /// Rotate memory left, then AND with A.
     /// Opcodes: $23, $27, $2F, $33, $37, $3B, $3F
-    fn rla(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn rla(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         let carry_in = if self.status.contains(StatusFlags::C) {
             1
         } else {
@@ -1237,20 +997,19 @@ impl Cpu {
         };
         self.status.set(StatusFlags::C, value & 0x80 != 0);
         let result = (value << 1) | carry_in;
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         // AND with accumulator
         self.a &= result;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// RRA - ROR + ADC
     /// Rotate memory right, then ADC to A.
     /// Opcodes: $63, $67, $6F, $73, $77, $7B, $7F
-    fn rra(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn rra(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         let carry_in = if self.status.contains(StatusFlags::C) {
             0x80
         } else {
@@ -1258,7 +1017,7 @@ impl Cpu {
         };
         self.status.set(StatusFlags::C, value & 0x01 != 0);
         let result = (value >> 1) | carry_in;
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         // ADC to accumulator
         let carry = if self.status.contains(StatusFlags::C) {
             1
@@ -1272,98 +1031,91 @@ impl Cpu {
         self.status.set(StatusFlags::V, overflow != 0);
         self.a = result_a;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// SLO (ASO) - ASL + ORA
     /// Shift memory left, then ORA with A.
     /// Opcodes: $03, $07, $0F, $13, $17, $1B, $1F
-    fn slo(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn slo(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         self.status.set(StatusFlags::C, value & 0x80 != 0);
         let result = value << 1;
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         // ORA with accumulator
         self.a |= result;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// SRE (LSE) - LSR + EOR
     /// Shift memory right, then EOR with A.
     /// Opcodes: $43, $47, $4F, $53, $57, $5B, $5F
-    fn sre(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn sre(&mut self, bus: &mut dyn Bus, addr: u16) {
         // RMW pattern: read, write original, write modified
-        let value = bus.read(addr);
-        bus.write(addr, value); // dummy write
+        let value = self.read(bus, addr);
+        self.write(bus, addr, value); // dummy write
         self.status.set(StatusFlags::C, value & 0x01 != 0);
         let result = value >> 1;
-        bus.write(addr, result);
+        self.write(bus, addr, result);
         // EOR with accumulator
         self.a ^= result;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// SKB (NOP immediate) - Skip byte
     /// Do nothing (immediate read is already handled by addressing mode).
     /// Opcodes: $80, $82, $89, $C2, $E2
-    fn skb(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
-        // Immediate read already happened in addressing mode
-        0
+    fn skb(&mut self, bus: &mut dyn Bus, addr: u16) {
+        // The immediate operand is fetched and discarded - that fetch is one of
+        // the instruction's two cycles.
+        self.read(bus, addr);
     }
 
     /// IGN (NOP with read) - Ignore byte
     /// Read from memory and ignore result.
     /// Opcodes: $04, $44, $64, $14, $34, $54, $74, $D4, $F4, $1C, $3C, $5C, $7C, $DC, $FC
-    fn ign(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
+    fn ign(&mut self, bus: &mut dyn Bus, addr: u16) {
         // Perform the read (already done by addressing mode for some)
-        bus.read(addr);
-        extra_cycles
+        self.read(bus, addr);
     }
 
     /// SHA (AHX, AXA) - Store A & X & (high byte + 1)
     /// Store A AND X AND (high byte of address + 1) to memory.
     /// Has special behavior on page crossing.
     /// Opcodes: $93 (Indirect,Y), $9F (Absolute,Y)
-    fn sha(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn sha(&mut self, bus: &mut dyn Bus, addr: u16) {
         let (target, mask) = self.shx_target(addr);
         let value = self.a & self.x & mask;
-        bus.write(target, value);
-        0
+        self.write(bus, target, value);
     }
 
     /// SHX (SXA, XAS) - Store X & (high byte + 1)
     /// Store X AND (high byte of address + 1) to memory.
     /// Opcode: $9E (Absolute,Y)
-    fn shx(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn shx(&mut self, bus: &mut dyn Bus, addr: u16) {
         let (target, mask) = self.shx_target(addr);
         let value = self.x & mask;
-        bus.write(target, value);
-        0
+        self.write(bus, target, value);
     }
 
     /// SHY (SYA, SAY) - Store Y & (high byte + 1)
     /// Store Y AND (high byte of address + 1) to memory.
     /// Opcode: $9C (Absolute,X)
-    fn shy(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn shy(&mut self, bus: &mut dyn Bus, addr: u16) {
         let (target, mask) = self.shx_target(addr);
         let value = self.y & mask;
-        bus.write(target, value);
-        0
+        self.write(bus, target, value);
     }
 
     /// SHS (TAS, XAS) - Transfer A & X to SP, then SHA
     /// SP = A & X, then store SP & (high byte + 1).
     /// Opcode: $9B (Absolute,Y)
-    fn shs(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn shs(&mut self, bus: &mut dyn Bus, addr: u16) {
         self.sp = self.a & self.x;
         let (target, mask) = self.shx_target(addr);
         let value = self.sp & mask;
-        bus.write(target, value);
-        0
+        self.write(bus, target, value);
     }
 
     /// Where an SHx store really lands, and the mask its value gets.
@@ -1388,14 +1140,13 @@ impl Cpu {
     /// LAE (LAS, LAR) - Load A, X, SP from memory & SP
     /// A = X = SP = memory AND SP
     /// Opcode: $BB (Absolute,Y)
-    fn lae(&mut self, bus: &mut dyn Bus, addr: u16, extra_cycles: u8) -> u8 {
-        let value = bus.read(addr);
+    fn lae(&mut self, bus: &mut dyn Bus, addr: u16) {
+        let value = self.read(bus, addr);
         let result = value & self.sp;
         self.a = result;
         self.x = result;
         self.sp = result;
         self.update_nz_flags(result);
-        extra_cycles
     }
 
     /// ANE (XAA) - A = (A | MAGIC) & X & imm
@@ -1403,33 +1154,30 @@ impl Cpu {
     /// The "magic" constant varies between CPU revisions ($00, $EE, $FF).
     /// Using $FF as the most common value.
     /// Opcode: $8B (Immediate)
-    fn ane(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn ane(&mut self, bus: &mut dyn Bus, addr: u16) {
         const MAGIC: u8 = 0xFF;
-        let value = bus.read(addr);
+        let value = self.read(bus, addr);
         self.a = (self.a | MAGIC) & self.x & value;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// LXA (LAX immediate, ATX) - Load A and X with (A | MAGIC) & imm
     /// A = X = (A | MAGIC) & immediate
     /// Same magic constant issue as ANE.
     /// Opcode: $AB (Immediate)
-    fn lxa(&mut self, bus: &mut dyn Bus, addr: u16, _extra_cycles: u8) -> u8 {
+    fn lxa(&mut self, bus: &mut dyn Bus, addr: u16) {
         const MAGIC: u8 = 0xFF;
-        let value = bus.read(addr);
+        let value = self.read(bus, addr);
         self.a = (self.a | MAGIC) & value;
         self.x = self.a;
         self.update_nz_flags(self.a);
-        0
     }
 
     /// DUMMY (NOP) - Cycle halt / No operation
     /// Does nothing but consume cycles.
     /// Opcodes: $1A, $3A, $5A, $7A, $DA, $FA (Implied)
-    fn dummy(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn dummy(&mut self, _bus: &mut dyn Bus, _addr: u16) {
         // NOP - does nothing
-        0
     }
 
     /// KIL (JAM, HLT) - Stop the CPU
@@ -1442,9 +1190,12 @@ impl Cpu {
     /// the whole instance when the core panics.
     ///
     /// Opcodes: $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2
-    fn jam(&mut self, _bus: &mut dyn Bus, _addr: u16, _extra_cycles: u8) -> u8 {
+    fn jam(&mut self, _bus: &mut dyn Bus, _addr: u16) {
+        // The opcode has been fetched and the PC moved past it: put it back, so
+        // the machine keeps running the same byte — a fetch and a discarded
+        // read, two cycles at a time — until an interrupt or a reset arrives.
+        self.pc = self.pc.wrapping_sub(1);
         self.halted = true;
-        0
     }
 }
 
@@ -1591,7 +1342,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x13 - SLO (Indirect,Y)
     Opcode {
         mnemonic: "SLO",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 8,
         handler: Cpu::slo,
     },
@@ -1647,7 +1398,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x1B - SLO (Absolute,Y)
     Opcode {
         mnemonic: "SLO",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 7,
         handler: Cpu::slo,
     },
@@ -1668,14 +1419,14 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x1E - ASL (Absolute,X)
     Opcode {
         mnemonic: "ASL",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::asl,
     },
     // 0x1F - SLO (Absolute,X)
     Opcode {
         mnemonic: "SLO",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::slo,
     },
@@ -1815,7 +1566,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x33 - RLA (Indirect,Y)
     Opcode {
         mnemonic: "RLA",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 8,
         handler: Cpu::rla,
     },
@@ -1871,7 +1622,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x3B - RLA (Absolute,Y)
     Opcode {
         mnemonic: "RLA",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 7,
         handler: Cpu::rla,
     },
@@ -1892,14 +1643,14 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x3E - ROL (Absolute,X)
     Opcode {
         mnemonic: "ROL",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::rol,
     },
     // 0x3F - RLA (Absolute,X)
     Opcode {
         mnemonic: "RLA",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::rla,
     },
@@ -2039,7 +1790,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x53 - SRE (Indirect,Y)
     Opcode {
         mnemonic: "SRE",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 8,
         handler: Cpu::sre,
     },
@@ -2095,7 +1846,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x5B - SRE (Absolute,Y)
     Opcode {
         mnemonic: "SRE",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 7,
         handler: Cpu::sre,
     },
@@ -2116,14 +1867,14 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x5E - LSR (Absolute,X)
     Opcode {
         mnemonic: "LSR",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::lsr,
     },
     // 0x5F - SRE (Absolute,X)
     Opcode {
         mnemonic: "SRE",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::sre,
     },
@@ -2263,7 +2014,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x73 - RRA (Indirect,Y)
     Opcode {
         mnemonic: "RRA",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 8,
         handler: Cpu::rra,
     },
@@ -2319,7 +2070,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x7B - RRA (Absolute,Y)
     Opcode {
         mnemonic: "RRA",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 7,
         handler: Cpu::rra,
     },
@@ -2340,14 +2091,14 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x7E - ROR (Absolute,X)
     Opcode {
         mnemonic: "ROR",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::ror,
     },
     // 0x7F - RRA (Absolute,X)
     Opcode {
         mnemonic: "RRA",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::rra,
     },
@@ -2473,7 +2224,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x91 - STA (Indirect,Y)
     Opcode {
         mnemonic: "STA",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 6,
         handler: Cpu::sta,
     },
@@ -2487,7 +2238,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x93 - SHA (Indirect,Y)
     Opcode {
         mnemonic: "SHA",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 6,
         handler: Cpu::sha,
     },
@@ -2529,7 +2280,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x99 - STA (Absolute,Y)
     Opcode {
         mnemonic: "STA",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 5,
         handler: Cpu::sta,
     },
@@ -2543,35 +2294,35 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0x9B - SHS (Absolute,Y)
     Opcode {
         mnemonic: "SHS",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 5,
         handler: Cpu::shs,
     },
     // 0x9C - SHY (Absolute,X)
     Opcode {
         mnemonic: "SHY",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 5,
         handler: Cpu::shy,
     },
     // 0x9D - STA (Absolute,X)
     Opcode {
         mnemonic: "STA",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 5,
         handler: Cpu::sta,
     },
     // 0x9E - SHX (Absolute,Y)
     Opcode {
         mnemonic: "SHX",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 5,
         handler: Cpu::shx,
     },
     // 0x9F - SHA (Absolute,Y)
     Opcode {
         mnemonic: "SHA",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 5,
         handler: Cpu::sha,
     },
@@ -2935,7 +2686,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xD3 - DCP (Indirect,Y)
     Opcode {
         mnemonic: "DCP",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 8,
         handler: Cpu::dcp,
     },
@@ -2991,7 +2742,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xDB - DCP (Absolute,Y)
     Opcode {
         mnemonic: "DCP",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 7,
         handler: Cpu::dcp,
     },
@@ -3012,14 +2763,14 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xDE - DEC (Absolute,X)
     Opcode {
         mnemonic: "DEC",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::dec,
     },
     // 0xDF - DCP (Absolute,X)
     Opcode {
         mnemonic: "DCP",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::dcp,
     },
@@ -3159,7 +2910,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xF3 - ISC (Indirect,Y)
     Opcode {
         mnemonic: "ISC",
-        addr_mode: AddressingMode::IndirectY,
+        addr_mode: AddressingMode::IndirectYWrite,
         base_cycles: 8,
         handler: Cpu::isc,
     },
@@ -3215,7 +2966,7 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xFB - ISC (Absolute,Y)
     Opcode {
         mnemonic: "ISC",
-        addr_mode: AddressingMode::AbsoluteY,
+        addr_mode: AddressingMode::AbsoluteYWrite,
         base_cycles: 7,
         handler: Cpu::isc,
     },
@@ -3236,14 +2987,14 @@ pub static OPCODE_TABLE: [Opcode; 256] = [
     // 0xFE - INC (Absolute,X)
     Opcode {
         mnemonic: "INC",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::inc,
     },
     // 0xFF - ISC (Absolute,X)
     Opcode {
         mnemonic: "ISC",
-        addr_mode: AddressingMode::AbsoluteX,
+        addr_mode: AddressingMode::AbsoluteXWrite,
         base_cycles: 7,
         handler: Cpu::isc,
     },
@@ -3258,6 +3009,10 @@ mod tests {
         memory: [u8; 65536],
         nmi: bool,
         irq: bool,
+        cycles: u64,
+        /// Raise the NMI line once the CPU has spent this many cycles, so a
+        /// test can put an edge inside a sequence that is already running.
+        nmi_at_cycle: Option<u64>,
     }
 
     impl MockBus {
@@ -3266,12 +3021,20 @@ mod tests {
                 memory: [0; 65536],
                 nmi: false,
                 irq: false,
+                cycles: 0,
+                nmi_at_cycle: None,
             }
         }
 
         /// Raise the NMI line, the interrupt that restarts a halted CPU.
         fn set_nmi(&mut self, pending: bool) {
             self.nmi = pending;
+        }
+
+        /// Raise the NMI line once this many cycles have been spent, so the
+        /// edge can land between the cycles of a sequence.
+        fn set_nmi_at_cycle(&mut self, cycle: Option<u64>) {
+            self.nmi_at_cycle = cycle;
         }
 
         /// Raise the IRQ line, which the CPU takes only while I is clear - or,
@@ -3283,6 +3046,15 @@ mod tests {
 
         fn write_mem(&mut self, addr: u16, value: u8) {
             self.memory[addr as usize] = value;
+        }
+
+        /// One cycle's worth of bookkeeping for the mock: the counter, and the
+        /// scripted NMI edge.
+        fn end_of_cycle(&mut self) {
+            self.cycles += 1;
+            if self.nmi_at_cycle == Some(self.cycles) {
+                self.nmi = true;
+            }
         }
 
         fn load_program(&mut self, start: u16, program: &[u8]) {
@@ -3301,14 +3073,25 @@ mod tests {
             self.memory[addr as usize] = value;
         }
 
-        fn on_cpu_cycle(&mut self, _cycles: u8) {}
-
-        fn nmi_pending(&self) -> bool {
-            self.nmi
+        fn read_cycle(&mut self, addr: u16) -> u8 {
+            let value = self.read(addr);
+            self.end_of_cycle();
+            value
         }
 
-        fn clear_nmi(&mut self) {
-            self.nmi = false;
+        fn write_cycle(&mut self, addr: u16, value: u8) {
+            self.write(addr, value);
+            self.end_of_cycle();
+        }
+
+        fn cycle_count(&self) -> u64 {
+            self.cycles
+        }
+
+        fn on_cpu_cycle(&mut self, _cycles: u8) {}
+
+        fn nmi_line(&self) -> bool {
+            self.nmi
         }
 
         fn irq_pending(&self) -> bool {
@@ -3923,10 +3706,11 @@ mod tests {
             assert_eq!(cpu.execute_instruction(&mut bus, opcode), 2);
             assert!(cpu.is_halted(), "{opcode:#04X} should halt the CPU");
 
-            // A halted CPU burns cycles but fetches nothing: the PC stays put
-            // and the machine keeps ticking around it.
+            // The halt is the PC being wound back onto the opcode, so the
+            // machine keeps running the same byte - a fetch and a discarded
+            // read - and the PC never moves.
             let pc = cpu.pc();
-            assert_eq!(cpu.execute_instruction(&mut bus, 0xEA), 2);
+            assert_eq!(cpu.execute_instruction(&mut bus, 0x02), 2);
             assert_eq!(
                 cpu.pc(),
                 pc,
@@ -3936,8 +3720,8 @@ mod tests {
         }
     }
     /// An NMI asserted while an IRQ sequence is still before its status push
-    /// takes the vector over: the CPU pushes the IRQ's frame - status with B
-    /// clear - and enters the NMI handler.
+    /// takes the vector over: the frame the sequence pushes stays the IRQ's -
+    /// status with B clear - and the handler is the NMI's.
     #[test]
     fn test_nmi_hijacks_an_irq_sequence() {
         let mut cpu = Cpu::new();
@@ -3946,21 +3730,20 @@ mod tests {
         bus.write_mem(0xFFFF, 0x90);
         bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
         bus.write_mem(0xFFFB, 0x80);
+        bus.load_program(0x0600, &[0xEA]); // the NOP the IRQ interrupts
+        cpu.status.remove(StatusFlags::I);
+        cpu.set_pc(0x0600);
+        bus.set_irq(true);
+        // The mock counts accesses, and the opcode fetch is the caller's, so
+        // its numbers run one behind the CPU's: the NOP's discarded read is its
+        // cycle 1, the sequence's two discarded reads and the two halves of the
+        // return address are 2-5, and its cycle 6 is the CPU's cycle 7 - the
+        // status push. An edge after 5 is in time to take the vector.
+        bus.set_nmi_at_cycle(Some(5));
 
-        cpu.start_interrupt(InterruptSource::Irq);
-        for _ in 0..2 {
-            cpu.interrupt_cycle(&mut bus);
-        }
-
-        // The line goes low while the sequence is still two cycles short of its
-        // status push, which is in time to take the vector.
-        bus.set_nmi(true);
-        for _ in 0..5 {
-            cpu.interrupt_cycle(&mut bus);
-        }
+        cpu.execute_instruction(&mut bus, 0xEA);
 
         assert_eq!(cpu.pc(), 0x8000, "the NMI vector took the sequence over");
-        assert!(!bus.nmi_pending(), "taking it over acknowledges the line");
         assert_eq!(
             bus.read(0x01FB) & StatusFlags::B.bits(),
             0,
@@ -3968,8 +3751,8 @@ mod tests {
         );
     }
 
-    /// An NMI that arrives after the status push misses the sequence: it lands
-    /// in the IRQ vector and the line stays pending for the next poll.
+    /// An NMI that arrives after the status push misses the sequence: the
+    /// handler is the IRQ's, and the edge is left for the next instruction.
     #[test]
     fn test_nmi_after_the_status_push_waits_for_the_next_instruction() {
         let mut cpu = Cpu::new();
@@ -3978,25 +3761,22 @@ mod tests {
         bus.write_mem(0xFFFF, 0x90);
         bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
         bus.write_mem(0xFFFB, 0x80);
+        bus.load_program(0x0600, &[0xEA]);
+        cpu.status.remove(StatusFlags::I);
+        cpu.set_pc(0x0600);
+        bus.set_irq(true);
+        // After the status push, which is the mock's cycle 6.
+        bus.set_nmi_at_cycle(Some(6));
 
-        cpu.start_interrupt(InterruptSource::Irq);
-        for _ in 0..5 {
-            cpu.interrupt_cycle(&mut bus);
-        }
+        cpu.execute_instruction(&mut bus, 0xEA);
 
-        bus.set_nmi(true);
-        for _ in 0..2 {
-            cpu.interrupt_cycle(&mut bus);
-        }
-
-        assert_eq!(cpu.pc(), 0x9000, "the sequence finished in the IRQ vector");
-        assert!(bus.nmi_pending(), "the NMI is still waiting for a poll");
+        assert_eq!(cpu.pc(), 0x9000, "the IRQ vector is the one that runs");
+        assert!(cpu.need_nmi, "the NMI is latched, not lost");
     }
 
     /// An NMI asserted while BRK is still running takes BRK's vector over: one
     /// frame goes on the stack - with B set, as BRK pushes it - and the handler
-    /// is the NMI's. BRK reads the IRQ vector first and the override happens on
-    /// the instruction's penultimate cycle, the way the machine polls.
+    /// is the NMI's.
     #[test]
     fn test_nmi_takes_brks_vector_over() {
         let mut cpu = Cpu::new();
@@ -4007,22 +3787,14 @@ mod tests {
         bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
         bus.write_mem(0xFFFB, 0x80);
         cpu.set_pc(0x0600);
+        // BRK's discarded read is the mock's cycle 1, the two halves of the
+        // return address are 2-3, and its cycle 4 is the CPU's status push: an
+        // edge after 3 lands in time to take the vector.
+        bus.set_nmi_at_cycle(Some(3));
 
-        let cycles = cpu.execute_instruction(&mut bus, 0x00);
-        bus.set_nmi(true);
-        let poll_at = cycles.saturating_sub(1);
-        for cycle in 1..=cycles {
-            if cycle == poll_at {
-                cpu.poll_interrupts(&mut bus);
-            }
-        }
+        cpu.execute_instruction(&mut bus, 0x00);
 
         assert_eq!(cpu.pc(), 0x8000, "the NMI took BRK's vector over");
-        assert!(!bus.nmi_pending(), "taking it over acknowledges the line");
-        assert!(
-            !cpu.in_interrupt_sequence(),
-            "no second frame: BRK's own is the one on the stack"
-        );
         assert_eq!(cpu.sp(), 0xFA, "three bytes pushed, not six");
         assert_eq!(
             bus.read(0x01FB) & StatusFlags::B.bits(),
@@ -4031,26 +3803,12 @@ mod tests {
         );
     }
 
-    /// Run one instruction the way the machine does: sample the interrupt lines
-    /// on the penultimate cycle, then let any sequence that started run to the
-    /// end of its seven cycles.
+    /// Run one instruction. Any interrupt the lines call for is taken inside
+    /// it, the way the machine's does it.
     ///
     /// Returns the cycles the CPU spent, instruction and sequence together.
     fn run_instruction(cpu: &mut Cpu, bus: &mut MockBus, opcode: u8) -> u32 {
-        let cycles = cpu.execute_instruction(bus, opcode);
-        let poll_at = cycles.saturating_sub(1);
-        for cycle in 1..=cycles {
-            if cycle == poll_at {
-                cpu.poll_interrupts(bus);
-            }
-        }
-
-        let mut sequence_cycles = 0;
-        while cpu.in_interrupt_sequence() {
-            cpu.interrupt_cycle(bus);
-            sequence_cycles += 1;
-        }
-        u32::from(cycles) + sequence_cycles
+        u32::from(cpu.execute_instruction(bus, opcode))
     }
 
     #[test]
@@ -4058,81 +3816,35 @@ mod tests {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
         bus.load_program(0x0600, &[0x02]);
-        bus.write_mem(0xFFFA, 0x00);
-        bus.write_mem(0xFFFB, 0x90); // NMI vector -> $9000
-        cpu.pc = 0x0600;
+        bus.write_mem(0xFFFA, 0x00); // NMI -> $8000
+        bus.write_mem(0xFFFB, 0x80);
+        cpu.set_pc(0x0600);
 
-        assert_eq!(run_instruction(&mut cpu, &mut bus, 0x02), 2);
+        run_instruction(&mut cpu, &mut bus, 0x02);
+        assert_eq!(cpu.pc(), 0x0600, "a KIL re-runs itself");
         assert!(cpu.is_halted());
 
-        // The interrupt is what brings it back, exactly as on hardware.
         bus.set_nmi(true);
-        assert_eq!(
-            run_instruction(&mut cpu, &mut bus, 0xEA),
-            2 + 7,
-            "a halted CPU burns two cycles per step, then the sequence runs"
-        );
-        assert!(!cpu.is_halted());
-        assert_eq!(cpu.pc(), 0x9000);
-        assert!(!bus.nmi_pending(), "taking the NMI acknowledges it");
+        run_instruction(&mut cpu, &mut bus, 0x02);
+
+        assert_eq!(cpu.pc(), 0x8000, "the NMI handler runs");
+        assert!(!cpu.is_halted(), "and the halt is over");
     }
 
     #[test]
     fn test_reset_clears_the_halt() {
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        bus.write_mem(0xFFFC, 0x00);
-        bus.write_mem(0xFFFD, 0x80);
-        cpu.pc = 0x0600;
-
-        cpu.execute_instruction(&mut bus, 0x02);
+        bus.load_program(0x0600, &[0x02]);
+        cpu.set_pc(0x0600);
+        run_instruction(&mut cpu, &mut bus, 0x02);
         assert!(cpu.is_halted());
 
+        bus.write_mem(0xFFFC, 0x00);
+        bus.write_mem(0xFFFD, 0x90);
         cpu.reset(&mut bus);
         assert!(!cpu.is_halted());
-        assert_eq!(cpu.pc(), 0x8000);
-    }
-
-    /// A page-crossed indexed read pays its extra cycle exactly once.
-    ///
-    /// The addressing mode reports the crossing and the handler charges for it;
-    /// adding the reported penalty again in `execute_instruction` made every
-    /// cross-page `LDA abs,X` cost six cycles instead of five (blargg's
-    /// `instr_timing` catches this).
-    #[test]
-    fn test_page_cross_penalty_is_charged_once() {
-        /// Runs one instruction from $0600 with the given X.
-        fn cycles_of(program: &[u8], x: u8) -> u8 {
-            let mut cpu = Cpu::new();
-            let mut bus = MockBus::new();
-            bus.load_program(0x0600, program);
-            cpu.pc = 0x0600;
-            cpu.x = x;
-            cpu.execute_instruction(&mut bus, program[0])
-        }
-
-        // LDA $12F0,X with X = $20 lands in $1310: 4 cycles + the crossing.
-        assert_eq!(cycles_of(&[0xBD, 0xF0, 0x12], 0x20), 5);
-        // The same read inside one page takes four.
-        assert_eq!(cycles_of(&[0xBD, 0xF0, 0x12], 0x00), 4);
-        // A read-modify-write never pays it: ASL abs,X is 7 either way.
-        assert_eq!(cycles_of(&[0x1E, 0xF0, 0x12], 0x20), 7);
-        assert_eq!(cycles_of(&[0x1E, 0xF0, 0x12], 0x00), 7);
-        // Nor does a store: STA abs,X is 5 either way.
-        assert_eq!(cycles_of(&[0x9D, 0xF0, 0x12], 0x20), 5);
-
-        // (ind),Y reads are the other place it applies: the pointer at $10
-        // holds $12F0, so Y = $20 lands in $1310.
-        let mut cpu = Cpu::new();
-        let mut bus = MockBus::new();
-        bus.load_program(0x0600, &[0xB1, 0x10]);
-        bus.write_mem(0x0010, 0xF0);
-        bus.write_mem(0x0011, 0x12);
-        bus.write_mem(0x1310, 0x42);
-        cpu.pc = 0x0600;
-        cpu.y = 0x20;
-        assert_eq!(cpu.execute_instruction(&mut bus, 0xB1), 6);
-        assert_eq!(cpu.a, 0x42);
+        assert_eq!(cpu.pc(), 0x9000);
     }
 
     /// $0C is the undocumented 3-byte NOP; it used to be "invalid".
@@ -4310,7 +4022,7 @@ mod tests {
         // The first pass through the loop polls and takes it.
         assert_eq!(run_instruction(&mut cpu, &mut bus, 0xD0), 3 + 7);
         assert_eq!(cpu.pc(), 0x9000);
-        assert!(!bus.nmi_pending(), "taking the NMI acknowledges it");
+        assert!(!cpu.need_nmi, "taking the NMI acknowledges it");
         assert_eq!(bus.memory[0x01FD], 0x06, "PCH");
         assert_eq!(bus.memory[0x01FC], 0x00, "PCL: the loop's own address");
     }

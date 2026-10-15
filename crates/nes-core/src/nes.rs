@@ -37,10 +37,19 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// save-state field.
 /// 5: the CPU no longer latches a taken branch's poll as deferred - the poll
 /// belongs to the branch itself, on its penultimate cycle.
-const STATE_VERSION: u8 = 5;
+const STATE_VERSION: u8 = 6;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
+
+/// How far into a CPU cycle the chip performs a bus access: after the cycle's
+/// first two PPU dots.
+///
+/// Measured, not chosen — the VBlank flag's set/clear boundary and the NMI
+/// suppression window both pin it down (§4.2 step 4 of
+/// `docs/cycle-accuracy-plan.md`). Saying it in dots rather than in ticks is
+/// what keeps it meaningful if a cycle is ever not exactly three dots long.
+const ACCESS_DOTS: u32 = 2;
 
 /// How much audio the core buffers before it starts dropping the oldest
 /// samples, in milliseconds.
@@ -218,39 +227,6 @@ struct NesBus {
     controllers: [ControllerState; 2],
     /// Controller strobe/latch state
     controller_strobe: bool,
-    /// NMI pending: the latch the CPU's poll reads.
-    ///
-    /// Set when a sample of the NMI line finds it high where the sample before
-    /// found it low, and taken away by [`Bus::clear_nmi`] when the CPU services
-    /// the interrupt.
-    nmi_pending: bool,
-    /// The NMI line's level when it was last sampled.
-    ///
-    /// The line is sampled once per CPU cycle and only latches when a sample
-    /// finds it high where the one before found it low, so this is the other
-    /// half of that edge. It is derived from the PPU again at a state load, and
-    /// so stays out of save states.
-    nmi_was_high: bool,
-    /// Register writes the CPU parked while executing an instruction, oldest
-    /// first.
-    ///
-    /// A write to `$2000-$401F` reaches its register on the cycle the chip
-    /// drives it — the last cycle of a store, and for a read-modify-write the
-    /// discarded write of the old value one cycle before that — not at the
-    /// start of the instruction. The CPU executes an instruction in one go, so
-    /// [`NesBus::write`] parks those writes and the machine replays them as it
-    /// ticks the instruction's cycles.
-    ///
-    /// Two slots cover every opcode: only a read-modify-write writes twice.
-    /// Written and emptied inside a single instruction, so it stays out of
-    /// save states.
-    deferred_writes: [Option<(u16, u8)>; 2],
-    /// How many of [`NesBus::deferred_writes`] are live.
-    deferred_count: u8,
-    /// Set while the CPU executes an instruction, so only the writes that
-    /// instruction makes are parked; a write from anywhere else - a host poke -
-    /// still lands at once.
-    defer_writes: bool,
     /// IRQ pending flag (from APU or mapper)
     irq_pending: bool,
     /// Interleaved stereo audio waiting for the host to pull it
@@ -265,6 +241,15 @@ struct NesBus {
     cpu_cycles: u64,
     /// CPU cycles the next OAM/DMC DMA transfer still has to steal
     dma_stall_cycles: u16,
+    /// Set when pre-render dot 339 found the conditions for an odd frame's
+    /// short frame, so dot 340 is the one that gets skipped.
+    ///
+    /// The chip decides a dot early - Mesen jumps its counter to 340 while it is
+    /// processing 339 - so a write that reaches `$2001` between the two dots is
+    /// too late to change how long the frame is. blargg's `10-even_odd_timing`
+    /// measures exactly that, and it is the reason this cannot be decided on
+    /// 340 itself.
+    skip_odd_frame_dot: bool,
     frame_buffer: FrameBuffer,
     bg_renderer: BackgroundRenderer,
     /// Sprite evaluator for the current scanline
@@ -293,11 +278,11 @@ crate::state::state_fields!(NesBus {
     mapper,
     controllers,
     controller_strobe,
-    nmi_pending,
     irq_pending,
     audio_accumulator,
     cpu_cycles,
     dma_stall_cycles,
+    skip_odd_frame_dot,
     bg_renderer,
     sprite_evaluator,
     mirroring,
@@ -323,11 +308,6 @@ impl NesBus {
             mapper: None,
             controllers: [ControllerState::new(), ControllerState::new()],
             controller_strobe: false,
-            nmi_pending: false,
-            nmi_was_high: false,
-            deferred_writes: [None; 2],
-            deferred_count: 0,
-            defer_writes: false,
             irq_pending: false,
             audio_buffer: VecDeque::with_capacity(audio_capacity_floats(
                 DEFAULT_SAMPLE_RATE,
@@ -338,6 +318,7 @@ impl NesBus {
             audio_capacity: audio_capacity_floats(DEFAULT_SAMPLE_RATE, AUDIO_BUFFER_MS),
             cpu_cycles: 0,
             dma_stall_cycles: 0,
+            skip_odd_frame_dot: false,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
             sprite_evaluator: SpriteEvaluator::new(),
@@ -452,11 +433,14 @@ impl NesBus {
         // Total PPU cycles per frame = 262 * 341 = 89,342
         // Total CPU cycles per frame = 89,342 / 3 ≈ 29,780
 
-        // One frame of CPU cycles for the cartridge's TV system.
+        // One frame of CPU cycles for the cartridge's TV system. A frame is not
+        // a whole number of CPU cycles - 89,342 dots is 29,780.67 of them on
+        // NTSC - so the bound admits the cycle the frame boundary falls in;
+        // `frame_ready` is what actually ends the loop.
         let target_cpu_cycles = self.region.cpu_cycles_per_frame() as u64;
-        let start_cycles = cpu.cycles();
+        let start_cycles = self.cpu_cycles;
 
-        while cpu.cycles() - start_cycles < target_cpu_cycles && !self.frame_ready {
+        while self.cpu_cycles - start_cycles <= target_cpu_cycles && !self.frame_ready {
             self.step_instruction(cpu);
         }
 
@@ -474,13 +458,13 @@ impl NesBus {
     fn run_cycles(&mut self, cpu: &mut Cpu, cycles: u32) -> u32 {
         self.frame_ready = false;
 
-        let start_cycles = cpu.cycles();
+        let start_cycles = self.cpu_cycles;
         let target_cpu_cycles = cycles as u64;
-        while cpu.cycles() - start_cycles < target_cpu_cycles && !self.frame_ready {
+        while self.cpu_cycles - start_cycles < target_cpu_cycles && !self.frame_ready {
             self.step_instruction(cpu);
         }
 
-        (cpu.cycles() - start_cycles) as u32
+        (self.cpu_cycles - start_cycles) as u32
     }
 
     /// Execute a single CPU instruction and advance the rest of the machine by
@@ -489,99 +473,36 @@ impl NesBus {
     /// This is the smallest unit of emulation; `frame_ready` is left alone so a
     /// debugger can single-step across a frame boundary and still see it.
     fn step_instruction(&mut self, cpu: &mut Cpu) -> u8 {
-        // Fetch and execute one instruction. Register writes it makes are
-        // parked rather than applied where the CPU asked for them; they land on
-        // the cycles the chip really drives them, in the loop below. The same
-        // goes for a read of a PPU or APU register: the CPU hands the access to
-        // the loop rather than performing it where the instruction asked.
-        let opcode = self.read(cpu.pc());
-        self.defer_writes = true;
-        cpu.set_defer_register_reads(true);
+        // The CPU drives its own cycles now, exactly as Mesen's does: the
+        // opcode fetch is a cycle, the addressing's operand fetches are
+        // cycles, every access the handler makes is a cycle, and the discarded
+        // reads in between are cycles too. Nothing here has to place them
+        // afterwards — a read or a write reaches `NesBus::read_cycle` /
+        // `NesBus::write_cycle`, which advance the PPU and APU around it.
+        let before = self.cpu_cycles;
+        let opcode = self.read_cycle(cpu.pc());
         let cycles = cpu.execute_instruction(self, opcode);
-        cpu.set_defer_register_reads(false);
 
         // Mappers whose IRQ counter runs at the CPU clock rate.
         if let Some(ref mut mapper) = self.mapper {
             mapper.on_cpu_cycles(cycles);
         }
 
-        // The instruction's cycles, one at a time, sampling the interrupt lines
-        // on the penultimate one - the cycle the chip decides on - and landing
-        // any parked register write on the cycle it belongs to.
-        //
-        // The write goes in before that cycle's dots, i.e. on its first dot, so
-        // the PPU's per-dot views (the address it drives for the cartridge, and
-        // the renderer's render point) and the APU tick at the end of the same
-        // cycle all see it. Placing it on a *later* dot means stepping the
-        // cycle's three dots one at a time, which measured ~6% off the frame
-        // rate (release, nestest) and which no ROM suite can see: 0, 1 and 2
-        // leave every suite byte-identical (§4.2 step 2 of the plan).
-        let poll_at = cycles.saturating_sub(1);
-        for cycle in 1..=cycles {
-            let write = self.take_deferred_write(cycles - cycle);
-            if cpu.pending_access_cycle() == Some(cycle) {
-                self.advance_one_cpu_cycle_with_read(write, cpu);
-            } else {
-                self.advance_one_cpu_cycle_with(write);
-            }
-            if cycle == poll_at {
-                cpu.poll_interrupts(self);
-            }
-        }
-        self.defer_writes = false;
-        debug_assert_eq!(
-            self.deferred_count, 0,
-            "every parked write lands inside the instruction's own cycles"
-        );
-        debug_assert!(
-            cpu.pending_access_cycle().is_none(),
-            "the machine runs every access the instruction held back"
-        );
-
-        // Then the interrupt sequence itself, one cycle at a time, so its
-        // pushes and vector fetch land on the cycles the chip puts them on.
-        let mut sequence_cycles = 0;
-        while cpu.in_interrupt_sequence() {
-            self.advance_one_cpu_cycle();
-            cpu.interrupt_cycle(self);
-            sequence_cycles += 1;
-        }
-
         // The CPU is halted while OAM or DMC DMA runs; the rest of the
-        // machine keeps ticking.
+        // machine keeps ticking. Mesen runs the DMA inside `MemoryRead`; until
+        // that moves, the stall is spent here, where the CPU cannot see the
+        // interrupt lines.
         if self.dma_stall_cycles > 0 {
             let stall = self.dma_stall_cycles;
             self.dma_stall_cycles = 0;
             self.advance_cycles(stall);
         }
 
-        cycles + sequence_cycles
+        cpu.set_cycle_count(self.cpu_cycles);
+        (self.cpu_cycles - before) as u8
     }
 
     /// Take the parked register write that belongs on the instruction's
-    /// `cycles - remaining`-th cycle, if there is one.
-    ///
-    /// The writes are drained from the end: the last one is the instruction's
-    /// last cycle - a store's only write is there - and a read-modify-write's
-    /// discarded write of the old value lands one cycle earlier, which is where
-    /// the chip puts it.
-    ///
-    /// `remaining` is how many of the instruction's cycles still have to run, so
-    /// write `i` of `count` lands with `count - 1 - i` cycles left.
-    fn take_deferred_write(&mut self, remaining: u8) -> Option<(u16, u8)> {
-        let count = self.deferred_count;
-        if count == 0 || remaining >= count {
-            return None;
-        }
-
-        let index = (count - 1 - remaining) as usize;
-        // The last cycle takes the last write, so nothing is left to replay.
-        if remaining == 0 {
-            self.deferred_count = 0;
-        }
-        self.deferred_writes[index].take()
-    }
-
     /// Get the current frame buffer
     fn frame_buffer(&self) -> &FrameBuffer {
         &self.frame_buffer
@@ -894,19 +815,6 @@ impl Bus for NesBus {
     }
 
     fn write(&mut self, addr: u16, value: u8) {
-        // A register write the CPU makes inside an instruction is parked: it
-        // reaches the register on the cycle the chip drives it, not at the
-        // start of the instruction, and `NesBus::replay_deferred_writes` lands
-        // it there. Everything else - RAM, the stack, the cartridge, and a
-        // write from outside an instruction - is applied at once.
-        if self.defer_writes
-            && (0x2000..=0x401F).contains(&addr)
-            && (self.deferred_count as usize) < self.deferred_writes.len()
-        {
-            self.deferred_writes[self.deferred_count as usize] = Some((addr, value));
-            self.deferred_count += 1;
-            return;
-        }
         self.write_now(addr, value);
     }
 
@@ -917,12 +825,25 @@ impl Bus for NesBus {
         self.advance_cycles(cycles as u16);
     }
 
-    fn nmi_pending(&self) -> bool {
-        self.nmi_pending
+    fn read_cycle(&mut self, addr: u16) -> u8 {
+        self.begin_cpu_cycle();
+        let value = self.read(addr);
+        self.end_cpu_cycle();
+        value
     }
 
-    fn clear_nmi(&mut self) {
-        self.nmi_pending = false;
+    fn write_cycle(&mut self, addr: u16, value: u8) {
+        self.begin_cpu_cycle();
+        self.write_now(addr, value);
+        self.end_cpu_cycle();
+    }
+
+    fn cycle_count(&self) -> u64 {
+        self.cpu_cycles
+    }
+
+    fn nmi_line(&self) -> bool {
+        NesBus::nmi_line(self)
     }
 
     fn irq_pending(&self) -> bool {
@@ -985,7 +906,6 @@ impl NesBus {
     /// background side is decided by the table the cartridge selected. Sprites
     /// are tracked per sprite: 8x16 ones choose their table with bit 0 of the
     /// tile number, which is the difference between an IRQ arriving on time and
-    /// arriving a scanline late.
     fn ppu_bus_address(&self) -> u16 {
         let rendering = self
             .ppu
@@ -1053,78 +973,156 @@ impl NesBus {
         }
     }
 
-    /// One CPU cycle of the machine around the CPU: three PPU dots, an APU
-    /// tick, and the cartridge's view of the PPU bus.
-    ///
-    /// The two chips are interleaved here rather than advanced in separate
-    /// lumps, so neither is ever ahead of the other. That is what the ROM
-    /// suites measure when they line a frame-counter IRQ up against a PPU flag,
-    /// and it is the tick the cycle-accurate interrupt work hangs off.
-    fn advance_one_cpu_cycle(&mut self) {
-        self.advance_one_ppu_dot();
-        self.advance_one_ppu_dot();
-        self.advance_one_ppu_dot();
-        self.finish_cpu_cycle();
+    /// Master-clock ticks one CPU cycle takes.
+    #[inline]
+    fn cpu_divider(&self) -> u64 {
+        self.region.cpu_divider() as u64
     }
 
-    /// The tail of a CPU cycle: the APU tick, the interrupt-line sample, and
-    /// the cycle counter.
-    fn finish_cpu_cycle(&mut self) {
-        // The APU runs one tick per CPU cycle.
-        self.tick_apu_cycle();
-        // The CPU's interrupt inputs are sampled at the end of the cycle: the
-        // NMI line is high while the VBlank flag is set with NMI enabled, and
-        // the latch it drives is what the poll reads.
-        let high = self.nmi_line();
-        if high != self.nmi_was_high {
-            self.nmi_was_high = high;
-            self.nmi_pending |= high;
+    /// Master-clock ticks one PPU dot takes.
+    #[inline]
+    fn ppu_divider(&self) -> u64 {
+        self.region.ppu_divider() as u64
+    }
+
+    /// Master clock at the start of CPU cycle `cpu_cycles`.
+    ///
+    /// Derived from the cycle count rather than stored: the PPU's dot sequence
+    /// is a function of it, so a save state needs no new field and a load can
+    /// never leave the two out of step.
+    #[inline]
+    fn master_clock_at(&self, cpu_cycles: u64) -> u64 {
+        cpu_cycles * self.cpu_divider()
+    }
+
+    /// The PPU's own clock at the start of CPU cycle `cpu_cycles`: the master
+    /// clock rounded down to the last dot boundary.
+    ///
+    /// A whole ratio — both regions today — needs no rounding, because the CPU's
+    /// cycle is then an exact multiple of a dot, so the division is only reached
+    /// for the fractional ratio a real PAL board has. That keeps the machine's
+    /// inner loop free of it: measured, a division per cycle here costs about 5%
+    /// of the frame.
+    #[inline]
+    fn ppu_clock_at(&self, cpu_cycles: u64) -> u64 {
+        let start = self.master_clock_at(cpu_cycles);
+        if self.has_whole_dot_ratio() {
+            start
+        } else {
+            let divider = self.ppu_divider();
+            start - start % divider
         }
+    }
+
+    /// Whether one CPU cycle is a whole number of PPU dots.
+    ///
+    /// Both regions are today, which is what lets the inner loop below run a
+    /// counted dot loop instead of doing master-clock arithmetic per cycle
+    /// (measured, that arithmetic is worth about 4% of the frame). PAL's real
+    /// 3.2:1 is the case the general path exists for: flipping the PAL arm to
+    /// `false` is what turns the dot-per-cycle accounting on, and
+    /// `test_the_whole_ratio_flags_agree_with_the_dividers` fails until the
+    /// dividers say the same thing.
+    #[inline]
+    fn has_whole_dot_ratio(&self) -> bool {
+        match self.region {
+            Region::Ntsc => true,
+            Region::Pal => true,
+        }
+    }
+
+    /// Dots one CPU cycle covers, for a whole ratio.
+    ///
+    /// Spelled out per region so the inner loop divides nothing;
+    /// `test_the_whole_ratio_flags_agree_with_the_dividers` holds it to
+    /// `cpu_divider / ppu_divider`.
+    #[inline]
+    fn whole_dots_per_cpu_cycle(&self) -> u32 {
+        match self.region {
+            Region::Ntsc => 3,
+            Region::Pal => 3,
+        }
+    }
+
+    /// Run the PPU up to `target` on the master clock, one dot at a time.
+    ///
+    /// This is the shape Mesen's `StartCpuCycle`/`EndCpuCycle` use: the CPU
+    /// works out *where* in its cycle an access belongs, and the machine runs
+    /// the PPU up to that instant and on to the end of the cycle. It is what
+    /// lets a region whose ratio is not a whole number of dots per CPU cycle
+    /// run without a fractional clock field — the PPU simply takes four dots on
+    /// some cycles and three on the others.
+    ///
+    /// `clock` is the PPU's position, carried by the caller across a cycle so
+    /// an access can be placed in the middle of one.
+    #[inline]
+    fn run_ppu_to(&mut self, clock: &mut u64, target: u64) {
+        let divider = self.ppu_divider();
+        while *clock + divider <= target {
+            *clock += divider;
+            self.advance_one_ppu_dot();
+        }
+    }
+
+    /// Master clock at which the chip performs an access inside CPU cycle
+    /// `cpu_cycles`: [`ACCESS_DOTS`] dots in, expressed in ticks so that it does
+    /// not depend on how many dots the cycle happens to hold.
+    #[inline]
+    fn access_clock(&self, cpu_cycles: u64) -> u64 {
+        self.master_clock_at(cpu_cycles) + ACCESS_DOTS as u64 * self.ppu_divider()
+    }
+
+    /// One CPU cycle of the machine around the CPU: the PPU dots that cycle
+    /// covers, an APU tick, and the cartridge's view of the PPU bus.
+    ///
+    /// The two chips are interleaved here rather than advanced in separate
+    /// lumps, so neither is ever ahead of the other.
+    fn advance_one_cpu_cycle(&mut self) {
+        self.begin_cpu_cycle();
+        self.end_cpu_cycle();
+    }
+
+    /// The tail of a CPU cycle: the APU tick and the cycle counter.
+    ///
+    /// The interrupt lines are *not* sampled here any more. They belong to the
+    /// CPU (`Cpu::end_cycle`), which is where Mesen keeps them, and the CPU is
+    /// in the loop for every cycle it drives.
+    fn finish_cpu_cycle(&mut self) {
+        self.tick_apu_cycle();
         self.cpu_cycles += 1;
     }
 
-    /// One CPU cycle, with the parked register write that belongs on it, if any.
+    /// The first part of a CPU cycle: the PPU dots up to the point in it where
+    /// the chip performs its bus access.
     ///
-    /// The write lands two dots into the cycle, the same point in it the chip
-    /// performs a read: `$2001` therefore reaches the PPU's per-dot views (the
-    /// address it drives for the cartridge) from that dot on, and the APU tick
-    /// at the end of the same cycle sees it.
-    fn advance_one_cpu_cycle_with(&mut self, write: Option<(u16, u8)>) {
-        self.advance_one_ppu_dot();
-        self.advance_one_ppu_dot();
-        if let Some((addr, value)) = write {
-            self.write_now(addr, value);
+    /// A whole dot ratio (both regions today) simply steps [`ACCESS_DOTS`]
+    /// dots; a ratio that is not whole runs the PPU to the master-clock instant
+    /// the access belongs at. This is Mesen's `StartCpuCycle`.
+    fn begin_cpu_cycle(&mut self) {
+        if self.has_whole_dot_ratio() {
+            for _ in 0..ACCESS_DOTS {
+                self.advance_one_ppu_dot();
+            }
+        } else {
+            let mut clock = self.ppu_clock_at(self.cpu_cycles);
+            self.run_ppu_to(&mut clock, self.access_clock(self.cpu_cycles));
         }
-        self.advance_one_ppu_dot();
-        self.finish_cpu_cycle();
     }
 
-    /// One CPU cycle with the instruction's register read inside it.
+    /// The rest of the cycle: the remaining dots, then the bookkeeping the chip
+    /// does at the end of one — the APU tick, the interrupt-line samples and the
+    /// cycle counter. Mesen's `EndCpuCycle`.
     ///
-    /// The read sits two dots into the cycle, where the chip performs it: late
-    /// enough to see a VBlank flag an earlier dot of the cycle set, early
-    /// enough to take away one the next dot is about to set, and early enough
-    /// that clearing the flag also takes the line down before the machine
-    /// samples it at the end of the cycle. Blargg's `06-suppression`,
-    /// `05-nmi_timing` and `02-vbl_set_time` pin that dot down (§4.2 step 4 of
-    /// the cycle plan); moving the read to the cycle's start or its end shifts
-    /// every one of those boundaries by the same number of dots.
-    fn advance_one_cpu_cycle_with_read(&mut self, write: Option<(u16, u8)>, cpu: &mut Cpu) {
-        // The instruction's own read and a parked write never share a cycle: a
-        // read-modify-write reads two cycles before its two writes. This is a
-        // backstop, not a case.
-        debug_assert!(
-            write.is_none(),
-            "an instruction's read and a parked write never share a cycle"
-        );
-        for dot in 0..3 {
-            if dot == 2 {
-                if let Some((addr, value)) = write {
-                    self.write_now(addr, value);
-                }
-                cpu.perform_pending_access(self);
+    /// Every cycle the machine advances goes through here, the cycles an
+    /// interrupt sequence takes and the ones DMA steals included.
+    fn end_cpu_cycle(&mut self) {
+        if self.has_whole_dot_ratio() {
+            for _ in ACCESS_DOTS..self.whole_dots_per_cpu_cycle() {
+                self.advance_one_ppu_dot();
             }
-            self.advance_one_ppu_dot();
+        } else {
+            let mut clock = self.access_clock(self.cpu_cycles);
+            self.run_ppu_to(&mut clock, self.master_clock_at(self.cpu_cycles + 1));
         }
         self.finish_cpu_cycle();
     }
@@ -1139,16 +1137,27 @@ impl NesBus {
         // short on odd frames: the picture runs at 60.0985 Hz instead of an
         // even 60.1, and blargg's even/odd-frame tests measure exactly this
         // dot.
+        //
+        // The *decision* is made a dot before the dot it skips: dot 339 asks
+        // whether the frame is short, dot 340 is the one that goes missing. A
+        // write that reaches `$2001` in between arrives after the chip has
+        // made up its mind (Mesen's counter jumps to 340 while it is processing
+        // 339), and a decision taken on 340 itself would count that write.
         let rendering = self
             .ppu
             .mask
             .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
-        let skip_odd_frame_dot = self.ppu.scanline == self.region.last_scanline()
-            && self.ppu.cycle == 340
+        if self.ppu.scanline == self.region.last_scanline()
+            && self.ppu.cycle == 339
             && rendering
-            && self.ppu.frame & 1 == 1;
+            && self.ppu.frame & 1 == 1
+        {
+            self.skip_odd_frame_dot = true;
+        }
 
+        let skip_odd_frame_dot = self.skip_odd_frame_dot && self.ppu.cycle == 340;
         if self.ppu.cycle > 340 || skip_odd_frame_dot {
+            self.skip_odd_frame_dot = false;
             self.ppu.cycle = 0;
             self.ppu.scanline += 1;
 
@@ -1355,6 +1364,46 @@ impl Nes {
         self.bus.frame_ready
     }
 
+    /// CPU cycles the machine has run since it was created.
+    ///
+    /// Counts every cycle the machine advanced, the cycles an interrupt
+    /// sequence takes and the cycles OAM/DMC DMA steals included.
+    pub fn cpu_cycles(&self) -> u64 {
+        self.bus.cpu_cycles
+    }
+
+    /// Master-clock ticks since power-on.
+    ///
+    /// The machine keeps one clock and derives both chips from it (Mesen's
+    /// shape): a CPU cycle advances it by [`Region::cpu_divider`] ticks and a
+    /// PPU dot by [`Region::ppu_divider`]. The value is always taken at a CPU
+    /// cycle boundary, i.e. `cpu_cycles() * cpu_divider()`.
+    pub fn master_clock(&self) -> u64 {
+        self.bus.master_clock_at(self.bus.cpu_cycles)
+    }
+
+    /// PPU dots the machine has run since power-on.
+    ///
+    /// The count follows the region's clock ratio, so it is three dots per CPU
+    /// cycle on both regions today and will take a fourth dot every fifth cycle
+    /// once PAL runs at its real 3.2:1 (§15.1).
+    pub fn ppu_dots(&self) -> u64 {
+        self.master_clock() / self.bus.ppu_divider()
+    }
+
+    /// Where the PPU is right now: `(scanline, dot)`.
+    ///
+    /// Taken from the PPU itself rather than derived from the master clock, so
+    /// it is exact mid-cycle too — the pair a debugger or a trace tool needs.
+    pub fn ppu_position(&self) -> (u16, u16) {
+        (self.bus.ppu.scanline(), self.bus.ppu.cycle())
+    }
+
+    /// The CPU's program counter, i.e. the next byte it will fetch.
+    pub fn cpu_pc(&self) -> u16 {
+        self.cpu.pc()
+    }
+
     /// Clear the frame-ready flag.
     pub fn clear_frame_ready(&mut self) {
         self.bus.frame_ready = false;
@@ -1442,9 +1491,6 @@ impl Nes {
         let mut r = StateReader::new(&data[HEADER..]);
         crate::state::StateField::read(&mut self.cpu, &mut r);
         crate::state::StateField::read(&mut self.bus, &mut r);
-        // The NMI line's last sample is the level it is at now: a state is
-        // taken between instructions, with no dot left to step.
-        self.bus.nmi_was_high = self.bus.nmi_line();
     }
 }
 
@@ -1842,123 +1888,70 @@ mod tests {
         );
     }
 
-    /// A register write inside an instruction reaches its register on the cycle
-    /// the chip drives it, not at the start of the instruction: a four-cycle
-    /// store parks one write, and it waits for the last cycle.
-    #[test]
-    fn test_register_write_lands_on_its_own_cycle() {
-        let mut bus = NesBus::new();
-        bus.defer_writes = true;
-        bus.write(0x2003, 0x11);
-
-        assert_eq!(bus.ppu.oam_addr, 0x00, "the write waits for its cycle");
-        assert_eq!(bus.deferred_count, 1, "one write is parked");
-        for remaining in [3, 2, 1] {
-            assert_eq!(
-                bus.take_deferred_write(remaining),
-                None,
-                "cycle {remaining} carries nothing"
-            );
-        }
-        assert_eq!(bus.take_deferred_write(0), Some((0x2003, 0x11)));
-        assert_eq!(bus.deferred_count, 0, "nothing is left to replay");
-    }
-
-    /// A read-modify-write parks two writes, and they drain from the end: the
-    /// discarded write of the old value is the penultimate cycle, the new value
-    /// the last one.
-    #[test]
-    fn test_read_modify_write_drains_from_the_end() {
-        let mut bus = NesBus::new();
-        bus.defer_writes = true;
-        bus.write(0x2003, 0x11); // discarded write of the old value
-        bus.write(0x2003, 0x22); // the new value
-        assert_eq!(bus.deferred_count, 2);
-
-        // A six-cycle read-modify-write writes on its last two cycles.
-        for remaining in [5, 4, 3, 2] {
-            assert_eq!(bus.take_deferred_write(remaining), None);
-        }
-        assert_eq!(
-            bus.take_deferred_write(1),
-            Some((0x2003, 0x11)),
-            "the discarded write is the penultimate cycle"
-        );
-        assert_eq!(
-            bus.take_deferred_write(0),
-            Some((0x2003, 0x22)),
-            "the new value is the last cycle"
-        );
-        assert_eq!(bus.deferred_count, 0);
-    }
-
-    /// The write reaches the PPU's per-dot view inside the cycle the chip drives
+    /// A register write reaches its register inside the cycle the chip drives
     /// it on, not at the cycle's end.
     ///
-    /// Rendering that appears on the write's own cycle already counts for the
-    /// odd-frame dot skip, which is decided at pre-render dot 340: a `$2001`
-    /// write on the cycle whose dots are 338-340 skips that clock.
+    /// The odd frame's skipped dot is decided on pre-render dot 339, and the
+    /// write lands two dots into its cycle: a `$2001` write in the cycle whose
+    /// dots are 337-339 is therefore in time to make the frame short, and the
+    /// frame takes one dot less than one where the rendering bit arrived later.
     #[test]
-    fn test_register_write_reaches_the_ppu_inside_its_cycle() {
+    fn test_a_register_write_is_in_time_for_the_odd_frame_decision() {
+        /// Dots until the frame counter moves, from a pre-render position with
+        /// an odd frame due.
+        fn dots_until_the_next_frame(bus: &mut NesBus) -> u32 {
+            let frame = bus.ppu.frame;
+            let mut dots = 0;
+            while bus.ppu.frame == frame {
+                bus.advance_one_ppu_dot();
+                dots += 1;
+            }
+            dots
+        }
+
+        // The write lands before dot 339 is decided: the frame is short.
         let mut bus = NesBus::new();
         bus.ppu.scanline = bus.region.last_scanline();
-        bus.ppu.cycle = 337;
-        bus.ppu.frame = 1; // odd frame, so the skip is due
+        bus.ppu.cycle = 336;
+        bus.ppu.frame = 1; // odd, so the skip is due
+        bus.write_cycle(0x2001, PpuMask::SHOW_BG.bits());
+        assert_eq!(
+            bus.ppu.cycle, 339,
+            "the write's cycle ends with the dot the decision is made on"
+        );
 
-        bus.defer_writes = true;
-        bus.write(0x2001, PpuMask::SHOW_BG.bits());
-        let write = bus.take_deferred_write(0).expect("the write is parked");
-        bus.advance_one_cpu_cycle_with(Some(write));
+        // Nothing enables rendering before that dot in the second bus, so the
+        // frame stays long.
+        let mut late = NesBus::new();
+        late.ppu.scanline = late.region.last_scanline();
+        late.ppu.cycle = 336;
+        late.ppu.frame = 1;
+        late.write_cycle(0x2001, 0);
 
         assert_eq!(
-            bus.ppu.scanline, 0,
-            "dot 340 of the write's own cycle skipped the clock"
+            dots_until_the_next_frame(&mut bus),
+            1,
+            "the frame is short: the dot at 340 is the one that goes missing"
+        );
+        assert_eq!(
+            dots_until_the_next_frame(&mut late),
+            2,
+            "the same frame, one dot longer, without the rendering bit"
         );
     }
 
-    /// A write that lands earlier in the cycle is still visible to the whole
-    /// cycle when it is the cycle's first dot.
+    /// A read-modify-write's two writes are two cycles: the discarded write of
+    /// the old value first, the new one after it.
     #[test]
     fn test_read_modify_write_lands_its_two_writes_on_two_cycles() {
         let mut bus = NesBus::new();
-        bus.defer_writes = true;
-        bus.write(0x2003, 0x11);
-        bus.write(0x2003, 0x22);
+        bus.write_cycle(0x2003, 0x11);
+        assert_eq!(bus.ppu.oam_addr, 0x11, "the discarded write");
+        assert_eq!(bus.cpu_cycles, 1);
 
-        // A six-cycle read-modify-write: the two writes land on cycles 5 and 6,
-        // i.e. with one and then no cycles left to run.
-        let discarded = bus.take_deferred_write(1).expect("cycle 5");
-        bus.advance_one_cpu_cycle_with(Some(discarded));
-        assert_eq!(
-            bus.ppu.oam_addr, 0x11,
-            "the discarded write is the penultimate cycle"
-        );
-        let new_value = bus.take_deferred_write(0).expect("cycle 6");
-        bus.advance_one_cpu_cycle_with(Some(new_value));
-        assert_eq!(
-            bus.ppu.oam_addr, 0x22,
-            "the new value lands on the last cycle"
-        );
-        assert_eq!(bus.deferred_count, 0);
-    }
-
-    /// Only `$2000-$401F` is parked: RAM and a write made from outside an
-    /// instruction still take effect where the CPU asked for them.
-    #[test]
-    fn test_only_register_writes_are_deferred() {
-        let mut bus = NesBus::new();
-        bus.defer_writes = true;
-        bus.write(0x0010, 0x5A);
-        assert_eq!(bus.cpu_ram[0x10], 0x5A, "RAM is written at once");
-        assert_eq!(bus.deferred_count, 0);
-
-        bus.defer_writes = false;
-        bus.write(0x2003, 0x33);
-        assert_eq!(
-            bus.ppu.oam_addr, 0x33,
-            "a write outside an instruction lands at once"
-        );
-        assert_eq!(bus.deferred_count, 0);
+        bus.write_cycle(0x2003, 0x22);
+        assert_eq!(bus.ppu.oam_addr, 0x22, "the new value");
+        assert_eq!(bus.cpu_cycles, 2, "and it took a cycle of its own");
     }
 
     /// The addresses the [`nmi_enable_rom`] program uses.
@@ -2069,8 +2062,7 @@ mod tests {
             program.after_write_addr,
             "the write's own instruction must not vector"
         );
-        assert!(nes.bus.nmi_pending, "the write raised the NMI line");
-        assert!(!nes.cpu.in_interrupt_sequence());
+        assert!(nes.cpu.nmi_asserted(), "the write raised the NMI line");
         assert_eq!(nes.peek(0x0011), 0x00, "the handler has not run yet");
 
         // The instruction after the write runs, and its poll is the first one
@@ -2155,69 +2147,69 @@ mod tests {
     /// The NMI line is sampled once per CPU cycle, so it has to be high at a
     /// sample to be seen: a VBlank flag that a `$2002` read takes away inside
     /// the cycle it was set in never reaches the CPU, while one that survives
-    /// to the end of its cycle latches.
+    /// The NMI line is sampled once per cycle, and only the level the sample
+    /// finds is what latches.
+    ///
+    /// A line that comes and goes inside one cycle is never seen (there is one
+    /// sample per cycle); a line that a sample sees high stays latched until
+    /// the CPU takes the interrupt, so a game can leave the VBlank flag set for
+    /// the whole of vertical blanking without the handler being re-entered.
     #[test]
     fn test_nmi_line_is_sampled_once_a_cycle() {
-        /// A bus with NMI enabled, sitting on the first dot of vertical
-        /// blanking's first scanline.
-        fn waiting_bus() -> NesBus {
-            let mut bus = NesBus::new();
-            bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
-            bus.ppu.scanline = 241;
-            bus.ppu.cycle = 0;
-            bus
-        }
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        nes.bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
 
-        // The flag is set on the cycle's first dot and a read two dots in takes
-        // it away before the sample at the end of the same cycle.
-        let mut bus = waiting_bus();
-        bus.advance_one_ppu_dot();
-        assert!(bus.ppu.vblank_flag_set(), "dot 1 sets the flag");
-        bus.advance_one_ppu_dot();
-        bus.read_ppu_register(0x2002);
-        assert!(!bus.ppu.vblank_flag_set(), "and the read takes it away");
-        bus.advance_one_ppu_dot();
-        bus.finish_cpu_cycle();
-        assert!(!bus.nmi_pending, "the sample never saw the line high");
+        // The flag rises on VBlank's first dot and is gone again by the end of
+        // the same cycle - exactly what a `$2002` read two dots in does. The
+        // cycle's single sample never sees it.
+        nes.bus.ppu.scanline = 241;
+        nes.bus.ppu.cycle = 0;
+        nes.step_instruction();
+        assert!(
+            !nes.cpu.nmi_asserted(),
+            "a line that came and went inside the cycle was never sampled"
+        );
 
-        // Without that read the line is still high when the cycle ends, so the
-        // latch is taken...
-        let mut bus = waiting_bus();
-        for _ in 0..3 {
-            bus.advance_one_ppu_dot();
-        }
-        bus.finish_cpu_cycle();
-        assert!(bus.nmi_pending, "the sample latched the line");
-
-        // ...and stays taken until the CPU services it: the line going low
-        // again does not take it back, which is what lets a game leave the
-        // VBlank flag set for the whole of vertical blanking.
-        bus.ppu.status.remove(PpuStatus::VBLANK);
-        bus.advance_one_cpu_cycle();
-        assert!(bus.nmi_pending, "the latch is the CPU's, not the line's");
+        // Held high instead, the same cycle's sample latches it, and the
+        // instruction's end is when the interrupt is taken: the three pushes of
+        // the sequence are what says so.
+        let before = nes.cpu.sp();
+        nes.bus.ppu.status.insert(PpuStatus::VBLANK);
+        nes.step_instruction();
+        assert_eq!(
+            nes.cpu.sp(),
+            before.wrapping_sub(3),
+            "the NMI was taken at the end of the instruction"
+        );
+        assert!(!nes.cpu.nmi_asserted(), "and the latch is spent");
     }
 
-    /// The NMI latch is taken by the CPU when it services the interrupt, and
-    /// only a fresh rising edge of the line puts it back.
+    /// The NMI latch is the CPU's, and only a fresh rising edge of the line
+    /// puts it back: a line that never goes low has no second edge to latch.
+    ///
+    /// That is what lets a game leave the VBlank flag set for the whole of
+    /// vertical blanking without the handler being entered again on every
+    /// instruction that runs during it.
     #[test]
     fn test_servicing_the_nmi_does_not_relatch_a_held_line() {
-        let mut bus = NesBus::new();
-        bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
-        bus.ppu.scanline = 241;
-        bus.ppu.cycle = 0;
-        for _ in 0..3 {
-            bus.advance_one_ppu_dot();
-        }
-        bus.finish_cpu_cycle();
-        assert!(bus.nmi_pending);
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        nes.bus.ppu.ctrl = PpuCtrl::NMI_ENABLE;
+        nes.bus.ppu.status.insert(PpuStatus::VBLANK);
 
-        // The CPU takes the interrupt: the latch is its own, and the line is
-        // still high.
-        bus.clear_nmi();
-        bus.advance_one_cpu_cycle();
-        bus.advance_one_cpu_cycle();
+        // The first instruction's cycles sample the line and latch the edge;
+        // the interrupt is taken at the end of it.
+        nes.step_instruction();
+        assert!(!nes.cpu.nmi_asserted(), "the handler took the latch");
+
+        // The line is still high - the flag was never cleared - and no second
+        // edge is coming, so nothing is latched.
+        for _ in 0..8 {
+            nes.step_instruction();
+        }
         assert!(
-            !bus.nmi_pending,
+            !nes.cpu.nmi_asserted(),
             "a line that never went low has no second edge to latch"
         );
     }
@@ -2715,5 +2707,130 @@ mod tests {
             peak > 0.01,
             "MMC5 expansion audio never reached the output (peak {peak})"
         );
+    }
+
+    /// The master clock is what both chips are derived from, so the CPU cycle
+    /// count and the PPU's own position have to agree with it dot for dot.
+    ///
+    /// This is the property the rest of the cycle work hangs off: an access
+    /// placed "two dots into its cycle" is only meaningful if a cycle covers
+    /// exactly the dots the clock model says it does.
+    #[test]
+    fn test_the_ppu_position_follows_the_master_clock() {
+        /// Dots in one NTSC frame: 341 per scanline, 262 scanlines.
+        const DOTS_PER_FRAME: u64 = 341 * 262;
+
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        let cpu_divider = nes.region().cpu_divider() as u64;
+        let ppu_divider = nes.region().ppu_divider() as u64;
+
+        for frame in 1..=5u64 {
+            nes.frame();
+
+            let cycles = nes.cpu_cycles();
+            assert_eq!(nes.master_clock(), cycles * cpu_divider, "frame {frame}");
+            assert_eq!(
+                nes.ppu_dots(),
+                nes.master_clock() / ppu_divider,
+                "the PPU's dots are the master clock divided down"
+            );
+
+            // This ROM leaves rendering off, so no odd frame skips a dot and a
+            // frame is a whole 341 x 262 of them.
+            let (scanline, dot) = nes.ppu_position();
+            assert_eq!(
+                nes.ppu_dots() % DOTS_PER_FRAME,
+                scanline as u64 * 341 + dot as u64,
+                "frame {frame}: the PPU is where the dots put it"
+            );
+            assert_eq!(nes.frame_number(), frame);
+        }
+    }
+
+    /// A CPU cycle covers three PPU dots, on both regions, and an access sits
+    /// two dots into the cycle - the placement the ROM suites pin down.
+    #[test]
+    fn test_a_cpu_cycle_covers_three_dots_with_the_access_two_in() {
+        for region in [Region::Ntsc, Region::Pal] {
+            let mut bus = NesBus::new();
+            bus.region = region;
+
+            assert!(
+                bus.has_whole_dot_ratio(),
+                "{region:?} takes the counted fast path"
+            );
+            let mut previous = bus.ppu_clock_at(0);
+            for cycle in 1..=64u64 {
+                let clock = bus.ppu_clock_at(cycle);
+                assert_eq!(
+                    (clock - previous) / bus.ppu_divider(),
+                    bus.whole_dots_per_cpu_cycle() as u64,
+                    "{region:?}: cycle {cycle} does not cover three dots"
+                );
+                previous = clock;
+
+                let cycle_start = bus.master_clock_at(cycle - 1);
+                assert_eq!(
+                    bus.access_clock(cycle - 1) - cycle_start,
+                    ACCESS_DOTS as u64 * bus.ppu_divider(),
+                    "{region:?}: an access belongs two dots in"
+                );
+            }
+        }
+    }
+
+    /// The two spellings of a cycle's dots - the counted loop a whole ratio
+    /// takes and the master-clock run a fractional one will take - are held to
+    /// each other, so flipping PAL to its real 3.2:1 cannot move where the dots
+    /// fall without this failing first.
+    #[test]
+    fn test_the_whole_ratio_flags_agree_with_the_dividers() {
+        for region in [Region::Ntsc, Region::Pal] {
+            let mut bus = NesBus::new();
+            bus.region = region;
+            let whole = bus.cpu_divider() % bus.ppu_divider() == 0;
+            assert_eq!(
+                bus.has_whole_dot_ratio(),
+                whole,
+                "{region:?}: the fast path is only valid for a whole ratio"
+            );
+            if whole {
+                assert_eq!(
+                    bus.whole_dots_per_cpu_cycle() as u64 * bus.ppu_divider(),
+                    bus.cpu_divider(),
+                    "{region:?}: the counted dots have to cover the whole cycle"
+                );
+            }
+        }
+    }
+
+    /// Driving the PPU to a master-clock target has to land it exactly where
+    /// the counted path does, dot for dot.
+    #[test]
+    fn test_the_master_clock_path_places_the_same_dots() {
+        let mut targeted = NesBus::new();
+        let mut counted = NesBus::new();
+
+        let mut clock = targeted.ppu_clock_at(0);
+        for cycle in 0..256u64 {
+            let target = targeted.master_clock_at(cycle + 1);
+            targeted.run_ppu_to(&mut clock, target);
+            counted.advance_one_cpu_cycle();
+
+            assert_eq!(
+                targeted.ppu.cycle, counted.ppu.cycle,
+                "cycle {cycle}: the dot does not match"
+            );
+            assert_eq!(
+                targeted.ppu.scanline, counted.ppu.scanline,
+                "cycle {cycle}: the scanline does not match"
+            );
+            assert_eq!(
+                clock,
+                targeted.ppu_clock_at(cycle + 1),
+                "cycle {cycle}: the PPU has to stop on a dot boundary"
+            );
+        }
     }
 }

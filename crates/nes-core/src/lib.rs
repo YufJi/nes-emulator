@@ -200,6 +200,34 @@ impl Region {
         }
     }
 
+    /// Master-clock ticks one CPU cycle takes.
+    ///
+    /// The machine keeps a single master clock the way Mesen does — the NTSC
+    /// colour crystal, 21.477 MHz — and derives both chips from it: a CPU cycle
+    /// advances it by this many ticks and a PPU dot by [`Region::ppu_divider`].
+    /// Keeping the ratio as integers rather than a float is what lets a region
+    /// whose PPU:CPU ratio is not a whole number of dots be expressed exactly
+    /// instead of drifting.
+    ///
+    /// A real PAL board is 16 ticks per CPU cycle and 5 per dot, i.e. 3.2 dots
+    /// per CPU cycle; the model still runs PAL at 3:1 (15/5), so PAL's own
+    /// ratio lands together with the PAL work (§15.1 of `docs/architecture.md`)
+    /// and until then the dividers keep meaning what they mean today.
+    pub fn cpu_divider(&self) -> u32 {
+        match self {
+            Region::Ntsc => 12,
+            Region::Pal => 15,
+        }
+    }
+
+    /// Master-clock ticks one PPU dot takes.
+    pub fn ppu_divider(&self) -> u32 {
+        match self {
+            Region::Ntsc => 4,
+            Region::Pal => 5,
+        }
+    }
+
     /// Scanlines in one frame, i.e. the index of the last one plus one.
     pub fn scanlines(&self) -> u16 {
         self.last_scanline() + 1
@@ -223,10 +251,10 @@ impl Region {
         }
     }
 
-    /// CPU cycles in one frame (341 PPU dots per scanline, 3 dots per CPU
-    /// cycle).
+    /// CPU cycles in one frame (341 PPU dots per scanline, `ppu_divider /
+    /// cpu_divider` dots per CPU cycle — 3 for both regions today).
     pub fn cpu_cycles_per_frame(&self) -> u32 {
-        self.scanlines() as u32 * PPU_CYCLES_PER_SCANLINE / 3
+        self.scanlines() as u32 * PPU_CYCLES_PER_SCANLINE * self.ppu_divider() / self.cpu_divider()
     }
 }
 
@@ -262,5 +290,45 @@ mod tests {
         // Front-end pacing must not assume a nominal 60 Hz.
         assert!(Region::Ntsc.fps() > 60.0);
         assert!(Region::Pal.fps() > 50.0);
+    }
+
+    /// The divider pair is the machine's whole notion of "how fast the two
+    /// chips run relative to each other", so it has to agree with the frame
+    /// geometry the core publishes.
+    #[test]
+    fn test_clock_dividers_agree_with_the_frame_geometry() {
+        for region in [Region::Ntsc, Region::Pal] {
+            let dots_per_cycle = region.ppu_divider();
+            // Both regions run at three dots per CPU cycle today. A real PAL
+            // board is 16/5; when that lands this assertion becomes region
+            // dependent, which is exactly the change the ratio is there for.
+            assert_eq!(region.cpu_divider(), dots_per_cycle * 3);
+
+            // A frame is `scanlines * 341` dots, and a whole number of CPU
+            // cycles covers all of it bar the division's remainder.
+            let frame_dots = region.scanlines() as u64 * PPU_CYCLES_PER_SCANLINE as u64;
+            let covered = region.cpu_cycles_per_frame() as u64 * region.cpu_divider() as u64;
+            let frame_ticks = frame_dots * region.ppu_divider() as u64;
+            assert!(
+                covered <= frame_ticks && frame_ticks - covered < region.cpu_divider() as u64,
+                "{}: {covered} ticks of a {frame_ticks}-tick frame",
+                region.fps()
+            );
+        }
+    }
+
+    /// NTSC's dividers are the real crystal's, scaled so the ratio is exact.
+    #[test]
+    fn test_ntsc_dividers_mirror_the_real_crystal() {
+        // 21.477272 MHz / 1.789773 MHz = 12, and 21.477272 / 4 = 5.369318 MHz.
+        assert_eq!(Region::Ntsc.cpu_divider(), 12);
+        assert_eq!(Region::Ntsc.ppu_divider(), 4);
+        let from_ppu = Region::Ntsc.ppu_clock_rate() as u64 * Region::Ntsc.ppu_divider() as u64;
+        let from_cpu = Region::Ntsc.cpu_clock_rate() as u64 * Region::Ntsc.cpu_divider() as u64;
+        assert!(
+            from_ppu.abs_diff(from_cpu) <= Region::Ntsc.cpu_divider() as u64,
+            "both chips are derived from the same crystal: {from_ppu} vs {from_cpu} \
+             (the published rates are rounded to whole Hz)"
+        );
     }
 }

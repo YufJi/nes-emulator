@@ -42,12 +42,12 @@ fn blargg_cpu_interrupts() {
     common::check_blargg_directory(
         "blargg/cpu_interrupts_v2/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // The instruction-level ordering is right (CLI's delayed inhibition,
-        // taken branches skipping their poll); what these need is the interrupt
-        // to be vectored at an exact CPU cycle, which needs a cycle-stepped CPU
-        // (§15.1).
+        // The CPU now drives its own cycles the way Mesen's does, which took
+        // `2-nmi_and_brk` green: BRK's vector is chosen at the status push, so
+        // an NMI asserted before it takes the vector over. What is left of the
+        // other three is one or two cycles each, and `4-irq_and_dma`'s offset
+        // still tracks the frame counter's phase (§4.3).
         &[
-            "2-nmi_and_brk.nes",
             "3-nmi_and_irq.nes",
             "4-irq_and_dma.nes",
             "5-branch_delays_irq.nes",
@@ -125,10 +125,14 @@ fn blargg_apu() {
         "blargg/apu_test/rom_singles",
         BLARGG_SLOW_FRAMES,
         // Frame-counter and DMC timing (jitter, IRQ flag timing, DMC rates) are
-        // approximations. The length-counter table is exact now that a register
-        // write reaches the APU tick of its own cycle (§4.2 step 2 of the plan).
+        // approximations, and `5-len_timing` moved into this list when the
+        // `$4015` read started landing on its own cycle, as Mesen's does: blargg
+        // synchronises through that read, and the frame-counter phase it
+        // measures is a cycle or two out anyway (§4.3 of the plan predicted
+        // exactly this). The fix is the counter's phase, not the read.
         &[
             "4-jitter.nes",
+            "5-len_timing.nes",
             "6-irq_flag_timing.nes",
             "7-dmc_basics.nes",
             "8-dmc_rates.nes",

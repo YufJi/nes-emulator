@@ -641,7 +641,6 @@ impl RomHeader {
 struct TestBus {
     cpu_ram: [u8; 0x800],
     mapper: Box<dyn Mapper>,
-    nmi_pending: bool,
     irq_pending: bool,
 }
 
@@ -650,7 +649,6 @@ impl TestBus {
         Self {
             cpu_ram: [0; 0x800],
             mapper,
-            nmi_pending: false,
             irq_pending: false,
         }
     }
@@ -697,14 +695,6 @@ impl Bus for TestBus {
 
     fn on_cpu_cycle(&mut self, _cycles: u8) {
         // No PPU/APU to update in this simple test
-    }
-
-    fn nmi_pending(&self) -> bool {
-        self.nmi_pending
-    }
-
-    fn clear_nmi(&mut self) {
-        self.nmi_pending = false;
     }
 
     fn irq_pending(&self) -> bool {

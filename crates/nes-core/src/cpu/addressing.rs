@@ -379,6 +379,7 @@ mod tests {
     struct MockBus {
         memory: [u8; 65536],
         reads: Vec<u16>,
+        cycles: u64,
     }
 
     impl MockBus {
@@ -386,6 +387,7 @@ mod tests {
             Self {
                 memory: [0; 65536],
                 reads: Vec::new(),
+                cycles: 0,
             }
         }
 
@@ -406,13 +408,25 @@ mod tests {
 
         fn write(&mut self, _addr: u16, _value: u8) {}
 
-        fn on_cpu_cycle(&mut self, _cycles: u8) {}
-
-        fn nmi_pending(&self) -> bool {
-            false
+        fn read_cycle(&mut self, addr: u16) -> u8 {
+            self.cycles += 1;
+            self.read(addr)
         }
 
-        fn clear_nmi(&mut self) {}
+        fn write_cycle(&mut self, addr: u16, value: u8) {
+            self.cycles += 1;
+            self.write(addr, value);
+        }
+
+        fn cycle_count(&self) -> u64 {
+            self.cycles
+        }
+
+        fn on_cpu_cycle(&mut self, _cycles: u8) {}
+
+        fn nmi_line(&self) -> bool {
+            false
+        }
 
         fn irq_pending(&self) -> bool {
             false

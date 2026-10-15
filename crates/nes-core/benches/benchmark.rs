@@ -125,14 +125,6 @@ impl Bus for BenchBus {
 
     fn on_cpu_cycle(&mut self, _cycles: u8) {}
 
-    fn nmi_pending(&self) -> bool {
-        self.ppu.nmi_pending()
-    }
-
-    fn clear_nmi(&mut self) {
-        self.ppu.clear_nmi();
-    }
-
     fn irq_pending(&self) -> bool {
         self.mapper.irq_pending()
     }

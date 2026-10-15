@@ -9,38 +9,7 @@ pub mod addressing;
 pub mod instructions;
 
 pub use addressing::AddressingResult;
-use instructions::InstructionHandler;
-
-/// A read the CPU leaves for the machine to place, on the dot the chip
-/// performs it.
-///
-/// The PPU's registers, `$2000-$3FFF`, are what the window is for: a `$2002`
-/// read clears the VBlank flag and takes the frame's NMI with it, and a `$2007`
-/// read moves the VRAM address, so *when* in its cycle the read happens is
-/// observable. The APU's `$4015` is deliberately not in the window yet: blargg's
-/// `apu_test` synchronises through it, and the frame-counter phase it measures
-/// is a cycle or two out anyway (§4.3 of the cycle plan), so moving the read
-/// now would only move that error around.
-///
-/// Written and read inside a single instruction, so it stays out of save
-/// states: the machine runs it before [`Cpu::execute_instruction`] returns.
-#[derive(Debug)]
-pub(crate) struct PendingAccess {
-    /// The handler that performs the access, held back until its cycle.
-    handler: InstructionHandler,
-    /// Effective address the addressing mode resolved.
-    addr: u16,
-    /// The page-crossing penalty the addressing mode reported.
-    extra_cycles: u8,
-    /// 1-based cycle of the instruction the handler runs on.
-    pub(crate) at_cycle: u8,
-    /// The cycle count the plan expects the handler to report.
-    ///
-    /// Read handlers return the addressing mode's page-crossing penalty and
-    /// the rest return zero; the plan's cycle arithmetic depends on which, so
-    /// a mismatch means the access is on the wrong cycle.
-    expected_handler_cycles: u8,
-}
+use instructions::AddressingMode;
 
 /// Which interrupt the CPU is in the middle of taking.
 ///
@@ -101,47 +70,35 @@ pub struct Cpu {
     /// the effective address alone. It is written and read inside a single
     /// instruction, so it stays out of save states.
     addr_base: u16,
-    /// Whether an IRQ is inhibited right now, as the interrupt decision sees it.
+    /// An NMI has been asserted and not taken yet. Mesen's `_needNmi`.
     ///
-    /// Normally this is just the I flag, but CLI, SEI and PLP only change what
-    /// interrupts are allowed *after* the next instruction has run, while RTI
-    /// takes effect immediately. Keeping the decision its own copy is what lets
-    /// the flag itself update at once — `CLI` followed by `PHP` still shows I
-    /// clear in the pushed status — without the IRQ handler being entered an
-    /// instruction too early.
-    irq_inhibit: bool,
-    /// The interrupt sequence being taken, if any, and how many of its seven
-    /// cycles have run.
-    interrupt_source: Option<InterruptSource>,
-    interrupt_step: u8,
-    /// Set when an NMI asserted during a sequence takes its vector over.
+    /// The line is sampled at the end of every CPU cycle and only a *rising*
+    /// edge latches, so a line that comes and goes inside one cycle is never
+    /// seen, and a line that is seen stays latched until the handler is
+    /// entered.
+    need_nmi: bool,
+    /// [`Cpu::need_nmi`] as of the previous cycle's end.
     ///
-    /// The pushes the sequence already made stay what they were - an IRQ's
-    /// status has B clear - and only the address the last two cycles fetch
-    /// changes. Written and read inside one sequence, so it stays out of save
-    /// states.
-    nmi_hijack: bool,
-    /// Set by BRK while the vector it read is still provisional.
+    /// The post-instruction decision reads this one, which is what makes the
+    /// sample from the instruction's *last* cycle too late to be taken — the
+    /// "it's really the status of the interrupt lines at the end of the
+    /// second-to-last cycle that matters" rule.
+    prev_need_nmi: bool,
+    /// The NMI line's level when it was last sampled, so the next cycle can
+    /// tell an edge from a level. Mesen's `_prevNmiFlag`.
+    prev_nmi_flag: bool,
+    /// Whether an interrupt is asked for right now: the IRQ line asserted with
+    /// I clear. Mesen's `_runIrq`.
+    run_irq: bool,
+    /// [`Cpu::run_irq`] as of the previous cycle's end, i.e. the value the
+    /// post-instruction decision reads.
+    prev_run_irq: bool,
+    /// The addressing mode of the instruction being run.
     ///
-    /// BRK reads the IRQ vector as part of the instruction, but that is not
-    /// settled until the instruction's last cycles: an NMI asserted before then
-    /// takes the vector over, with the frame BRK pushed (B set) left as it is.
-    /// Cleared at the start of every instruction, so it never outlives the one
-    /// that set it.
-    brk_vector_pending: bool,
-    /// Set while the machine is driving the cycles of one instruction.
-    ///
-    /// With it set, a read of `$2000-$401F` is left to the machine rather than
-    /// performed where the instruction asks for it: the machine runs the
-    /// handler on the cycle the chip performs the access on. A bus used on its
-    /// own - the CPU's unit tests - leaves it clear and gets the whole
-    /// instruction executed in one piece.
-    defer_register_reads: bool,
-    /// The access the instruction has left for the machine, if any.
-    pending_access: Option<PendingAccess>,
-    /// Low half of the vector, fetched on the sequence's sixth cycle and used
-    /// on the seventh.
-    vector_low: u8,
+    /// Mesen's `_instAddrMode`: a handler asks this when the same code serves
+    /// both a memory operand and a register (the NOPs are what needs it).
+    /// Written and read inside one instruction, so it stays out of save states.
+    addr_mode: AddressingMode,
 }
 
 bitflags::bitflags! {
@@ -185,10 +142,11 @@ crate::state::state_fields!(Cpu {
     status,
     cycles,
     halted,
-    irq_inhibit,
-    interrupt_source,
-    interrupt_step,
-    vector_low
+    need_nmi,
+    prev_need_nmi,
+    prev_nmi_flag,
+    run_irq,
+    prev_run_irq
 });
 
 impl Default for Cpu {
@@ -213,14 +171,12 @@ impl Cpu {
             cycles: 0,
             halted: false,
             addr_base: 0,
-            irq_inhibit: true,
-            interrupt_source: None,
-            interrupt_step: 0,
-            nmi_hijack: false,
-            brk_vector_pending: false,
-            defer_register_reads: false,
-            pending_access: None,
-            vector_low: 0,
+            addr_mode: AddressingMode::Implied,
+            need_nmi: false,
+            prev_need_nmi: false,
+            prev_nmi_flag: false,
+            run_irq: false,
+            prev_run_irq: false,
         }
     }
 
@@ -235,7 +191,11 @@ impl Cpu {
         self.pc = (hi << 8) | lo;
 
         self.halted = false;
-        self.irq_inhibit = true;
+        self.need_nmi = false;
+        self.prev_need_nmi = false;
+        self.prev_nmi_flag = false;
+        self.run_irq = false;
+        self.prev_run_irq = false;
         self.cycles = 0;
     }
 
@@ -274,6 +234,26 @@ impl Cpu {
         self.cycles
     }
 
+    /// Set the cycle count to the machine's.
+    ///
+    /// The machine counts every cycle it advances — the instruction's own, the
+    /// ones an interrupt sequence takes, the ones DMA steals — so the CPU's
+    /// counter follows it rather than keeping a tally of its own.
+    pub(crate) fn set_cycle_count(&mut self, cycles: u64) {
+        self.cycles = cycles;
+    }
+
+    /// Whether an NMI has been asserted and not taken yet.
+    ///
+    /// Mesen's `_needNmi`: a rising edge of the line latches it, and the
+    /// handler's entry clears it. The machine does not consult this - the
+    /// decision is the CPU's - so it is here for the tests that pin the latch's
+    /// behaviour.
+    #[cfg(test)]
+    pub(crate) fn nmi_asserted(&self) -> bool {
+        self.need_nmi
+    }
+
     /// Whether a KIL/JAM opcode has stopped the CPU.
     ///
     /// The machine keeps running — the PPU, APU and mappers keep ticking — but
@@ -293,39 +273,73 @@ impl Cpu {
         self.pc = pc;
     }
 
-    /// Tell the CPU the machine is driving this instruction's cycles.
-    ///
-    /// See [`Cpu::defer_register_reads`]: the machine places a read of the
-    /// PPU/APU registers on the cycle the chip performs it, so it has to be the
-    /// one that runs the handler.
-    pub(crate) fn set_defer_register_reads(&mut self, defer: bool) {
-        self.defer_register_reads = defer;
+    /// Read one byte the way the chip does: this call *is* one CPU cycle, and
+    /// the access sits inside it (Mesen's `MemoryRead`, which brackets the
+    /// access with `StartCpuCycle`/`EndCpuCycle`).
+    pub(crate) fn read(&mut self, bus: &mut dyn Bus, addr: u16) -> u8 {
+        let value = bus.read_cycle(addr);
+        self.end_cycle(bus);
+        value
     }
 
-    /// The cycle of the instruction being run on which its handler has to run,
-    /// if it left one for the machine.
-    pub(crate) fn pending_access_cycle(&self) -> Option<u8> {
-        self.pending_access.as_ref().map(|access| access.at_cycle)
+    /// Write one byte the way the chip does: one CPU cycle with the write
+    /// strobed inside it (Mesen's `MemoryWrite`).
+    pub(crate) fn write(&mut self, bus: &mut dyn Bus, addr: u16, value: u8) {
+        bus.write_cycle(addr, value);
+        self.end_cycle(bus);
     }
 
-    /// Run the handler the instruction held back, on the cycle its access
-    /// belongs to.
+    /// The discarded read the 6502 spends its internal cycles on.
     ///
-    /// The machine calls this once, on the cycle
-    /// [`Cpu::pending_access_cycle`] names; any register write the handler
-    /// makes is parked by the bus as usual, which is how a read-modify-write's
-    /// two writes still land on the two cycles after the read.
-    pub(crate) fn perform_pending_access(&mut self, bus: &mut dyn Bus) {
-        let pending = self
-            .pending_access
-            .take()
-            .expect("the machine only runs an access it was told about");
-        let handler_cycles = (pending.handler)(self, bus, pending.addr, pending.extra_cycles);
-        debug_assert_eq!(
-            handler_cycles, pending.expected_handler_cycles,
-            "the handler's cycle count has to match the cycle the access was placed on",
-        );
-        let _ = handler_cycles;
+    /// It reads the byte the program counter points at and throws it away —
+    /// the access is real, so the cartridge and the open-bus latch see it, but
+    /// the PC does not move.
+    pub(crate) fn dummy_read(&mut self, bus: &mut dyn Bus) {
+        self.read(bus, self.pc);
+    }
+
+    /// Read the byte at the program counter and advance it: an operand fetch.
+    pub(crate) fn read_byte(&mut self, bus: &mut dyn Bus) -> u8 {
+        let value = self.read(bus, self.pc);
+        self.pc = self.pc.wrapping_add(1);
+        value
+    }
+
+    /// Two operand fetches, little endian first.
+    pub(crate) fn read_word(&mut self, bus: &mut dyn Bus) -> u16 {
+        let low = self.read_byte(bus) as u16;
+        let high = self.read_byte(bus) as u16;
+        (high << 8) | low
+    }
+
+    /// The bookkeeping the chip does at the end of every CPU cycle.
+    ///
+    /// Mesen's `EndCpuCycle`: the NMI line is sampled for an edge, and the IRQ
+    /// decision is kept one cycle behind so that the sample from an
+    /// instruction's last cycle is never the one it is judged by.
+    /// Whether the instruction being run has a memory operand to read.
+    ///
+    /// The accumulator and implied modes do not: their "operand" is a register
+    /// or nothing at all, and the byte the chip reads on their extra cycles is
+    /// discarded.
+    pub(crate) fn operand_is_memory(&self) -> bool {
+        !matches!(
+            self.addr_mode,
+            AddressingMode::Implied | AddressingMode::Accumulator
+        )
+    }
+
+    pub(crate) fn end_cycle(&mut self, bus: &mut dyn Bus) {
+        self.prev_need_nmi = self.need_nmi;
+
+        let nmi_flag = bus.nmi_line();
+        if !self.prev_nmi_flag && nmi_flag {
+            self.need_nmi = true;
+        }
+        self.prev_nmi_flag = nmi_flag;
+
+        self.prev_run_irq = self.run_irq;
+        self.run_irq = bus.irq_pending() && !self.status.contains(StatusFlags::I);
     }
 }
 
@@ -344,11 +358,9 @@ mod tests {
 
         fn on_cpu_cycle(&mut self, _cycles: u8) {}
 
-        fn nmi_pending(&self) -> bool {
+        fn nmi_line(&self) -> bool {
             false
         }
-
-        fn clear_nmi(&mut self) {}
 
         fn irq_pending(&self) -> bool {
             false
