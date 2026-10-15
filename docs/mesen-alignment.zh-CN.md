@@ -284,6 +284,30 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
   侧：通道每个取到的字节都让 CPU **停了两次**四周期（见 §7 最后一行），于是一个字节花掉 440 个
   CPU 周期而不是 432，所有样本都偏长。传输只收一次费之后，该比较的就是通道自己的数字了——所以
   §2.4 里 Mesen"按取数计数"的模型值得再试一次，而不是再猜一轮。
+- **`cpu_interrupts_v2`：帧计数器标志晚一个周期（`$4017` 的 hold 4/3 → 5/4）**。实测：
+  `3-nmi_and_irq` **通过**，`5-branch_delays_irq` 的 `test_jmp` 表与它 readme 里印的**逐行相同**。
+  但 `4-jitter`（"Odd jitter not handled properly"）、`5-len_timing`（"First length of mode 0 is
+  too late"）与 `6-irq_flag_timing`（"Flag first set too late"）全部变红，AccuracyCoin 从 34 掉到
+  36。已撤回：这三项把标志的周期钉在 `$4017` 写入上，所以缺的那个周期不在标志里。
+- **`cpu_interrupts_v2`：IRQ 判决晚一个周期（取两周期前的采样，而不是一个周期前）**。实测：
+  `3-nmi_and_irq` 通过，`5-branch_delays_irq` 的 `test_jmp`、`test_branch_not_taken`、
+  `test_branch_taken_pagecross` 三张表与 readme **逐行一致**——这是本内核第一次重现那张表——只有
+  最后一个子项（源码里注释掉的"special case"）仍差一行（我们 `05 05 03`，readme 是 `05 01 00`）。
+  但 `1-cli_latency` 的第 4 项（"exactly one instruction after CLI should execute before IRQ is
+  taken"）与 `4-scanline_timing` 的第 3 项变红。已撤回：这两项把普通 IRQ 的判决钉在倒数第二个
+  周期上，那也是 Mesen 的规则。
+- **`cpu_interrupts_v2`：把 `$4017` 写入的奇偶对调**。实测：`5-branch_delays_irq` 逐字节不变
+  （所以它的缺陷不是写入的 hold），`3-nmi_and_irq` 的输出有变化，AccuracyCoin 从 34 掉到 36。
+  已撤回。
+
+  **剩下的是什么**。三个失败项其实是同一个 ±1 周期的问题：帧计数器的标志、IRQ 的判决、以及指令流
+  三者的相对位置。有三组测试在约束它，而我们试过的任何一个"挪一个周期"的旋钮都满足不了全部三组：
+  `4-jitter`、`5-len_timing`、`6-irq_flag_timing` 把标志钉在 `$4017` 写入上；`1-cli_latency` 与
+  `4-scanline_timing` 把判决钉在倒数第二个周期上；而三张 `cpu_interrupts_v2` 的表要的是这两者
+  相对代码各挪一个周期（`4-irq_and_dma` 自己的表也是 readme 的整体错开一行：我们开头是
+  `0 +0 / 0 +1 / 1 +2`，readme 是 `0 +0 / 1 +1 / 1 +2`）。下一次该做的是**量链条**——把
+  `5-branch_delays_irq` 里 `begin` 的那些延时按指令逐条算出来，和 readme 的表反推出的周期对
+  （它的 `test_jmp` 第 0 行要求标志落在 RTS 的最后一个周期，即写入后 29831）——而不是继续挪旋钮。
 
 ## 8. 仍需拍板的决策
 
@@ -328,6 +352,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P5 | PAL 16/5 + 分数 dot 累加器 + 按制式推导音频时钟 | 完成（比例部分） | `dbdf7cc`：PAL 一帧 33,247.5 个 CPU 周期 | PAL 专属 PPU/APU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）——需要 PAL ROM 才能验收 |
 | P6 | Mapper：NES 2.0 头部、总线冲突 | 部分完成 | `4e1c7a6`：冲突覆盖 2/3/7/11/66/71；5 个头部 + 2 个冲突用例 | 按 submapper 分派板级行为（Mesen 靠按 CRC 的 game database，不是头部字段）；之后是 64/158/185/115 |
 | P7 | 音频重采样 | 未开始 | — | 带限（blip）重采样；无参考录音，验收只到"不破坏现有测试" |
+| P3c | `cpu_interrupts_v2` 剩下的三张表 | **进行中** | 两个"挪一个周期"的实验都已实测并撤回（标志晚一周期；IRQ 判决晚一周期）：后者把 `5-branch_delays_irq` 前三张表逐行重现，代价是 `1-cli_latency` 与 `4-scanline_timing` 变红。两个实验都在 §7。 | 先把 `5-branch_delays_irq` 里 `begin` 的链条按指令量出来，和它 readme 的表反推出的周期对（第 0 行要求标志落在 RTS 的最后一个周期＝写入后 29831），再去动旋钮 |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 
 **取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：

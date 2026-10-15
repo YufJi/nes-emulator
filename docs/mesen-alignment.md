@@ -343,6 +343,35 @@ Their value is the evidence; do not retry them without reading this first.
   instead of 432 and every sample ran long. With the transfer charged once, the channel's own
   numbers are the thing to compare again — which is why Mesen's read-time counter (§2.4) is
   worth a second attempt instead of another guess.
+- **`cpu_interrupts_v2`: the frame counter's flag one cycle later (`$4017` hold 4/3 → 5/4).**
+  Measured: `3-nmi_and_irq` **passes**, and `5-branch_delays_irq`'s `test_jmp` table comes out
+  *exactly* as the test's readme prints it. But `4-jitter` ("Odd jitter not handled properly"),
+  `5-len_timing` ("First length of mode 0 is too late") and `6-irq_flag_timing` ("Flag first set
+  too late") all go red, and AccuracyCoin drops 34 → 36 failing. Reverted: those three pin the
+  flag's cycle against the `$4017` write, so the missing cycle is not in the flag.
+- **`cpu_interrupts_v2`: the IRQ judged one cycle later (the sample from two cycles back
+  instead of one).** Measured: `3-nmi_and_irq` passes, and `5-branch_delays_irq`'s `test_jmp`,
+  `test_branch_not_taken` and `test_branch_taken_pagecross` tables match the readme
+  **row for row** — the first time this emulator reproduces that table — with only the last
+  sub-test (the commented "special case") still off (`05 05 03` where the readme has
+  `05 01 00`). But `1-cli_latency` check 4 ("exactly one instruction after CLI should execute
+  before IRQ is taken") and `4-scanline_timing` check 3 go red. Reverted: those two pin the
+  ordinary IRQ judgement to the penultimate cycle, which is Mesen's rule too.
+- **`cpu_interrupts_v2`: the `$4017` write's parity inverted.** Measured: `5-branch_delays_irq`
+  is byte-identical (so its write's hold is not what is off), `3-nmi_and_irq`'s output changes,
+  and AccuracyCoin drops 34 → 36. Reverted.
+
+  **What that leaves.** All three remaining failures are the same ±1-cycle question about where
+  the frame counter's flag, the IRQ judgement and the instruction stream sit relative to each
+  other. Three sets of tests constrain it, and no single one-cycle knob satisfied all three:
+  `4-jitter`, `5-len_timing` and `6-irq_flag_timing` pin the flag against the `$4017` write;
+  `1-cli_latency` and `4-scanline_timing` pin the judgement to the penultimate cycle; and the
+  three `cpu_interrupts_v2` tables want those two shifted by a cycle relative to the code
+  (`4-irq_and_dma`'s own table is the readme's shifted one row as well: ours opens
+  `0 +0 / 0 +1 / 1 +2`, the readme `0 +0 / 1 +1 / 1 +2`). The next attempt should measure the
+  *chain* — the instruction-by-instruction cost of the delays in `5-branch_delays_irq`'s
+  `begin` against the cycle the readme's table implies (its `test_jmp` row 0 wants the flag on
+  the RTS's last cycle, i.e. write + 29831) — instead of moving the knobs again.
 
 ## 8. Decisions still open
 
@@ -395,6 +424,7 @@ Branch:
 | P5 | PAL 16/5, fractional dot accumulator, region-correct audio clock | Done (the ratio) | `dbdf7cc`: a PAL frame is 33,247.5 CPU cycles | PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) — unverifiable without a PAL ROM |
 | P6 | Mappers: NES 2.0 header, bus conflicts | Partly done | `4e1c7a6`: conflicts for 2/3/7/11/66/71; five header and two conflict tests | Dispatching on the submapper (Mesen reads that from its CRC-keyed database, not the header); then boards 64/158/185/115 |
 | P7 | Audio resampling | Not started | — | Band-limited (blip) resampling; no reference recording, so acceptance is "does not break what passes" |
+| P3c | `cpu_interrupts_v2`'s three remaining tables | **In progress** | Two one-cycle experiments measured and withdrawn (the frame counter's flag one cycle later; the IRQ judged one cycle later). The second reproduces `5-branch_delays_irq`'s first three tables row for row, at the cost of `1-cli_latency` and `4-scanline_timing`. Both are written up in §7. | Measure the *chain* of `5-branch_delays_irq`'s `begin` against the cycle its readme table implies (its row 0 wants the flag on the RTS's last cycle, i.e. write + 29831) before moving any knob |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
 **How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the
