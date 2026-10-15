@@ -130,8 +130,10 @@ randomised CPU/PPU alignment (this core has offset 0).
    (`7-dmc_basics`'s one-byte buffer, `8-dmc_rates`'s rate-0 window).
 4. **OAM decay** (§2.2). The open-bus half is done — `ppu_open_bus` is green; what is left is
    the decay of OAM itself, the rendering-time `$2007` timing, and the grayscale/emphasis bits.
-5. **PAL** (16/5 with a fractional dot accumulator, then PAL's own PPU/APU rules). Needs PAL test
-   ROMs to be verifiable at all.
+5. **PAL**. The ratio is done — PAL runs 16/5 with the fractional dot accumulator, so a PAL
+   frame is 33247.5 CPU cycles and the audio clock derives from the real 3.2 rather than from
+   the NTSC-shaped constant. What is left is PAL's own PPU/APU rules (`_nmiScanline`,
+   `_vblankEnd`, PAL's OAM refresh); none of it is verifiable without a PAL test ROM.
 6. **Mappers** (§2.5): the submapper table first (it unblocks three boards at once), then bus
    conflicts, then 64/158/185/115.
 7. **Audio resampling** against Mesen's band-limited reference.
@@ -147,9 +149,6 @@ randomised CPU/PPU alignment (this core has offset 0).
   The dot was measured against blagg's `05-nmi_timing`/`06-suppression`/`02-vbl_set_time`, and no
   suite discriminates between 0, 1 and 2 for writes; revisit it as one experiment when the
   per-dot renderer lands.
-- **PAL models 15/5** (3 dots per CPU cycle) rather than the real 16/5, so PAL frame rate, audio
-  and CPU cycles stay self-consistent. Flipping it is two numbers plus
-  `has_whole_dot_ratio`, which a test ties together.
 
 ## 5. Instruments
 
@@ -223,6 +222,7 @@ several runs.
 | Open-bus decay | The PPU's own bus latch; a per-bit three-frame stamp; `$2007` driving the byte it returns; palette reads driving six bits and taking two from the bus; `$2002` driving three | **`ppu_open_bus` green** (0/1 → 1/1) |
 | Frame counter phase | `$4017` holds the counter 3 cycles (4 on the odd APU phase); the frame IRQ flag goes up for three cycles in a row starting 29831 clocks after the write | **`4-jitter`, `5-len_timing` and `6-irq_flag_timing` green** (apu_test 3/8 → 6/8); rest of the baseline unchanged |
 | DMC fixes | `write_4015` now sets the enable flag (`$4015` bit 4 was never set at all), a read of `$4015` no longer clears the DMC IRQ flag, and the byte counter follows *played* bytes with a two-stage buffer | `7-dmc_basics` from its 2nd check to its 19th; `8-dmc_rates` still on the baseline (rate 0's window) |
+| PAL 16/5 | `cpu_divider` 15 → 16, `has_whole_dot_ratio` PAL → false so the master-clock path runs, and the APU's rate derives from `dots_per_cpu_cycle()` instead of a 3.0 constant | No ROM moved (no PAL ROMs); a PAL frame is 33,247.5 CPU cycles and the audio clock lands within 10 Hz of the published rate |
 
 ### Experiments that were implemented, measured and reverted
 

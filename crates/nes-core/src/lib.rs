@@ -167,14 +167,13 @@ impl Region {
     /// whose PPU:CPU ratio is not a whole number of dots be expressed exactly
     /// instead of drifting.
     ///
-    /// A real PAL board is 16 ticks per CPU cycle and 5 per dot, i.e. 3.2 dots
-    /// per CPU cycle; the model still runs PAL at 3:1 (15/5), so PAL's own
-    /// ratio lands together with the PAL work (§15.1 of `docs/architecture.md`)
-    /// and until then the dividers keep meaning what they mean today.
+    /// PAL's 16 over the PPU's 5 is the real board's 3.2:1, so a PAL CPU cycle
+    /// is not a whole number of PPU dots and the machine runs its
+    /// fractional-dot path (`NesBus::has_whole_dot_ratio`).
     pub fn cpu_divider(&self) -> u32 {
         match self {
             Region::Ntsc => 12,
-            Region::Pal => 15,
+            Region::Pal => 16,
         }
     }
 
@@ -209,10 +208,18 @@ impl Region {
         }
     }
 
-    /// CPU cycles in one frame (341 PPU dots per scanline, `ppu_divider /
-    /// cpu_divider` dots per CPU cycle — 3 for both regions today).
+    /// CPU cycles in one frame: 341 PPU dots per scanline, `cpu_divider /
+    /// ppu_divider` dots per CPU cycle. PAL's 3.2 means a frame is not a whole
+    /// number of CPU cycles, so this rounds down and the run loop's bound
+    /// admits the cycle the boundary falls in.
     pub fn cpu_cycles_per_frame(&self) -> u32 {
         self.scanlines() as u32 * PPU_CYCLES_PER_SCANLINE * self.ppu_divider() / self.cpu_divider()
+    }
+
+    /// PPU dots that go by in one CPU cycle, as the real ratio rather than as a
+    /// whole number: 3 on NTSC, 3.2 on PAL.
+    pub fn dots_per_cpu_cycle(&self) -> f64 {
+        self.cpu_divider() as f64 / self.ppu_divider() as f64
     }
 }
 
@@ -227,7 +234,10 @@ mod tests {
         assert_eq!(Region::Pal.last_scanline(), 311);
 
         assert_eq!(Region::Ntsc.cpu_cycles_per_frame(), 29780);
-        assert_eq!(Region::Pal.cpu_cycles_per_frame(), 35464);
+        // PAL's 3.2 dots per cycle makes a frame 33247.5 cycles; the count
+        // rounds down and the run loop admits the cycle the boundary is in.
+        assert_eq!(Region::Pal.cpu_cycles_per_frame(), 33247);
+        assert_eq!(Region::Pal.dots_per_cpu_cycle(), 3.2);
 
         assert!(Region::Ntsc.cpu_cycles_per_frame() < Region::Pal.cpu_cycles_per_frame());
 
@@ -257,10 +267,13 @@ mod tests {
     fn test_clock_dividers_agree_with_the_frame_geometry() {
         for region in [Region::Ntsc, Region::Pal] {
             let dots_per_cycle = region.ppu_divider();
-            // Both regions run at three dots per CPU cycle today. A real PAL
-            // board is 16/5; when that lands this assertion becomes region
-            // dependent, which is exactly the change the ratio is there for.
-            assert_eq!(region.cpu_divider(), dots_per_cycle * 3);
+            // NTSC is exactly 12/4 = 3; PAL is the real board's 16/5 = 3.2,
+            // which is what puts a PAL cycle out of step with the dot grid.
+            let expected = match region {
+                Region::Ntsc => dots_per_cycle * 3,
+                Region::Pal => dots_per_cycle * 16 / 5,
+            };
+            assert_eq!(region.cpu_divider(), expected);
 
             // A frame is `scanlines * 341` dots, and a whole number of CPU
             // cycles covers all of it bar the division's remainder.

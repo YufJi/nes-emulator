@@ -109,30 +109,29 @@ The machine keeps a single **master clock** and derives both chips from it — t
 Mesen's NES core uses (`cpuDivider`/`ppuDivider`): a CPU cycle advances the clock by
 `Region::cpu_divider()` ticks and a PPU dot by `Region::ppu_divider()`. NTSC's pair is 12/4,
 i.e. the real 21.477 MHz crystal divided down, and 12/4 is exactly **3 PPU dots per CPU
-cycle**; PAL models 15/5, also 3, because a real PAL board's 3.2:1 ratio is not emulated yet
-(§15.1). The duration of a frame follows from the scanline count rather than a hardcoded
-60 Hz:
+cycle**; PAL's is 16/5, the real board's **3.2**, which is why a PAL CPU cycle is not a whole
+number of dots and the machine runs its master-clock path on PAL. The duration of a frame
+follows from the scanline count rather than a hardcoded 60 Hz:
 
 | Metric | NTSC | PAL |
 | --- | --- | --- |
 | Scanlines / frame | 262 | 312 |
 | PPU dots / scanline | 341 | 341 |
 | PPU clock | 5,369,318 Hz | 5,320,313 Hz |
-| CPU cycles / frame | 29,780 | 35,464 |
+| CPU cycles / frame | 29,780 | 33,247 (a frame is 33,247.5) |
 | **Frame rate (published by the core)** | **60.0985 Hz** | **50.0067 Hz** |
 
 Frame rate is derived by `Region::fps() = ppu_clock_rate / (341 × scanlines)`, and hosts get
 it from `Nes::frame_rate()`. **Do not assume 60 Hz** — a PAL cartridge is 50.0067 Hz, and a
 PAL frame is longer.
 
-> **Implementation note**: the APU sample clock likewise uses `ppu_clock_rate / 3` (i.e. the
-> rate at which the machine actually advances the CPU), not the cartridge's nominal CPU
-> clock. A real PAL board's PPU:CPU ratio is 3.2:1, while the core models it as 3:1, so the
-> nominal CPU clock and the implementation disagree; audio that kept using NTSC constants
-> would play about 7.6% out of tune.
+> **Implementation note**: the APU sample clock uses `ppu_clock_rate / dots_per_cpu_cycle`
+> (i.e. the rate at which the machine actually advances the CPU), not the cartridge's nominal
+> CPU clock. With PAL at its real 3.2 that is 1,662,598 Hz, within 10 Hz of the published
+> 1,662,607 Hz.
 
 The per-cycle loop spells the ratio out twice, and the two spellings are held together by
-tests: a whole ratio (both regions today) runs a counted dot loop, and a ratio that is not
+tests: a whole ratio (NTSC) runs a counted dot loop, and a ratio that is not
 whole runs the PPU to a master-clock target (`NesBus::run_ppu_to`), which is where PAL's
 3.2:1 lands. The counted form is the one the inner loop pays for — doing the clock
 arithmetic every cycle measured about 4% of the frame.
@@ -922,15 +921,11 @@ clone needs `npm run build:wasm` before building the front end.
 
 ### 15.1 Emulation accuracy
 
-- **PAL timing model**: the core uniformly assumes "1 CPU cycle = 3 PPU dots", while a real
-  PAL machine has a 3.2:1 PPU:CPU ratio. As a result, PAL frame rate, audio, and CPU cycles
-  are self-consistent (nothing plays out of tune), but there is still a systematic
-  deviation from real hardware timing. The machinery for the fix is in place — the machine
-  runs off a master clock, and `Region::ppu_divider()`/`Region::cpu_divider()` are the only
-  place the ratio is written down (§3.1) — so switching PAL to its real 16/5 is a matter of
-  flipping those two numbers plus `has_whole_dot_ratio`, which is guarded by a test that
-  fails if the three disagree. Doing it also moves PAL's audio resampler, frame-cycle
-  target and mapper IRQ phase, which is why it waits for PAL test ROMs.
+- **PAL is ratio-only so far**: PAL runs the hardware's real 16/5 (3.2 dots per CPU cycle,
+  which is why it takes the fractional-dot accumulator path) and its audio clock is derived
+  from that real ratio. PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM
+  refresh) are still missing, and without a PAL test ROM none of it can be verified — which
+  is why they stay on the list in `docs/mesen-alignment.md` §2.2/§3.
 - **A12 is Mesen's model, with the addresses reconstructed**: the cartridge is handed the
   address of the *last real access*, held between accesses (`NesBus::bus_address`, the shape
   of Mesen's `SetBusAddress`/`_ppuBusAddress`), and only the dots that really fetch drive it —

@@ -69,9 +69,6 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// pending-transfer state the machine now carries between accesses.
 const STATE_VERSION: u8 = 10;
 
-/// PPU dots the machine advances per CPU cycle.
-const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
-
 /// How far into a CPU cycle the chip performs a bus access: after the cycle's
 /// first two PPU dots.
 ///
@@ -725,7 +722,7 @@ impl NesBus {
         // The machine advances three PPU dots per CPU cycle, so this is the
         // rate the APU is really ticked at — not the cartridge's nominal CPU
         // clock, which PAL boards do not match under that ratio.
-        let cpu_clock_rate = self.region.ppu_clock_rate() as f64 / PPU_DOTS_PER_CPU_CYCLE;
+        let cpu_clock_rate = self.region.ppu_clock_rate() as f64 / self.region.dots_per_cpu_cycle();
         self.audio_accumulator += self.audio_sample_rate as f64;
         if self.audio_accumulator >= cpu_clock_rate {
             self.audio_accumulator -= cpu_clock_rate;
@@ -1074,18 +1071,21 @@ impl NesBus {
 
     /// Whether one CPU cycle is a whole number of PPU dots.
     ///
-    /// Both regions are today, which is what lets the inner loop below run a
-    /// counted dot loop instead of doing master-clock arithmetic per cycle
-    /// (measured, that arithmetic is worth about 4% of the frame). PAL's real
-    /// 3.2:1 is the case the general path exists for: flipping the PAL arm to
-    /// `false` is what turns the dot-per-cycle accounting on, and
-    /// `test_the_whole_ratio_flags_agree_with_the_dividers` fails until the
-    /// dividers say the same thing.
+    /// NTSC's 12/4 is, which lets the inner loop run a counted dot loop instead
+    /// of doing master-clock arithmetic per cycle (measured, that arithmetic is
+    /// worth about 4% of the frame). PAL's 16/5 is the case the general path
+    /// exists for, and it is the one PAL takes:
+    /// `test_the_whole_ratio_flags_agree_with_the_dividers` holds the flag to
+    /// the dividers so the two cannot drift apart.
     #[inline]
     fn has_whole_dot_ratio(&self) -> bool {
         match self.region {
             Region::Ntsc => true,
-            Region::Pal => true,
+            // A PAL cycle is 3.2 dots: the PPU takes four on some cycles and
+            // three on the others, which is what the master-clock path below
+            // exists for. Flipping this on without the dividers to match fails
+            // `test_the_whole_ratio_flags_agree_with_the_dividers`.
+            Region::Pal => false,
         }
     }
 
@@ -1093,7 +1093,9 @@ impl NesBus {
     ///
     /// Spelled out per region so the inner loop divides nothing;
     /// `test_the_whole_ratio_flags_agree_with_the_dividers` holds it to
-    /// `cpu_divider / ppu_divider`.
+    /// `cpu_divider / ppu_divider`. Only NTSC reaches it — a PAL cycle is 3.2
+    /// dots and takes the master-clock path — but the arm has to say something,
+    /// and the value that agrees with the dividers is the one to say.
     #[inline]
     fn whole_dots_per_cpu_cycle(&self) -> u32 {
         match self.region {
@@ -3071,31 +3073,54 @@ mod tests {
     /// two dots into the cycle - the placement the ROM suites pin down.
     #[test]
     fn test_a_cpu_cycle_covers_three_dots_with_the_access_two_in() {
-        for region in [Region::Ntsc, Region::Pal] {
-            let mut bus = NesBus::new();
-            bus.region = region;
-
-            assert!(
-                bus.has_whole_dot_ratio(),
-                "{region:?} takes the counted fast path"
+        // NTSC's 12/4 is a whole number of dots per cycle, so it runs the
+        // counted fast path and every cycle covers exactly three.
+        let mut bus = NesBus::new();
+        bus.region = Region::Ntsc;
+        assert!(
+            bus.has_whole_dot_ratio(),
+            "NTSC takes the counted fast path"
+        );
+        let mut previous = bus.ppu_clock_at(0);
+        for cycle in 1..=64u64 {
+            let clock = bus.ppu_clock_at(cycle);
+            assert_eq!(
+                (clock - previous) / bus.ppu_divider(),
+                bus.whole_dots_per_cpu_cycle() as u64,
+                "cycle {cycle} does not cover three dots"
             );
-            let mut previous = bus.ppu_clock_at(0);
-            for cycle in 1..=64u64 {
-                let clock = bus.ppu_clock_at(cycle);
-                assert_eq!(
-                    (clock - previous) / bus.ppu_divider(),
-                    bus.whole_dots_per_cpu_cycle() as u64,
-                    "{region:?}: cycle {cycle} does not cover three dots"
-                );
-                previous = clock;
+            previous = clock;
 
-                let cycle_start = bus.master_clock_at(cycle - 1);
-                assert_eq!(
-                    bus.access_clock(cycle - 1) - cycle_start,
-                    ACCESS_DOTS as u64 * bus.ppu_divider(),
-                    "{region:?}: an access belongs two dots in"
-                );
-            }
+            let cycle_start = bus.master_clock_at(cycle - 1);
+            assert_eq!(
+                bus.access_clock(cycle - 1) - cycle_start,
+                ACCESS_DOTS as u64 * bus.ppu_divider(),
+                "an access belongs two dots in"
+            );
+        }
+
+        // PAL's 16/5 is 3.2, so it runs the master-clock path: four dots on
+        // some cycles and three on the others, adding up to the real ratio over
+        // five of them.
+        bus.region = Region::Pal;
+        assert!(
+            !bus.has_whole_dot_ratio(),
+            "PAL's cycle is not a whole number of dots"
+        );
+        let five_cycles = bus.master_clock_at(5) - bus.master_clock_at(0);
+        assert_eq!(
+            five_cycles / bus.ppu_divider(),
+            16,
+            "five PAL cycles are sixteen dots"
+        );
+        for cycle in 1..=64u64 {
+            let start = bus.master_clock_at(cycle - 1);
+            let end = bus.master_clock_at(cycle);
+            let dots = (end - start) / bus.ppu_divider();
+            assert!(
+                dots == 3 || dots == 4,
+                "cycle {cycle} covers {dots} dots, not three or four"
+            );
         }
     }
 

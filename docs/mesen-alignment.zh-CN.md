@@ -113,7 +113,9 @@ CPU 侧最大的差距，DMC 的工作依赖它。
    `8-dmc_rates` 的 rate 0 窗口）。
 4. **OAM 衰减**（§2.2）。open bus 那一半已完成（`ppu_open_bus` 转绿），剩下的是 OAM 自身的
    衰减、渲染期 `$2007` 的时序，以及灰阶/强调色。
-5. **PAL**（16/5 加分数 dot 累加器，然后 PAL 专属的 PPU/APU 规则）。没有 PAL ROM 就无法验收。
+5. **PAL**。比例已完成——PAL 跑 16/5，启用分数 dot 累加器，一帧是 33247.5 个 CPU 周期，音频时钟
+   也改成按真实的 3.2 推导而不是照 NTSC 形状的常量。剩下的是 PAL 专属的 PPU/APU 规则
+   （`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）；没有 PAL 测试 ROM 就无法验收。
 6. **Mapper**（§2.5）：先做 submapper 表（一次解锁三个板），再总线冲突，再 64/158/185/115。
 7. **音频重采样**对齐 Mesen 的带限参考。
 
@@ -126,8 +128,6 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   `_startClockCount`/`_endClockCount`（12 中的 6/6）把它放在约一个 dot 处。这个 dot 是拿
   blargg 的 `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` 测出来的，且没有任何套件能区分
   写入时的 0/1/2；逐 dot 渲染落地后作为一次实验重新审视。
-- **PAL 建模为 15/5**（每 CPU 周期 3 个 dot）而不是真机的 16/5，使 PAL 的帧率/音频/CPU 周期自洽。
-  切换它只需两个数加上 `has_whole_dot_ratio`，有测试把三者钉在一起。
 
 ## 5. 观测手段
 
@@ -194,6 +194,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | open bus 衰减 | 换成 PPU 自己的总线锁存；每位三帧时间戳；`$2007` 用它返回的字节驱动总线；调色板读只驱动六位、另两位取自总线；`$2002` 只驱动三位 | **`ppu_open_bus` 转绿**（0/1 → 1/1） |
 | 帧计数器相位 | `$4017` 让计数器迟 3 个周期起步（奇数 APU 相位时 4 个）；帧 IRQ 标志从写入后第 29831 个周期起连续三个周期置位 | **`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿**（apu_test 3/8 → 6/8）；其余基线不变 |
 | DMC 修复 | `write_4015` 现在会置 enable 标志（此前 `$4015` 的 bit 4 从未置位）；读 `$4015` 不再清 DMC 的 IRQ 标志；字节计数按**已播放**的字节走，并改成两级缓冲 | `7-dmc_basics` 从第 2 项推进到第 19 项；`8-dmc_rates` 仍在基线（rate 0 的窗口） |
+| PAL 16/5 | `cpu_divider` 15 → 16，`has_whole_dot_ratio` 的 PAL 分支改 false 以启用主时钟路径，APU 的速率改由 `dots_per_cpu_cycle()` 推导而不再用 3.0 常量 | ROM 无移动（没有 PAL ROM）；PAL 一帧是 33,247.5 个 CPU 周期，音频时钟与公布值相差不到 10 Hz |
 
 ### 实现、实测、随后撤回的实验
 
