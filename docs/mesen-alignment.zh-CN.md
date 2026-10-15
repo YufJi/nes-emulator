@@ -113,7 +113,12 @@ CPU 侧最大的差距，DMC 的工作依赖它。
     后是 7P）正好补上 128P 与 135P 之间的差。
 - ~~**DMC 的 PAL 周期表**~~ 已完成：`DmcChannel::set_region` 在 PAL 上选用 Mesen 的
   `_dmcPeriodLookupTablePal`（`398, 354, ... 50`），卡带载入时由主机把制式传下去。
-- 重采样是采样保持抽取；Mesen 用带限（blip）重采样。
+- ~~重采样~~ 已完成：音频链路换成带限重采样，即 blargg 的 `blip_buf` 的形状，也是 Mesen 的 NES
+  混音器跑的东西（`NesSoundMixer` 喂两个 `blip_t`）：混音电平的每一次变化算一个阶跃，阶跃按它在输出
+  采样点里的分数位置加一段 32 相位、相位间线性插值、16 抽头的脉冲响应；输出是这些贡献的累加，再由
+  一个一阶高通保持交流耦合（blip 的 `bass_shift = 9`）。有一处有意的偏差：Mesen 先让 blip 跑在
+  96 kHz、再用 Hermite 重采样到设备率，本内核直接重采样到设备率——少一级，而且带宽限制正好落在
+  宿主请求的那个速率上，而不是一个中间速率。
 - 扩展音源（VRC6、MMC5、Sunsoft 5B）有实现，但从未与参考录音比对过；N163 与 FDS 缺失。
 
 ### 2.5 Mapper
@@ -149,7 +154,7 @@ CPU 侧最大的差距，DMC 的工作依赖它。
    （`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）；没有 PAL 测试 ROM 就无法验收。
 6. **Mapper**（§2.5）：NES 2.0 头部与总线冲突已完成。剩下的是按 submapper 分派（需要 Mesen 放在
    数据库里的逐 ROM 数据，而不是头部字段），以及 64/158/185/115 四个板。
-7. **音频重采样**对齐 Mesen 的带限参考。
+7. ~~**音频重采样**~~ —— 已完成：上面的带限重采样器（§2.4/§7）。
 
 ## 4. 有意保留的偏差（未经决策不要"修正"）
 
@@ -343,8 +348,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
 `sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` 2/5、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过）。单元测试 592
-全绿；帧耗时约 1.69 ms（release、nestest 600 帧、中位数）。工作分支 `codex/mesen-alignment`。
+`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过）。单元测试 597
+全绿；帧耗时约 1.82 ms（release、nestest 600 帧、中位数）。工作分支 `codex/mesen-alignment`。
 
 | # | 事项 | 状态 | 证据（提交 / 实测） | 下一步 |
 | --- | --- | --- | --- | --- |
@@ -356,8 +361,9 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P4 | §2.2 寄存器细节：open bus 衰减、渲染期 `$2007`、灰阶掩蔽、PAL 强调位，以及九位颜色解出的 RGB | 完成 | `af2f375`、`8247f10`，加上 512 项强调表（§7）：`ppu_open_bus` 转绿；8 个单元测试 | 无——相邻项是 sprite 的**求值**仍是逐行（P1） |
 | P5 | PAL 16/5 + 分数 dot 累加器 + 按制式推导音频时钟 | 完成（比例部分） | `dbdf7cc`：PAL 一帧 33,247.5 个 CPU 周期 | PAL 专属 PPU/APU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）——需要 PAL ROM 才能验收 |
 | P6 | Mapper：NES 2.0 头部、总线冲突 | 部分完成 | `4e1c7a6`：冲突覆盖 2/3/7/11/66/71；5 个头部 + 2 个冲突用例 | 按 submapper 分派板级行为（Mesen 靠按 CRC 的 game database，不是头部字段）；之后是 64/158/185/115 |
-| P7 | 音频重采样 | 未开始 | — | 带限（blip）重采样；无参考录音，验收只到"不破坏现有测试" |
+| P7 | 音频重采样 | 完成 | 上面的带限重采样器；四个单元测试盯滤波器本身（阶跃幅度、交流耦合、带内幅度、带外折返）加一个整机静音测试 | 本地 ROM 侧没有欠账；与 Mesen 两级链路剩下的差异只能靠参考录音判断 |
 | P3c | `cpu_interrupts_v2` 剩下的三张表 | **进行中** | 两个"挪一个周期"的实验都已实测并撤回（标志晚一周期；IRQ 判决晚一周期）：后者把 `5-branch_delays_irq` 前三张表逐行重现，代价是 `1-cli_latency` 与 `4-scanline_timing` 变红。两个实验都在 §7。 | 先把 `5-branch_delays_irq` 里 `begin` 的链条按指令量出来，和它 readme 的表反推出的周期对（第 0 行要求标志落在 RTS 的最后一个周期＝写入后 29831），再去动旋钮 |
+| 带限重采样（§2.4） | 音频链路换成 blip 的形状：电平变化算阶跃，32 相位 × 16 抽头并在相位间线性插值，输出用积分器累加、再用一阶高通保持交流耦合（Mesen 的 `NesSoundMixer` + `blip_buf`）；直接重采样到宿主速率，没有 Mesen 那个 96 kHz 中间级 | ROM 基线零移动（没有 ROM 听声音）；单元测试 592 → 597，含这一项的要害——30 kHz 输入折成的 18 kHz 在采样保持下是满强度，带限之后至少低 20 dB；帧耗时 1.69 → 1.82 ms；存档版本 11 → 12 |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 
 **取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：

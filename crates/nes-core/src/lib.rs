@@ -21,6 +21,7 @@ extern crate alloc;
 use alloc::string::String;
 
 pub mod apu;
+pub mod audio;
 pub mod bus;
 pub mod clock;
 pub mod cpu;
@@ -142,6 +143,16 @@ impl crate::state::StateField for Region {
 }
 
 impl Region {
+    /// The rate the APU is really ticked at, in Hz.
+    ///
+    /// The APU is clocked once per CPU cycle, and a CPU cycle is worth
+    /// [`Region::dots_per_cpu_cycle`] PPU dots — so this is the PPU's clock
+    /// divided by that ratio, and not the nominal CPU rate, which PAL boards
+    /// do not match under it. It is the clock the audio resampler runs from.
+    pub fn apu_clock_rate(&self) -> f64 {
+        self.ppu_clock_rate() as f64 / self.dots_per_cpu_cycle()
+    }
+
     /// Get the CPU clock rate in Hz
     pub fn cpu_clock_rate(&self) -> u32 {
         match self {

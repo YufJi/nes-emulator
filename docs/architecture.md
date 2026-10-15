@@ -416,7 +416,7 @@ flowchart LR
 
     Channels --> Mix["Mix apu.output()"]
     Expansion -->|"mapper.audio_output()"| Mix
-    Mix --> Resample["Resample<br/>accumulator: ppu_clock/3 → audio_sample_rate"]
+    Mix --> Resample["Band-limited resampling<br/>blip's shape: a step, its impulse<br/>ppu_clock/3 → audio_sample_rate"]
     Resample --> Queue["VecDeque queue<br/>500 ms cap, drop oldest when exceeded"]
     Queue --> Fill["Nes::fill_audio(out)"]
     Fill --> Device["Host audio device<br/>Oboe / CoreAudio / Web Audio"]
@@ -984,10 +984,12 @@ clone needs `npm run build:wasm` before building the front end.
   the plan), so `5-len_timing` is back on the list until the frame counter's own phase is
   right. What is left of `cpu_interrupts_v2` is one or two cycles per case, and `4-irq_and_dma`
   still tracks the frame counter's phase.
-- **Resampling quality**: currently sample-and-hold decimation with no anti-aliasing
-  filter; going from 1.79 MHz down to 44.1 kHz introduces slight aliasing. The improvement
-  direction is second-order/linear interpolation or a half-band filter, done inside
-  `fill_audio`.
+- **Resampling**: the core resamples the mixer's CPU-rate output to the host's rate with a
+  band-limited filter, the shape blargg's `blip_buf` has (see
+  [`mesen-alignment.md`](./mesen-alignment.md) §2.4), so aliasing from the 1.79 MHz source is
+  filtered out rather than folded into the audible band. Mesen's own chain has one more stage
+  (blip at 96 kHz, then a Hermite resample to the device rate); nothing here needs it, and a
+  reference recording would be the only way to judge the difference.
 - **Unsupported mappers**: cartridges outside `supported_mappers()` are rejected outright.
   Section 8 lists what is missing and why (NES 2.0 submapper-driven boards, RAMBO-1, and
   the CHR-from-VRAM window that needs the PPU hook below).
@@ -1077,7 +1079,6 @@ backlog, so they are written down here to stop them being re-litigated:
 
 1. **Add a fingerprint to save states** (low cost, fixes the correctness problem with
    cross-device sync).
-2. **Resampling quality** (the change is confined to the audio path, with visible payoff).
 3. **Zero-copy WASM picture** (front-end performance, with measurable payoff).
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").

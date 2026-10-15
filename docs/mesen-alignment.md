@@ -132,7 +132,15 @@ randomised CPU/PPU alignment (this core has offset 0).
 - ~~**DMC's PAL period table**~~ Done: `DmcChannel::set_region` picks Mesen's
   `_dmcPeriodLookupTablePal` (`398, 354, ... 50`) on PAL, and the console hands the region
   down when a cartridge is loaded.
-- Resampling is sample-and-hold decimation; Mesen uses a band-limited (blip) resampler.
+- ~~Resampling~~ Done: the audio path is a band-limited resampler now, the shape blargg's
+  `blip_buf` has and the one Mesen's NES mixer runs (`NesSoundMixer` feeds two `blip_t`
+  buffers): a change in the mixer's level is a step, a step at a fractional output position
+  adds a 32-phase, linearly interpolated, sixteen-tap impulse response, the output is the
+  running sum of those contributions, and a one-pole high-pass keeps it AC coupled (blip's
+  `bass_shift = 9`). One deviation, and it is deliberate: Mesen runs blip at 96 kHz and then
+  Hermite-resamples that to the host's rate, where this core resamples straight to the host's
+  rate — one less stage, and the band limit lands exactly on the rate the host asked for
+  instead of on an intermediate one.
 - Expansion audio (VRC6, MMC5, Sunsoft 5B) exists but has never been compared against a
   reference recording; N163 and FDS are missing.
 
@@ -178,7 +186,7 @@ randomised CPU/PPU alignment (this core has offset 0).
 6. **Mappers** (§2.5): the NES 2.0 header and bus conflicts are in. What is left is dispatching
    on the submapper (which needs the per-ROM data Mesen keeps in its database, not the header),
    and the boards 64/158/185/115.
-7. **Audio resampling** against Mesen's band-limited reference.
+7. ~~**Audio resampling**~~ — done: the band-limited resampler above (§2.4/§7).
 
 ## 4. Deliberate deviations (do not "fix" these without a decision)
 
@@ -415,7 +423,7 @@ double-charged fetch hid here for several steps (§7).
 `blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
 2/5, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94 passed,
-0 skipped). Unit tests: 592. Frame cost: about 1.69 ms (release, 600 frames of nestest, median).
+0 skipped). Unit tests: 597. Frame cost: about 1.82 ms (release, 600 frames of nestest, median).
 Branch:
 `codex/mesen-alignment`.
 
@@ -429,8 +437,9 @@ Branch:
 | P4 | §2.2's register details: open-bus decay, rendering-time `$2007`, grayscale mask, PAL emphasis swap, and the nine colour bits' RGB | Done | `af2f375`, `8247f10`, and the 512-entry emphasis table (§7): `ppu_open_bus` green; eight unit tests | Nothing — the sprite *evaluation* being per line (P1) is the neighbouring item |
 | P5 | PAL 16/5, fractional dot accumulator, region-correct audio clock | Done (the ratio) | `dbdf7cc`: a PAL frame is 33,247.5 CPU cycles | PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) — unverifiable without a PAL ROM |
 | P6 | Mappers: NES 2.0 header, bus conflicts | Partly done | `4e1c7a6`: conflicts for 2/3/7/11/66/71; five header and two conflict tests | Dispatching on the submapper (Mesen reads that from its CRC-keyed database, not the header); then boards 64/158/185/115 |
-| P7 | Audio resampling | Not started | — | Band-limited (blip) resampling; no reference recording, so acceptance is "does not break what passes" |
+| P7 | Audio resampling | Done | The band-limited resampler above; four unit tests on the filter itself (step level, AC coupling, in-band amplitude, the out-of-band fold) plus the machine-level silence test | Nothing for the local ROMs; a reference recording would be the only way to judge the remaining difference from Mesen's two-stage chain |
 | P3c | `cpu_interrupts_v2`'s three remaining tables | **In progress** | Two one-cycle experiments measured and withdrawn (the frame counter's flag one cycle later; the IRQ judged one cycle later). The second reproduces `5-branch_delays_irq`'s first three tables row for row, at the cost of `1-cli_latency` and `4-scanline_timing`. Both are written up in §7. | Measure the *chain* of `5-branch_delays_irq`'s `begin` against the cycle its readme table implies (its row 0 wants the flag on the RTS's last cycle, i.e. write + 29831) before moving any knob |
+| Band-limited resampling (§2.4) | The audio path became blip's shape: a level change is a step, 32 phases × 16 taps with linear interpolation between them, an integrator for the output and a one-pole high-pass (Mesen's `NesSoundMixer` + `blip_buf`), at the host's rate directly rather than through Mesen's 96 kHz intermediate | ROM baseline unchanged (no ROM listens); unit tests 592 → 597, including the point of the exercise — a 30 kHz input, whose 18 kHz fold is at full strength under sample-and-hold, comes out ≥ 20 dB down; frame cost 1.69 → 1.82 ms; state version 11 → 12 |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
 **How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the

@@ -386,7 +386,7 @@ flowchart LR
 
     Channels --> Mix["混音 apu.output()"]
     Expansion -->|"mapper.audio_output()"| Mix
-    Mix --> Resample["重采样<br/>累加器：ppu_clock/3 → audio_sample_rate"]
+    Mix --> Resample["带限重采样<br/>blip 形状：阶跃 + 脉冲响应<br/>ppu_clock/3 → audio_sample_rate"]
     Resample --> Queue["VecDeque 队列<br/>上限 500 ms，超限丢最旧"]
     Queue --> Fill["Nes::fill_audio(out)"]
     Fill --> Device["宿主音频设备<br/>Oboe / CoreAudio / Web Audio"]
@@ -884,8 +884,10 @@ flowchart LR
   做同步，这次摆放是"把误差挪了个地方"而不是消除它（见计划的 §4.3），因此在帧计数器自身的相位
   正确之前，`5-len_timing` 回到了失败清单里。`cpu_interrupts_v2` 剩下的每项还差一两个 cycle，
   而 `4-irq_and_dma` 依旧跟着帧计数器的相位走。
-- **重采样质量**：当前为采样保持式抽取，没有抗混叠滤波；从 1.79 MHz 降到 44.1 kHz
-  会有轻微混叠。改进方向是二阶/线性插值或半带滤波，并在 `fill_audio` 内部完成。
+- **重采样**：内核把混音器在 CPU 速率上的输出重采样到宿主速率时用的是带限滤波，即 blargg
+  `blip_buf` 的形状（见 [`mesen-alignment.zh-CN.md`](./mesen-alignment.zh-CN.md) §2.4），
+  因此 1.79 MHz 源上的混叠是被滤掉的，而不是折进可听频段。Mesen 自己的链路多一级（blip 跑
+  96 kHz，再 Hermite 到设备率）；这里不需要那一级，两者的差别只能靠参考录音判断。
 - **未支持的 Mapper**：`supported_mappers()` 之外的卡带会被明确拒绝。缺哪些、为什么，
   见第 8 节（依赖 NES 2.0 submapper 的板卡、RAMBO-1、以及需要 PPU 钩子的 CHR-取-自-VRAM 窗口）。
 - **未定义 opcode 让 CPU 停机，不再 panic**：256 个 opcode 字节全部有实现
@@ -954,7 +956,6 @@ flowchart LR
 ### 15.7 建议的推进顺序
 
 1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
-2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
 5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`cpu_interrupts_v2` 的 3 项、

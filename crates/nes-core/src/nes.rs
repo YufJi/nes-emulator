@@ -72,7 +72,9 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// timer's period is the table's value rather than one cycle more. The field
 /// set is the same, but the fields no longer mean what a version-10 state wrote
 /// into them.
-const STATE_VERSION: u8 = 11;
+/// 12: the audio path became a band-limited resampler, so the sample
+/// accumulator gave way to the resampler's own phase, ring and integrator.
+const STATE_VERSION: u8 = 12;
 
 /// How far into a CPU cycle the chip performs a bus access: after the cycle's
 /// first two PPU dots.
@@ -330,7 +332,10 @@ struct NesBus {
     /// Interleaved stereo audio waiting for the host to pull it
     audio_buffer: VecDeque<f32>,
     /// Fractional accumulator that paces the APU resampler
-    audio_accumulator: f64,
+    /// The band-limited resampler that takes the APU's CPU-rate output down to
+    /// the host's sample rate, and the level it was last handed.
+    resampler: crate::audio::BandLimiter,
+    audio_level: f64,
     /// Rate the APU output is resampled to, for the host's audio device
     audio_sample_rate: u32,
     /// Cap on `audio_buffer`, derived from the sample rate
@@ -414,7 +419,8 @@ crate::state::state_fields!(NesBus {
     controllers,
     controller_strobe,
     irq_pending,
-    audio_accumulator,
+    resampler,
+    audio_level,
     cpu_cycles,
     pending_oam_dma,
     pending_dmc_dma,
@@ -449,7 +455,14 @@ impl NesBus {
                 DEFAULT_SAMPLE_RATE,
                 AUDIO_BUFFER_MS,
             )),
-            audio_accumulator: 0.0,
+            // The APU's own clock is not fixed until a cartridge's region is
+            // known, so the resampler is built for NTSC here and re-rated when
+            // the region or the host's rate changes.
+            resampler: crate::audio::BandLimiter::new(
+                Region::Ntsc.apu_clock_rate(),
+                DEFAULT_SAMPLE_RATE as f64,
+            ),
+            audio_level: 0.0,
             audio_sample_rate: DEFAULT_SAMPLE_RATE,
             audio_capacity: audio_capacity_floats(DEFAULT_SAMPLE_RATE, AUDIO_BUFFER_MS),
             cpu_cycles: 0,
@@ -495,6 +508,7 @@ impl NesBus {
         self.audio_sample_rate = sample_rate;
         self.audio_capacity = audio_capacity_floats(sample_rate, AUDIO_BUFFER_MS);
         self.audio_buffer.clear();
+        self.rate_the_resampler();
     }
 
     /// Load a ROM into the system
@@ -531,6 +545,7 @@ impl NesBus {
         self.region = self.region_override.unwrap_or(header.region);
         self.pipeline.set_region(self.region);
         self.apu.set_region(self.region);
+        self.rate_the_resampler();
         self.has_battery = header.has_battery;
         self.submapper = header.submapper;
 
@@ -786,6 +801,16 @@ impl NesBus {
         }
     }
 
+    /// Point the resampler at the rates the machine is running at now.
+    ///
+    /// The APU is ticked once per CPU cycle, so its clock is the region's
+    /// [`Region::apu_clock_rate`] — not the cartridge's nominal CPU rate, which
+    /// PAL boards do not match under the 3.2 dots per cycle the machine runs.
+    fn rate_the_resampler(&mut self) {
+        self.resampler
+            .set_rates(self.region.apu_clock_rate(), self.audio_sample_rate as f64);
+    }
+
     /// Advance the APU by one CPU cycle and, when the resampler is due,
     /// append an interleaved stereo sample to the output buffer.
     fn tick_apu_cycle(&mut self) {
@@ -808,22 +833,20 @@ impl NesBus {
             return;
         }
 
-        // The machine advances three PPU dots per CPU cycle, so this is the
-        // rate the APU is really ticked at — not the cartridge's nominal CPU
-        // clock, which PAL boards do not match under that ratio.
-        let cpu_clock_rate = self.region.ppu_clock_rate() as f64 / self.region.dots_per_cpu_cycle();
-        self.audio_accumulator += self.audio_sample_rate as f64;
-        if self.audio_accumulator >= cpu_clock_rate {
-            self.audio_accumulator -= cpu_clock_rate;
-            // The cartridge's own sound hardware (VRC6, MMC5, ...) mixes on
-            // top of the 2A03 output.
-            let expansion = self.mapper.as_ref().map_or(0.0, |m| m.audio_output());
-            let sample = self.apu.output() + expansion;
-            // Mono APU output, duplicated for the left and right channels.
+        // The cartridge's own sound hardware (VRC6, MMC5, ...) mixes on top of
+        // the 2A03 output. A change in the level is a step for the resampler;
+        // holding still costs nothing.
+        let expansion = self.mapper.as_ref().map_or(0.0, |m| m.audio_output());
+        let level = f64::from(self.apu.output() + expansion);
+        self.resampler.set_level(level, &mut self.audio_level);
+        self.resampler.advance();
+
+        // Mono APU output, duplicated for the left and right channels.
+        while let Some(sample) = self.resampler.read() {
             self.audio_buffer.push_back(sample);
             self.audio_buffer.push_back(sample);
-            self.trim_audio_buffer();
         }
+        self.trim_audio_buffer();
     }
 
     /// Drop the oldest samples once the host has fallen behind the buffer cap.
@@ -3275,6 +3298,26 @@ mod tests {
             }
         }
         peak
+    }
+
+    /// A machine whose APU is silent produces silence: the resampler's
+    /// integrator must not put a DC level of its own into the output.
+    #[test]
+    fn test_a_silent_machine_produces_silence() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        for _ in 0..2 {
+            nes.frame();
+        }
+
+        let mut buffer = vec![0.0f32; 4096];
+        let written = nes.fill_audio(&mut buffer);
+        assert!(written > 0, "the machine produced audio samples");
+        assert!(
+            buffer[..written].iter().all(|sample| *sample == 0.0),
+            "silence stays silent: {:?}",
+            &buffer[..written.min(8)]
+        );
     }
 
     #[test]
