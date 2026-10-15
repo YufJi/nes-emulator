@@ -4,12 +4,11 @@ import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
-import android.os.Message
 import android.util.Log
-import android.view.Choreographer
 import android.view.KeyEvent
 import android.view.MotionEvent
 import java.io.File
+import com.sun.jna.Pointer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import uniffi.nes_uniffi.Config
@@ -47,19 +46,58 @@ class NesSession(
     private val input = InputMapper()
 
     private val thread = HandlerThread("nes-emulation").apply { start() }
-    private val handler = Handler(thread.looper) { message ->
-        handleMessage(message)
-        true
-    }
+    private val handler = Handler(thread.looper)
 
     private var nes: Nes? = null
     private var clock: FrameClock? = null
 
+    /**
+     * The two buffers the picture is copied into, alternating.
+     *
+     * The core's frame buffer is read straight into one of these — one `memcpy`
+     * from the machine's own memory — rather than asking the binding for a fresh
+     * `ByteArray` per frame: at 60 frames a second that was 245 KB allocated and
+     * thrown away 60 times over, which on a TV is 14 MB/s of large-object churn
+     * for the garbage collector to sweep. Two buffers rather than one because
+     * the GL thread may still be uploading the buffer the emulation thread
+     * filled last time; the one it is not holding is the one to fill.
+     */
+    private val frameBuffers = Array(2) { ByteArray(FRAME_BYTES) }
+    private var frameBufferIndex = 0
+
     /** Whether the display link is currently driving the console. */
+    @Volatile
     private var pacing = false
 
     /** Set while the session is in the foreground; no frames are run otherwise. */
+    @Volatile
     private var foreground = false
+
+    /**
+     * The pacemaker: a timer on this thread, not the display link.
+     *
+     * `FrameClock` is a timestamp-driven pacer precisely so that a host without a
+     * usable display link can still run a console at its own rate — the embedded
+     * plan in `docs/embedded-handheld.md` drives it from a hardware timer, and
+     * this is the same idea with `System.nanoTime()`.
+     *
+     * A `Choreographer` looks like the better answer and is not: measured on a
+     * Sony BRAVIA, callbacks arrived every ~84 ms (one in five vsyncs — the
+     * system throttles the link when the app is not the one being composited),
+     * so `FrameClock` was handed a fifth of the timestamps, hit its four-frame
+     * catch-up budget on each of them and settled at 50 frames a second. A timer
+     * is not the display's business to throttle, and the picture is presented on
+     * demand anyway, so pacing and presentation stay independent.
+     */
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (!pacing || !foreground) return
+            runFrames(System.nanoTime() / NANOS_PER_MILLI)
+            if (pacing && foreground) {
+                handler.postDelayed(this, TICK_INTERVAL_MS)
+            }
+        }
+    }
 
     private var lastReportAt = 0L
     private var lastHalted = false
@@ -92,6 +130,14 @@ class NesSession(
             )
             console.loadRom(rom)
             if (saveRam != null) console.loadSaveRam(saveRam)
+
+            // The core keeps a dot-resolution record of the PPU bus for hosts
+            // that ask for one — the mapper tests are the ones that do — and
+            // writes to it on every one of the 89,342 dots in a frame. Measured
+            // on a Sony BRAVIA, not keeping it is worth 5–8% of the frame budget:
+            // small next to the emulation itself, and free, because this front
+            // end never reads the trace. Zero means "do not keep one".
+            console.setPpuBusTraceCapacity(0u)
 
             // One frame up front: the first picture is not blank, and a
             // cartridge that traps fails here rather than mid-session.
@@ -150,21 +196,26 @@ class NesSession(
         foreground = true
         surface.onResume()
         audio.start()
-        // A pause must not be emulated as elapsed time, and the next timestamps
-        // have no relationship to the last ones seen.
-        onEmulation { clock?.reset() }
-        if (!pacing) {
-            pacing = true
-            Choreographer.getInstance().postFrameCallback(vsync)
+        onEmulation {
+            // A pause must not be emulated as elapsed time, and the next
+            // timestamps have no relationship to the last ones seen.
+            clock?.reset()
+            if (!pacing) {
+                pacing = true
+                handler.post(ticker)
+            }
         }
     }
 
     /** Stop advancing; the console keeps its state. */
     fun pause() {
         foreground = false
-        pacing = false
         surface.onPause()
         audio.stop()
+        onEmulation {
+            pacing = false
+            handler.removeCallbacks(ticker)
+        }
     }
 
     /**
@@ -210,32 +261,6 @@ class NesSession(
 
     // MARK: - The emulation thread
 
-    /**
-     * The display link.
-     *
-     * Registered on the main thread, which is where a `Choreographer` belongs;
-     * each timestamp is handed to the emulation thread rather than used here, so
-     * the interface is never blocked by a frame of emulation.
-     */
-    private val vsync = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            if (!pacing || !foreground) return
-            val nowMs = frameTimeNanos / NANOS_PER_MILLI
-            // One tick in flight at a time: when the emulation thread is busy the
-            // timestamp it has not read yet is replaced rather than queued, and
-            // `FrameClock` repays the elapsed time itself.
-            handler.removeMessages(MSG_TICK)
-            handler.obtainMessage(MSG_TICK, nowMs).sendToTarget()
-            Choreographer.getInstance().postFrameCallback(this)
-        }
-    }
-
-    private fun handleMessage(message: Message) {
-        if (message.what == MSG_TICK) {
-            runFrames(message.obj as Double)
-        }
-    }
-
     private fun runFrames(nowMs: Double) {
         val console = nes ?: return
         val pacer = clock ?: return
@@ -253,12 +278,36 @@ class NesSession(
                 return
             }
         }
-
         publish(console)
         // One upload per wake-up, of the newest frame, however many were run.
-        surface.show(console.frameBufferBytes())
+        surface.show(readFrame(console))
         surface.requestRender()
         pumpAudio(console)
+    }
+
+    /**
+     * Copy the console's picture into a buffer of this front end's own.
+     *
+     * The address is the core's `frame_buffer_ptr`, re-read every frame because
+     * `load_state` may move the buffer, and its length is checked against what
+     * the core says it holds before anything is read: this is the one place the
+     * Android host touches the machine's memory directly, and a wrong length
+     * would be a crash rather than a wrong picture. (The iOS app does the same
+     * thing with `UnsafeRawBufferPointer`; the binding's `frame_buffer_bytes` is
+     * the copying alternative that Kotlin hosts without JNA would use.)
+     */
+    private fun readFrame(console: Nes): ByteArray {
+        val pending = surface.pendingBuffer()
+        val index = if (pending === frameBuffers[frameBufferIndex]) 1 - frameBufferIndex else frameBufferIndex
+        frameBufferIndex = index
+        val target = frameBuffers[index]
+
+        val pointer = console.frameBufferPtr().toLong()
+        val bytes = console.frameBufferLen().toLong() * BYTES_PER_PIXEL.toLong()
+        if (pointer != 0L && bytes == target.size.toLong()) {
+            Pointer(pointer).read(0L, target, 0, target.size)
+        }
+        return target
     }
 
     /**
@@ -350,6 +399,17 @@ class NesSession(
         /** A load or a save is a few hundred kilobytes' worth of work at most. */
         const val EMULATION_CALL_TIMEOUT_MS = 2_000L
 
-        const val MSG_TICK = 1
+        /** One frame of `0xAARRGGBB` pixels: 256 x 240 x 4. */
+        const val FRAME_BYTES = 256 * 240 * 4
+        const val BYTES_PER_PIXEL = 4
+
+        /**
+         * How often the loop looks at the clock.
+         *
+         * A quarter of a frame at 60 Hz, so a frame is released within a few
+         * milliseconds of the clock asking for it, and an idle wake-up is a
+         * message dispatch rather than any work.
+         */
+        const val TICK_INTERVAL_MS = 4L
     }
 }

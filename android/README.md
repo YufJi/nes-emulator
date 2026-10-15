@@ -53,10 +53,19 @@ cd android
 
 ## ABIs
 
-`arm64-v8a` is what every Android TV device worth shipping to runs. `x86_64` and `x86` are
-the emulator's two architectures — `x86` because Google's own Android TV system images are
-32-bit up to API 31. Adding `armeabi-v7a` to the list in `build-core.sh` and to `abiFilters`
-in `app/build.gradle.kts` is the whole of what an older 32-bit box needs.
+Four, because an APK with no matching ABI does not install at all — Android refuses it
+rather than failing later:
+
+| ABI | What runs it |
+| --- | --- |
+| `arm64-v8a` | current TV boxes and sets |
+| `armeabi-v7a` | sets that run a 32-bit Android userspace on 64-bit silicon — Sony's BRAVIA line among them |
+| `x86_64` | 64-bit emulator images |
+| `x86` | Google's own Android TV system images, which are 32-bit up to API 31 |
+
+`adb shell getprop ro.product.cpu.abilist` on the target says which one it needs; the list
+lives in `build-core.sh` and in `abiFilters` in `app/build.gradle.kts`, and the two must
+agree.
 
 ## Trying it on an emulator
 
@@ -96,6 +105,34 @@ Three things are worth knowing before changing any of it:
 - **Downloads are not a library.** A cartridge goes to one file in the cache and is deleted
   when the session ends; the battery save and the four save-state slots are keyed by the
   game's name and outlive it.
+
+## Performance on a TV
+
+Two decisions in this front end were worth real frames on the target hardware, and both were
+measured on a Sony BRAVIA 4K VH22 (ARMv8 cores at 1.8 GHz, 32-bit Android userspace, 1080p):
+
+- **The pacemaker is a timer on the emulation thread, not the display link.** That TV delivers
+  a `Choreographer` callback every ~84 ms — one in five vsyncs — so `FrameClock` was handed a
+  fifth of the timestamps, spent its four-frame catch-up budget on each of them and settled at
+  a hard 50 fps. A timer is not the display's business to throttle, and the picture is
+  presented on demand anyway, so pacing and presentation stay independent.
+- **The core's PPU bus trace is switched off.** It writes a sample on every one of the 89,342
+  dots in a frame, and this front end never reads it. Worth 5–8%.
+
+What is left is the emulation itself:
+
+| | Per frame |
+| --- | --- |
+| Emulation (`Nes::frame`) | ~13.4 ms |
+| This front end (picture + audio plumbing) | ~1.4 ms |
+| Budget at 60 Hz | 16.6 ms |
+
+So a TV of that class runs NTSC at ~96% of real time — Super Mario Bros measures ~58 fps with
+sound on. The wall is the core's per-dot PPU and CPU work, not this host; the same build on a
+phone, a 64-bit box or an emulator has headroom, and a PAL cartridge (50 Hz) is comfortable.
+Two things that did *not* help, worth recording so nobody tries them again: enabling
+NEON/ARMv8 codegen for `armeabi-v7a` changed nothing measurable, and neither did turning the
+core's audio capture off (the resampler is not what costs the time).
 
 ## Keys
 

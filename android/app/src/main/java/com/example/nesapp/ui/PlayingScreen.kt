@@ -17,7 +17,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -40,7 +39,6 @@ import com.example.nesapp.Screen
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.delay
 
 /**
  * The game, full screen, with whatever panel is over it.
@@ -72,22 +70,13 @@ fun PlayingScreen(state: AppState, screen: Screen.Playing) {
  * The strip along the bottom: what is running, how fast, and whether it is still
  * running at all.
  *
- * It hides itself a few seconds in, because a bar over a full-screen game stops
- * being informative and starts being in the way. Anything worth saying —
- * a pause, a halted CPU — pins it back up.
+ * Always there, at the owner's request: the frame rate is the one number worth
+ * watching while a front end is being tuned, and a readout that has to be coaxed
+ * out with a menu is a readout nobody looks at. It stays small and slightly
+ * transparent so it does not compete with the picture.
  */
 @Composable
 private fun StatusBar(state: AppState, screen: Screen.Playing) {
-    var visible by remember { mutableStateOf(true) }
-
-    LaunchedEffect(screen.game) {
-        visible = true
-        delay(STATUS_VISIBLE_MILLIS)
-        visible = false
-    }
-
-    if (!visible && !state.paused && !state.cpuHalted) return
-
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomStart) {
         Box(
             Modifier
@@ -321,6 +310,3 @@ private fun focusMenuItem(
     remember(index)
     runCatching { requesters[index].requestFocus() }
 }
-
-/** How long the status strip stays up after a game starts. */
-private const val STATUS_VISIBLE_MILLIS = 4_000L

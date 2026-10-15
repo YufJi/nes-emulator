@@ -39,6 +39,15 @@ class VideoSurface(context: Context, private val settings: Settings) : GLSurface
         renderer.pending = frame
     }
 
+    /**
+     * The buffer the GL thread is holding, if any.
+     *
+     * The emulation thread fills a reused buffer instead of allocating a new one
+     * per frame, so it has to know which of its two buffers is still being
+     * uploaded for: writing that one would tear the picture mid-copy.
+     */
+    fun pendingBuffer(): ByteArray? = renderer.pending
+
     /** Drop the picture, so a new game does not start on the last one's last frame. */
     fun clearPicture() {
         renderer.pending = null

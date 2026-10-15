@@ -48,10 +48,17 @@ cd android
 
 ## ABI
 
-`arm64-v8a` 是真正值得发布的电视盒子都在跑的那个。`x86_64` 和 `x86` 是模拟器的两种架构
-——其中 `x86` 是因为 Google 自己的 Android TV 系统镜像到 API 31 还是 32 位的。要给更老的
-32 位盒子用，把 `armeabi-v7a` 加进 `build-core.sh` 的列表和 `app/build.gradle.kts` 的
-`abiFilters` 就够了。
+一共四个，因为 APK 里没有匹配的 ABI 时 Android 直接拒绝安装，而不是装完再报错：
+
+| ABI | 谁在跑 |
+| --- | --- |
+| `arm64-v8a` | 现在的电视盒子与电视机 |
+| `armeabi-v7a` | 64 位芯片上跑 32 位 Android 用户态的机型，索尼 BRAVIA 系列就在其中 |
+| `x86_64` | 64 位模拟器镜像 |
+| `x86` | Google 自己的 Android TV 系统镜像（到 API 31 都是 32 位） |
+
+目标设备上 `adb shell getprop ro.product.cpu.abilist` 会告诉你它要哪一个；名单同时写在
+`build-core.sh` 和 `app/build.gradle.kts` 的 `abiFilters` 里，两处必须一致。
 
 ## 在模拟器上试
 
@@ -88,6 +95,32 @@ export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
   `0xAARRGGBB` 的小端序，所以像素是蓝色在前）。
 - **下载不是收藏。** 卡带只落到缓存里的一个文件，退出这一局就删掉；电池存档和四个即时
   存档槽按游戏名存放，比卡带活得久。
+
+## 电视上的性能
+
+这个前端里有两处决定在目标硬件上真正换回了帧，都是在索尼 BRAVIA 4K VH22 上量的
+（ARMv8 核心 1.8GHz、32 位 Android 用户态、1080p）：
+
+- **节拍器是模拟线程上的定时器，而不是显示链路。** 那台电视每 ~84ms 才给一次
+  `Choreographer` 回调（五个 vsync 里只给一个），于是 `FrameClock` 只拿到五分之一的
+  时间戳，每次都把四帧的追帧预算用光，稳稳地卡在 50fps。定时器不是显示链路能节流的
+  东西，而画面本来就是按需呈现的，所以节拍与呈现互不干扰。
+- **关掉内核的 PPU 总线轨迹。** 它一帧要在 89342 个 dot 上各记一条样本，而这个前端
+  从来不读它。值 5–8%。
+
+剩下的就是模拟本身：
+
+| | 每帧 |
+| --- | --- |
+| 模拟（`Nes::frame`） | 约 13.4ms |
+| 本前端（画面 + 音频管道） | 约 1.4ms |
+| 60Hz 的预算 | 16.6ms |
+
+所以这个级别的电视跑 NTSC 大约是实时的 96%——超级玛丽开着声音量到约 58fps。瓶颈是内核
+逐 dot 的 PPU 与 CPU 工作，不是这个宿主；同一份构建在手机、64 位盒子或模拟器上都有余量，
+PAL 卡带（50Hz）则很宽裕。另外两件**没有**效果的事也记在这里，免得再试一遍：给
+`armeabi-v7a` 打开 NEON / ARMv8 代码生成没有任何可测量的变化，关掉内核的音频采集也一样
+（重采样不是耗时所在）。
 
 ## 按键
 
