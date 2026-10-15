@@ -941,8 +941,11 @@ impl NesBus {
             .ppu
             .mask
             .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
-        let in_vblank =
-            self.ppu.scanline >= 240 && self.ppu.scanline <= self.region.last_scanline();
+        // The pre-render line is *not* in this range: Mesen's pipeline runs for
+        // `_scanline < 240`, and the pre-render line is -1 to it, so its
+        // fetches happen - including the sprite phase, whose first pattern
+        // fetch is the rise a game with an all-nametable background waits for.
+        let in_vblank = self.ppu.scanline >= 240 && self.ppu.scanline < self.region.last_scanline();
         if !rendering || in_vblank {
             return;
         }
