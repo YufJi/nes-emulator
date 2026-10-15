@@ -99,14 +99,16 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 
 ## 3. 优先级，以及每一步应当拿回什么
 
-1. **逐 dot PPU 渲染器**（§2.1）。拿回 `ppu_vbl_nmi/10-even_odd_timing`、`mmc3_test_2/
-   4-scanline_timing` 的最后那 1 个 dot、AccuracyCoin 里 sprite 0 与渲染时序的一大批，并把 A12
-   与 sprite 0 从"重建"变成"产生"。§2.1 的其余部分都随之而来。
-2. **DMA 移进 `MemoryRead`**（§2.3）。拿回 `cpu_interrupts_v2/4-irq_and_dma`，并解锁 DMC。
+1. ~~**逐 dot PPU 渲染器**（§2.1）~~ —— 已完成：`4-scanline_timing` 转绿，A12 与 sprite 0 从
+   "重建"变成"产生"，整行渲染器删除。`ppu_vbl_nmi/10-even_odd_timing` 没有移动；§2.1 里还剩
+   sprite 的**求值**仍是逐行。
+2. ~~**DMA 移进 `MemoryRead`**（§2.3）~~ —— 已完成，但没有 ROM 移动：`4-irq_and_dma` 的轨迹
+   逐字节未变，与 §7 的 L4a 结论一致。它买到的是 DMC 需要的那套形状。
 3. **APU 帧计数器相位，然后 DMC**（§2.4）。拿回 `4-jitter`、`5-len_timing`、
-   `6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates`。
+   `6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates`。两次尝试都已撤回（§7）；下一次动它之前，
+   先弄清两个套件各自读的是哪个事件。
 4. **OAM 衰减**（§2.2）。open bus 那一半已完成（`ppu_open_bus` 转绿），剩下的是 OAM 自身的
-   衰减。
+   衰减、渲染期 `$2007` 的时序，以及灰阶/强调色。
 5. **PAL**（16/5 加分数 dot 累加器，然后 PAL 专属的 PPU/APU 规则）。没有 PAL ROM 就无法验收。
 6. **Mapper**（§2.5）：先做 submapper 表（一次解锁三个板），再总线冲突，再 64/158/185/115。
 7. **音频重采样**对齐 Mesen 的带限参考。
@@ -210,14 +212,22 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
   第一个该查的点）；`$2007` 的读必须用它返回的那个字节去驱动这条锁存；调色板的读要从 open bus
   取高两位、却只驱动低六位，而 `$2002` 只驱动高三位，好让低五位继续衰减。
 
+- **帧计数器的相位，第二次尝试（§2.4）**。按对 Mesen 最直接的理解实现——序列在最后两个 tick
+  请求、标志三个周期后置位，`$4017` 让计数器迟 3（或 4）个周期起步——实测确实有推进：
+  `4-jitter` 从"Frame irq is set too soon"走到"Odd jitter not handled properly"（前半段转绿），
+  `5-len_timing` 从第 2 子项走到第 7 子项；但凡是能让 `4-jitter` 满足的变体，`6-irq_flag_timing`
+  都报"Flag first set too late"，而能让 `6-irq_flag_timing` 满足的那个又把 `4-jitter` 打回
+  "too soon"。两个套件读的不是同一个事件——与上一轮的结论一致。因此下一次动计数器之前，先读这两个
+  ROM 的源码、把它们测到的标志所在 cycle 并排打出来。本次实验已撤回，树里没有留下任何东西。
+
 ## 8. 仍需拍板的决策
 
-1. **渲染器做到哪一层**：只做背景流水线（取指、移位寄存器、逐 dot 像素），还是连 sprite 流水线
-   一起（`LoadSprite`、逐 dot sprite 像素、sprite 0 落在像素处）。前者是后者的前提，而 ROM 收益
-   主要在后者。
-2. **`6-MMC3_alt`**：加一张小的按 ROM 覆盖表来选备用 IRQ 版本，还是解析 NES 2.0 submapper
-   （后者同时解锁 116/176）。
-3. **PAL**：切换比例与 dot 累加器，还是在拿到 PAL ROM 之前把 PAL 作为已记录的近似保留。
-4. **音频**：扩展芯片做金标准音频比对，还是维持单元测试。
-5. **访问的 dot**（§4）：逐 dot 渲染落地后，对 `05-nmi_timing`/`06-suppression`/`02-vbl_set_time`
-   做一次实验。
+**已拍板**：渲染器一次做到背景 + sprite（§2.1）；`6-MMC3_alt` 走 NES 2.0 submapper 表而不是按
+ROM 的覆盖表（§2.5）；PAL 切到 16/5 加分数 dot 累加器（§4）；扩展音源维持单元测试、不做金标准
+比对；访问的 dot（§4）等一次用 `Nes::ppu_bus_trace` 做的实验——逐 dot 渲染落地后它才可能做。
+
+1. **访问的 dot**（§4）：用 `Nes::ppu_bus_trace` 跑
+   `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` 的实验，除非证据反对，继续保留
+   `ACCESS_DOTS = 2`。
+2. **APU 帧计数器的相位**（§2.4）：先弄清 `4-jitter` 与 `6-irq_flag_timing` 各自读的是哪个事件，
+   再动计数器（§7）。

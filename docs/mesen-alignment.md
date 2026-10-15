@@ -114,15 +114,17 @@ randomised CPU/PPU alignment (this core has offset 0).
 
 ## 3. Priority, and what each step should buy
 
-1. **The per-dot PPU renderer** (§2.1). Buys `ppu_vbl_nmi/10-even_odd_timing`, the last dot of
-   `mmc3_test_2/4-scanline_timing`, a large slice of AccuracyCoin's sprite 0 and rendering-timing
-   tests, and turns A12 and sprite 0 from "reconstructed" into "produced". Everything else in
-   §2.1 follows from it.
-2. **DMA inside `MemoryRead`** (§2.3). Buys `cpu_interrupts_v2/4-irq_and_dma` and unblocks DMC.
+1. ~~**The per-dot PPU renderer** (§2.1)~~ — done: `4-scanline_timing` is green, A12 and the
+   sprite-0 hit are produced rather than reconstructed, and the whole-line renderer is gone.
+   `ppu_vbl_nmi/10-even_odd_timing` did not move, and the sprite *evaluation* is the piece of
+   §2.1 that is still line-at-a-time.
+2. ~~**DMA inside `MemoryRead`** (§2.3)~~ — done, and it moved no ROM: `4-irq_and_dma`'s trace is
+   byte-identical, which matches §7's L4a finding. What it buys is the shape DMC needs.
 3. **The APU frame counter's phase, then DMC** (§2.4). Buys `4-jitter`, `5-len_timing`,
-   `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates`.
+   `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates`. Two attempts have now been withdrawn
+   (§7); the first thing to do is settle which event each suite reads.
 4. **OAM decay** (§2.2). The open-bus half is done — `ppu_open_bus` is green; what is left is
-   the decay of OAM itself.
+   the decay of OAM itself, the rendering-time `$2007` timing, and the grayscale/emphasis bits.
 5. **PAL** (16/5 with a fractional dot accumulator, then PAL's own PPU/APU rules). Needs PAL test
    ROMs to be verifiable at all.
 6. **Mappers** (§2.5): the submapper table first (it unblocks three boards at once), then bus
@@ -245,16 +247,27 @@ Their value is the evidence; do not retry them without reading this first.
   read had to take its top two bits from the open bus while driving only its low six, with
   `$2002` driving only its top three so its low five keep decaying.
 
+- **The frame counter's phase, again (§2.4).** The obvious reading of Mesen — request the IRQ
+  on the sequence's last two ticks and let the flag appear three cycles later, with `$4017`
+  starting the counter 3 (or 4) cycles late — was implemented and measured. It moves
+  `4-jitter` from "Frame irq is set too soon" to "Odd jitter not handled properly" (i.e. its
+  early checks go green) and `5-len_timing` from its 2nd to its 7th sub-test, but every
+  variant that satisfies `4-jitter` leaves `6-irq_flag_timing` saying "Flag first set too
+  late", and the one that satisfies `6-irq_flag_timing` puts `4-jitter` back to "too soon".
+  The two suites are not reading the same event, which is what §7 of the earlier attempt
+  concluded too: settle that question first — read both ROMs' sources and print the cycle the
+  flag lands on, side by side — before touching the counter again. The experiment was
+  withdrawn; nothing of it is in the tree.
+
 ## 8. Decisions still open
 
-1. **How far into the renderer to go**: the background pipeline alone (fetches, shift registers,
-   per-dot pixels) or the sprite pipeline too (`LoadSprite`, per-dot sprite pixels, sprite 0 at
-   the pixel). The first is a prerequisite for the second; the ROM payoff is mostly in the
-   second.
-2. **`6-MMC3_alt`**: add a small per-ROM override table for the alternate IRQ revision, or parse
-   NES 2.0 submappers (which also unblocks 116/176).
-3. **PAL**: flip the ratio and the dot accumulator, or leave PAL as a documented approximation
-   until PAL ROMs are available.
-4. **Audio**: whether the expansion chips get a golden-audio comparison or stay unit-tested.
-5. **The access dot** (§4): one experiment against `05-nmi_timing`/`06-suppression`/
-   `02-vbl_set_time` once the renderer is per dot.
+**Decided**: the renderer went all the way (background *and* sprites, §2.1); `6-MMC3_alt` will be
+reached through a NES 2.0 submapper table rather than a per-ROM override list (§2.5); PAL switches
+to 16/5 with the fractional dot accumulator (§4); the expansion chips keep their unit tests rather
+than a golden-audio comparison; and the access dot (§4) waits for an experiment with
+`ppu_bus_trace`, which the per-dot renderer now makes possible.
+
+1. **The access dot** (§4): run the `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` experiment
+   with `Nes::ppu_bus_trace` and keep `ACCESS_DOTS = 2` unless it says otherwise.
+2. **The APU frame counter's phase** (§2.4): settle which event `4-jitter` and
+   `6-irq_flag_timing` each read before touching the counter again (§7).
