@@ -525,6 +525,7 @@ impl NesBus {
         self.pipeline.set_mirroring(header.mirroring);
         self.region = self.region_override.unwrap_or(header.region);
         self.pipeline.set_region(self.region);
+        self.apu.set_region(self.region);
         self.has_battery = header.has_battery;
         self.submapper = header.submapper;
 

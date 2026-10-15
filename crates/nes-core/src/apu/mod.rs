@@ -389,6 +389,11 @@ impl Apu {
         self.dmc.supply_dma_byte(value);
     }
 
+    /// Follow the console's TV system, whose DMC has its own set of periods.
+    pub fn set_region(&mut self, region: crate::Region) {
+        self.dmc.set_region(region);
+    }
+
     /// Address of the byte the DMC channel is waiting for, if any.
     pub fn dmc_dma_request(&self) -> Option<u16> {
         self.dmc.dma_request()

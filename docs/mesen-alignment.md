@@ -119,9 +119,9 @@ randomised CPU/PPU alignment (this core has offset 0).
   Before implementing Mesen's version, work out which of the two the hardware does — the ROM
   and the source disagree, and `7-dmc_basics` check 19 reads the *same* two bits at a point
   where Mesen's model and the playback model give opposite answers.
-- **DMC's PAL period table**: Mesen has a second table for PAL
-  (`398, 354, ... 50`) where this core uses the NTSC one. Small, and unverifiable without a
-  PAL ROM.
+- ~~**DMC's PAL period table**~~ Done: `DmcChannel::set_region` picks Mesen's
+  `_dmcPeriodLookupTablePal` (`398, 354, ... 50`) on PAL, and the console hands the region
+  down when a cartridge is loaded.
 - Resampling is sample-and-hold decimation; Mesen uses a band-limited (blip) resampler.
 - Expansion audio (VRC6, MMC5, Sunsoft 5B) exists but has never been compared against a
   reference recording; N163 and FDS are missing.

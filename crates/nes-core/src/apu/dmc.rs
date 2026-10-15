@@ -7,12 +7,28 @@
 
 use crate::apu::AudioChannel;
 use crate::prelude::*;
+use crate::Region;
 
 /// DMC timer period table for NTSC (16 preset values)
 /// These values represent the number of CPU cycles between output unit clocks.
 const DMC_PERIOD_TABLE: [u16; 16] = [
     428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
 ];
+
+/// The same table for PAL, where the APU runs on the other crystal: Mesen keeps
+/// a second table (`_dmcPeriodLookupTablePal`) and picks it from the console's
+/// region.
+const DMC_PERIOD_TABLE_PAL: [u16; 16] = [
+    398, 354, 316, 298, 276, 236, 210, 198, 176, 148, 132, 118, 98, 78, 66, 50,
+];
+
+/// The sixteen output-clock periods for a console's region.
+fn dmc_period_table(region: Region) -> &'static [u16; 16] {
+    match region {
+        Region::Ntsc => &DMC_PERIOD_TABLE,
+        Region::Pal => &DMC_PERIOD_TABLE_PAL,
+    }
+}
 
 /// DMC channel play modes
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,8 +73,11 @@ pub struct DmcChannel {
     irq_generated: bool,
     /// Current play mode (normal, loop, or IRQ)
     play_mode: PlayMode,
-    /// Timer period (from DMC_PERIOD_TABLE)
+    /// Timer period (from the region's period table)
     timer_period: u16,
+    /// The region's sixteen output-clock periods, fixed when the channel is
+    /// built: PAL's APU runs on a slower crystal and has its own table.
+    period_table: &'static [u16; 16],
     /// Timer counter (counts down to 0, then clocks output unit)
     timer_counter: u16,
     /// Output level (0-126, stored as 7-bit value)
@@ -149,6 +168,7 @@ impl DmcChannel {
             irq_generated: false,
             play_mode: PlayMode::Normal,
             timer_period: DMC_PERIOD_TABLE[0],
+            period_table: dmc_period_table(Region::Ntsc),
             timer_counter: 0,
             output_level: 0,
             sample_start_address: 0xC000,
@@ -320,13 +340,19 @@ impl DmcChannel {
         self.dma_request
     }
 
+    /// Follow the console's TV system, whose APU has its own set of periods.
+    pub fn set_region(&mut self, region: Region) {
+        self.period_table = dmc_period_table(region);
+        self.timer_period = self.period_table[0];
+    }
+
     /// Reset the channel to its power-on state.
     pub fn reset(&mut self) {
         self.is_enabled = false;
         self.has_sample = false;
         self.irq_generated = false;
         self.play_mode = PlayMode::Normal;
-        self.timer_period = DMC_PERIOD_TABLE[0];
+        self.timer_period = self.period_table[0];
         self.timer_counter = 0;
         self.output_level = 0;
         self.sample_start_address = 0xC000;
@@ -392,7 +418,7 @@ impl DmcChannel {
 
         // Bits 3-0: frequency index
         let freq_index = (value & 0x0F) as usize;
-        self.timer_period = DMC_PERIOD_TABLE[freq_index];
+        self.timer_period = self.period_table[freq_index];
     }
 
     /// Write to $4011 - DAC value
@@ -878,6 +904,25 @@ mod tests {
         // Both set (bits 7-6 = 11) = Loop mode
         dmc.write_register(0x4010, 0xC0);
         assert_eq!(dmc.play_mode, PlayMode::Loop);
+    }
+
+    /// PAL's APU runs on the other crystal, so its DMC has its own set of
+    /// periods (Mesen's `_dmcPeriodLookupTablePal`).
+    #[test]
+    fn test_dmc_periods_follow_the_region() {
+        let mut dmc = DmcChannel::new();
+        dmc.set_region(Region::Ntsc);
+        dmc.write_register(0x4010, 0x00);
+        assert_eq!(dmc.timer_period, 428);
+        dmc.write_register(0x4010, 0x0F);
+        assert_eq!(dmc.timer_period, 54);
+
+        let mut dmc = DmcChannel::new();
+        dmc.set_region(Region::Pal);
+        dmc.write_register(0x4010, 0x00);
+        assert_eq!(dmc.timer_period, 398);
+        dmc.write_register(0x4010, 0x0F);
+        assert_eq!(dmc.timer_period, 50);
     }
 
     #[test]
