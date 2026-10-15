@@ -5,6 +5,7 @@
 这是精度工作的**工作文档**：**把内核与 [Mesen2](https://github.com/SourMesen/Mesen2) 的 NES 内核
 对齐，遇到歧义一律以 Mesen 为准。** `docs/architecture.md` 仍是"模拟器今天是什么样"的描述（其
 §15.1 是已知限制的摘要）；本文档是计划、计划背后的实测数据，以及仍然不同的地方。
+**新会话请先读 §9 的任务台账**——那里是"哪些做完了、哪些卡在哪、下一步做什么"的一页汇总。
 
 两条规则，按优先级：
 
@@ -276,5 +277,46 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 
 1. ~~**访问的 dot**（§4）~~ —— 实验已做，结论就是保留 `ACCESS_DOTS = 2`：0 与 1 各自会让五个
    ROM 失败（§7）。
-2. **APU 帧计数器的相位**（§2.4）：先弄清 `4-jitter` 与 `6-irq_flag_timing` 各自读的是哪个事件，
-   再动计数器（§7）。
+2. ~~**APU 帧计数器的相位**（§2.4）~~ —— 已完成：数值取自 blargg 源码里写下的实测 cycle
+   （§7），`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿。
+3. **DMC**（§2.4）：先解释"Mesen 按取数计数（≈128 个周期）vs `8-dmc_rates` 的窗口（≈135）"这约
+   七个周期的分歧，再动计数/IRQ 的落点；`7-dmc_basics` 还差最后一项检查。
+
+---
+
+## 9. 任务台账（新会话从这里开始）
+
+**怎么用**：每条给出「状态 → 证据 → 下一步」。开工前先按 §6 重跑一遍基线（数字会随环境浮动，但
+套件构成应当一致），再挑一条往下做；没有证据的变化不要写进本文档。
+
+**当前基线**（本轮最后一次实测，`cargo test -p nes-core --test rom_tests -- --nocapture`）：
+`instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
+`oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
+`sprite_overflow_tests` 5/5、`apu_test` **6/8**、`cpu_interrupts_v2` 2/5、`mmc3_test_2` **5/6**、
+`ppu_vbl_nmi` 9/10、AccuracyCoin 46 项失败。单元测试 584 全绿；帧耗时约 1.72 ms
+（release、nestest 600 帧、中位数）。工作分支 `codex/mesen-alignment`。
+
+| # | 事项 | 状态 | 证据（提交 / 实测） | 下一步 |
+| --- | --- | --- | --- | --- |
+| S0 | 公开逐 dot 观测 API（`Nes::ppu_bus_trace` / `step_dot`，wasm+uniffi 导出） | 完成 | `c8957a7`；4 个单元测试 | 需要在差分/调试里用就继续用 |
+| P1 | 逐 dot PPU 渲染器（背景 + sprite），A12 变成真实取指 | 完成 | `5dc9e32`、`30b7267`：`4-scanline_timing` 转绿；`RenderTiming`、`ppu.render_v`、整行渲染器删除 | sprite 的**求值**仍是逐行（§2.1），需要时再做 |
+| P2 | DMA 移进 `MemoryRead`（`process_pending_dma`） | 完成 | `8ec693d`：`4-irq_and_dma` 轨迹逐字节未变 | 无（DMC 依赖它，已就位） |
+| P3a | APU 帧计数器相位（`$4017` 迟 3/4 周期、IRQ 标志连续三周期） | 完成 | `a1fbaa3`：`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿 | 无 |
+| P3b | DMC | **卡住** | `f9984d4`（两个语义 bug 修好、两级缓冲）+ 两次撤回；`7-dmc_basics` 走到第 19 项、`8-dmc_rates` 仍在基线 | 先解释"Mesen 按**取数**计数（≈128 个周期）vs ROM 窗口（≈135）"这约 7 个周期的分歧（§2.4/§7），再动计数落点 |
+| P4 | §2.2 寄存器细节：open bus 衰减、渲染期 `$2007`、灰阶掩蔽、PAL 强调位 | 完成 | `af2f375`、`8247f10`：`ppu_open_bus` 转绿；3 个单元测试 | 九位颜色解出的 RGB（Mesen 的 512 项表在它的视频滤镜里） |
+| P5 | PAL 16/5 + 分数 dot 累加器 + 按制式推导音频时钟 | 完成（比例部分） | `dbdf7cc`：PAL 一帧 33,247.5 个 CPU 周期 | PAL 专属 PPU/APU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）——需要 PAL ROM 才能验收 |
+| P6 | Mapper：NES 2.0 头部、总线冲突 | 部分完成 | `4e1c7a6`：冲突覆盖 2/3/7/11/66/71；5 个头部 + 2 个冲突用例 | 按 submapper 分派板级行为（Mesen 靠按 CRC 的 game database，不是头部字段）；之后是 64/158/185/115 |
+| P7 | 音频重采样 | 未开始 | — | 带限（blip）重采样；无参考录音，验收只到"不破坏现有测试" |
+| — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
+
+**取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：
+仓库是 `SourMesen/Mesen2`，按需要抓单个文件即可，例如
+`curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/APU/DeltaModulationChannel.cpp`。
+已读过并写进本文档的：`Core/NES/NesPpu.cpp`、`Core/NES/BaseNesPpu.{h,cpp}`、
+`Core/NES/NesCpu.cpp`、`Core/NES/NesMemoryManager.cpp`、`Core/NES/APU/DeltaModulationChannel.{h,cpp}`、
+`Core/NES/APU/ApuFrameCounter.h`、`Core/NES/Mappers/`（`MMC3.h`、`Mapper4.h`、`BaseMapper.*`、`VRC6.h`）。
+仓库根的 `mesen_files.json` 是它全仓的清单，可用 `name` 字段查任意文件的路径。
+
+**交接时的约定**：ROM 不入库（`roms/` 缺目录时测试打印跳过）；文档英中必须同时改（`*.zh-CN.md` 对照）；
+每一步的实测数字写进提交信息与 §7；因"更忠实于 Mesen"而产生的回退要连同原因记进 §7 的撤回清单，
+而不是把代码改回去。

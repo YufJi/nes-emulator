@@ -6,7 +6,8 @@ This is the working document for the accuracy work: **the emulator core is being
 [Mesen2](https://github.com/SourMesen/Mesen2)'s NES core, and Mesen settles every ambiguity.**
 `docs/architecture.md` stays the description of what the emulator *is* today (§15.1 there is its
 summary of the known limits); this document is the plan, the measurements behind it, and what is
-still different.
+still different. **Start a new session with §9's ledger** — the one-page answer to what is done,
+what is stuck and what to do next.
 
 Two rules, in order:
 
@@ -332,5 +333,52 @@ header is plain iNES, which §2.5 now records.
 
 1. **The access dot** (§4): run the `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` experiment
    with `Nes::ppu_bus_trace` and keep `ACCESS_DOTS = 2` unless it says otherwise.
-2. **The APU frame counter's phase** (§2.4): settle which event `4-jitter` and
-   `6-irq_flag_timing` each read before touching the counter again (§7).
+2. ~~**The APU frame counter's phase** (§2.4)~~ — done: the numbers come from the measured
+   cycles blargg's own sources state (§7), and `4-jitter`, `5-len_timing` and
+   `6-irq_flag_timing` are green.
+3. **DMC** (§2.4): explain the ~7-period disagreement — Mesen counts a byte when it is *read*
+   (~128 periods) where `8-dmc_rates`'s window wants the end of its playback (~135) — before
+   moving where the counter and the IRQ land. `7-dmc_basics` is one check short.
+
+---
+
+## 9. The ledger (start a new session here)
+
+**How to use it**: every row is *status → evidence → next step*. Re-run the baseline from §6 first
+(the numbers move with the machine; the set of suites should not), then pick a row. Nothing goes
+into this document without a measurement behind it.
+
+**Current baseline** (last measured this session, `cargo test -p nes-core --test rom_tests --
+--nocapture`): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
+`blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
+`sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **6/8**, `cpu_interrupts_v2`
+2/5, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin 46 failing. Unit tests: 584.
+Frame cost: about 1.72 ms (release, 600 frames of nestest, median). Branch:
+`codex/mesen-alignment`.
+
+| # | Item | Status | Evidence (commit / measurement) | Next step |
+| --- | --- | --- | --- | --- |
+| S0 | Public per-dot observation API (`Nes::ppu_bus_trace`, `step_dot`, exported from wasm and uniffi) | Done | `c8957a7`; four unit tests | Use it for a differential when one is needed |
+| P1 | Per-dot PPU renderer (background + sprites), A12 from real fetches | Done | `5dc9e32`, `30b7267`: `4-scanline_timing` green; `RenderTiming`, `ppu.render_v` and the whole-line renderer deleted | The sprite *evaluation* is still per line (§2.1), when it is wanted |
+| P2 | DMA inside `MemoryRead` (`process_pending_dma`) | Done | `8ec693d`: `4-irq_and_dma`'s trace is byte-identical | Nothing (DMC's prerequisite is in) |
+| P3a | APU frame counter phase (`$4017` three cycles late, IRQ flag three cycles in a row) | Done | `a1fbaa3`: `4-jitter`, `5-len_timing`, `6-irq_flag_timing` green | Nothing |
+| P3b | DMC | **Stuck** | `f9984d4` (two semantics bugs fixed, two-stage buffer) plus two withdrawals; `7-dmc_basics` reaches check 19, `8-dmc_rates` stays on the baseline | Explain the ~7-period disagreement first: Mesen counts a byte when it is **read** (~128 periods) where the ROM's window wants the end of its playback (~135) — §2.4/§7 |
+| P4 | §2.2's register details: open-bus decay, rendering-time `$2007`, grayscale mask, PAL emphasis swap | Done | `af2f375`, `8247f10`: `ppu_open_bus` green; three unit tests | The RGB those nine colour bits resolve to (Mesen's 512-entry table lives in its video filter) |
+| P5 | PAL 16/5, fractional dot accumulator, region-correct audio clock | Done (the ratio) | `dbdf7cc`: a PAL frame is 33,247.5 CPU cycles | PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) — unverifiable without a PAL ROM |
+| P6 | Mappers: NES 2.0 header, bus conflicts | Partly done | `4e1c7a6`: conflicts for 2/3/7/11/66/71; five header and two conflict tests | Dispatching on the submapper (Mesen reads that from its CRC-keyed database, not the header); then boards 64/158/185/115 |
+| P7 | Audio resampling | Not started | — | Band-limited (blip) resampling; no reference recording, so acceptance is "does not break what passes" |
+| — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
+
+**How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the
+repository is `SourMesen/Mesen2`; fetch a file at a time, e.g.
+`curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/APU/DeltaModulationChannel.cpp`.
+Already read and written into this document: `Core/NES/NesPpu.cpp`,
+`Core/NES/BaseNesPpu.{h,cpp}`, `Core/NES/NesCpu.cpp`, `Core/NES/NesMemoryManager.cpp`,
+`Core/NES/APU/DeltaModulationChannel.{h,cpp}`, `Core/NES/APU/ApuFrameCounter.h`, and
+`Core/NES/Mappers/` (`MMC3.h`, `Mapper4.h`, `BaseMapper.*`, `VRC6.h`). The repository root's
+`mesen_files.json` is its whole-tree manifest: look a path up by its `name` field.
+
+**Conventions to hand over**: ROMs are never committed (a suite with no `roms/` directory prints a
+skip); a document change touches both languages (`*.zh-CN.md`); each step's numbers go into its
+commit message and §7; and a regression that comes from being *more* faithful to Mesen is recorded
+in §7's withdrawn-experiment list rather than reverted.
