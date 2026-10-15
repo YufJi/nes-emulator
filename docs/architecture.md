@@ -884,6 +884,13 @@ asserted in both directions: a failure outside it is a regression, and an entry 
 passing fails the suite until it is removed. So `cargo test --workspace` stays green while
 the backlog is worked through, and the baseline cannot silently drift.
 
+**What the baseline cannot see.** No ROM in it looks at the picture it draws, so the
+baseline says nothing about the colours and patterns on screen: a sprite-pattern fetch that
+read the tile's low plane for its high plane too — two of a sprite's four colours drawn as
+transparent holes — passed every suite for a day (§7 of `mesen-alignment.md`, entry *B1*).
+Anything that changes what a pixel looks like needs a unit test that renders it, and a game
+to look at.
+
 Conventions:
 
 - ROM-dependent tests are **skipped rather than failed** when `roms/` is missing (CI stays

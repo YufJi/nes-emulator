@@ -336,13 +336,21 @@ impl PixelPipeline {
                 }
                 4 | 6 => {
                     let (addr, row) = self.sprite_pattern_addr(ppu, slot);
-                    let byte = chr.read_pattern(ppu, addr + row);
-                    if (cycle - 257) % 8 == 4 {
+                    // The tile's eight low-plane bytes come first and the high
+                    // plane's eight follow them: phase 4 reads `row`, phase 6
+                    // reads `row + 8`. Reading the same address twice hands the
+                    // low plane in as the high one, which halves the sprite's
+                    // colours — every pixel whose planes are (0, 1), colour 2,
+                    // reads as (0, 0) and is dropped as transparent.
+                    let high_plane = if (cycle - 257) % 8 == 4 { 0 } else { 8 };
+                    let pattern_addr = addr + row + high_plane;
+                    let byte = chr.read_pattern(ppu, pattern_addr);
+                    if high_plane == 0 {
                         self.sprite_tiles[slot].low = byte;
                     } else {
                         self.sprite_tiles[slot].high = byte;
                     }
-                    self.bus_access = Some(addr);
+                    self.bus_access = Some(pattern_addr);
                 }
                 _ => {}
             }
@@ -809,6 +817,57 @@ mod tests {
         }
     }
 
+    /// Both of a sprite's pattern planes come from their own eight bytes of the
+    /// tile: phase 4 reads row `r`, phase 6 reads `r + 8`. Reading `r` for both
+    /// hands the low plane in as the high one, and that halves what a sprite can
+    /// draw — every pixel whose planes are (0, 1) is colour 2, and read back as
+    /// (0, 0) it is dropped as transparent. Super Mario Bros' sprite is the
+    /// plain sight of it: half its colours, the rest see-through.
+    #[test]
+    fn test_a_sprites_high_plane_is_the_tiles_second_half() {
+        let mut ppu = ppu_with(&[], &[]);
+        ppu.mask = PpuMask::SHOW_SPRITES | PpuMask::SHOW_SPRITES_LEFT;
+        ppu.palette[0x11] = 0x21;
+        ppu.palette[0x12] = 0x2A;
+
+        // Tile 2's row 0, in pattern table 0: the low plane lights column 6
+        // only (bit 7 is the leftmost pixel), the high plane column 5 only.
+        // Column 5 is therefore colour 2 and column 6 colour 1.
+        for row in 0..8 {
+            ppu.vram[2 * 16 + row] = 0b0000_0010;
+            ppu.vram[2 * 16 + 8 + row] = 0b0000_0100;
+        }
+
+        let mut slots = [SpriteSlot::default(); 8];
+        slots[0] = SpriteSlot {
+            y: 0,
+            tile: 2,
+            attributes: 0,
+            x: 0,
+            is_sprite_zero: false,
+            occupied: true,
+        };
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        pipeline.set_sprite_slots(slots);
+        // Line 0's sprite phase fetches the pattern bytes for line 1.
+        run_line(&mut pipeline, &mut ppu, 0);
+        run_line(&mut pipeline, &mut ppu, 1);
+
+        let frame = pipeline.frame_buffer();
+        assert_eq!(
+            frame.get_pixel(5, 1),
+            nes_color(ppu.palette[0x12], ppu.mask, pipeline.region),
+            "column 5 is (low 0, high 1): colour 2, drawn"
+        );
+        assert_eq!(
+            frame.get_pixel(6, 1),
+            nes_color(ppu.palette[0x11], ppu.mask, pipeline.region),
+            "column 6 is (low 1, high 0): colour 1"
+        );
+    }
+
     /// A transparent pixel does not hide the sprite behind it, and a sprite
     /// behind an opaque background pixel does not draw over it.
     #[test]
@@ -848,7 +907,11 @@ mod tests {
             occupied: true,
         };
         for row in 0..8 {
+            // Both planes, so the sprite's pixels are colour 3: an opaque pixel
+            // is what the priority test needs, and the low plane alone would be
+            // colour 1 (the high plane is the tile's second eight bytes).
             ppu.vram[4 * 16 + row] = 0xFF;
+            ppu.vram[4 * 16 + 8 + row] = 0xFF;
         }
         pipeline.set_sprite_slots(slots);
         run_line(&mut pipeline, &mut ppu, 0);
