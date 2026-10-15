@@ -225,6 +225,13 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
   第一个该查的点）；`$2007` 的读必须用它返回的那个字节去驱动这条锁存；调色板的读要从 open bus
   取高两位、却只驱动低六位，而 `$2002` 只驱动高三位，好让低五位继续衰减。
 
+- **DMC：把内存读取器提前一个输出时钟（§2.4）**。当长度计数在字节边界移动时，每个字节的传输
+  延迟都会被加进样本长度，这正是让 `8-dmc_rates` 的 rate 0 样本刚好越过窗口的那一百多个周期。
+  把读取器移到 `bits_remaining == 1`（在最后一位尚未移出时就开始取，好让寄存器见底前缓冲已满）
+  形状是对的，孤立测下来一份常驻的 17 字节样本会落到 134.3 个周期；但 ROM 的判定完全没动（仍
+  越过窗口），说明多出来的并不是逐字节的传输延迟，而且有一个单元测试
+  （`test_reading_4015_does_not_clear_the_dmc_irq`）不再看到它的 IRQ。已撤回：这说明下一次该从
+  总线侧诊断（`NesBus::process_pending_dma` 里一次 DMC 取数到底占多少周期），而不是通道侧。
 - **帧计数器的相位，两次撤回（§2.4）**。两轮对 Mesen 顺序的猜测都是"一个套件前进、另一个后退"。
   真正解决它的是读 blargg 的**源码**，它就在 `roms/blargg/apu_test/source/` 里：
   `6-irq_flag_timing.s` 的头几行写着标志"is set three times in a row 29831 clocks after

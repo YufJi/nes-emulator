@@ -262,6 +262,16 @@ Their value is the evidence; do not retry them without reading this first.
   read had to take its top two bits from the open bus while driving only its low six, with
   `$2002` driving only its top three so its low five keep decaying.
 
+- **DMC: the memory reader one clock ahead (§2.4).** With the length counter moving at the byte
+  boundary, each fetched byte's transfer latency is added to the sample, which is the
+  hundred-odd cycles that put `8-dmc_rates`'s rate-0 sample just past its window. Moving the
+  reader to `bits_remaining == 1` — fetch while the last bit is on its way out, so the buffer
+  is filled before the register runs dry — is the right shape, and in isolation it brings a
+  standing 17-byte sample to 134.3 periods; but the ROM's verdict does not move at all (still
+  past the window), which means the excess is not per-byte transfer latency, and one unit test
+  (`test_reading_4015_does_not_clear_the_dmc_irq`) stopped seeing its IRQ. Withdrawn: the
+  measurement says the model needs diagnosing from the bus's side (how long a DMC fetch really
+  takes in `NesBus::process_pending_dma`) rather than from the channel's.
 - **The frame counter's phase, twice withdrawn (§2.4).** Two rounds of guessing at Mesen's
   ordering moved one suite forward and the other back. What settled it was reading blargg's
   *source*, which is in `roms/blargg/apu_test/source/`: `6-irq_flag_timing.s` says in its
