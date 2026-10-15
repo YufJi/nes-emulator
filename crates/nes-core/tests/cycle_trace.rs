@@ -130,10 +130,10 @@ fn trace_a12_for_a_scanline() {
         "pc", "ln", "dot", "a12addr", "a12"
     );
 
-    let mut frame = nes.frame_number();
+    let until = nes.frame_number() + frames;
     let mut printed = 0;
     let mut last = u16::MAX;
-    while nes.frame_number() < frame + frames {
+    while nes.frame_number() < until {
         let (scanline, dot) = nes.ppu_position();
         let addr = nes.ppu_bus_address();
         if scanline as i64 == want && addr != last {
@@ -146,7 +146,6 @@ fn trace_a12_for_a_scanline() {
             printed += 1;
         }
         nes.step_instruction();
-        frame = nes.frame_number();
     }
     println!("{printed} bus changes on that line");
 }
