@@ -32,25 +32,25 @@
 
 ## 2. 尚未对齐的部分
 
-### 2.1 PPU：sprite 仍是整行合成
+### 2.1 PPU：sprite 的**求值**仍是逐行
 
-背景已经是逐 dot 的了——`PixelPipeline` 每八个 dot 取一个瓦片（`LoadTileInfo` 的名称表/
-属性/图案读，落在 `cycle % 8 == 1/3/5/7`），每 dot 移出一像素并在它自己的 dot 上画出来，
-滚动取的就是芯片自己的 `v`/`t`/`x`；sprite 的**取指**也在各自的 dot 上跑，因此 A12 能看到它们。
-Mesen 的 `ProcessScanlineImpl` 里还剩的是 sprite 侧本体：`ProcessSpriteEvaluation`
-（65-256，含 OAM 地址行为与损坏标志）、`LoadSpriteTileInfo`（257-320）写入每 sprite 的移位
-寄存器，以及逐 dot 的 sprite 像素。
+渲染已经逐 dot（`PixelPipeline`）：背景每八个 dot 取一个瓦片、每 dot 移出一像素并在它自己的
+dot 上画出来，滚动取芯片自己的 `v`/`t`/`x`；sprite 阶段的图案取指落在各自的 dot 上
+（257-320），sprite 像素与 sprite 0 命中都由取到的字节逐 dot 画出。Mesen 的
+`ProcessScanlineImpl` 里剩的是求值本身：`ProcessSpriteEvaluation`（65-256）仍是"一次调用填满
+下一行的二级 OAM"，而不是芯片那套奇偶 OAM 读模式加
+`SetOamCorruptionFlags`/`ProcessOamCorruption`。
 
 仍未解决的后果：
 
-- **sprite 0 命中不在像素处**：命中仍由整行渲染器记录，而不是在 PPU 的 dot 计数器走过那个 x 时。
-- **sprite 的绘制比 A12 晚一行**：取指已逐 dot，画出来的 sprite 来自逐行的二级 OAM 快照。
-- MMC5 竖向分屏基于同一理由仍然不做。
-- **光栅分屏**（可见行内写 `$2005`/`$2006`）现在背景侧落在正确的边上了，因为取指跟随被改过的
-  滚动寄存器。
+- **sprite 只能被搬进二级 OAM 一次**：求值过程中写 `$2003` 造成的 OAM 地址损坏没有建模。
+- MMC5 竖向分屏仍然不做。
+- sprite 像素与 sprite 0 命中都跟随取指，因此行内切 CHR 银行现在会在它落到的那个 dot 上
+  影响 sprite。
 
-随逐 dot 背景一起落地的还有：真实取指地址让 `4-scanline_timing` 转绿（先前的重建让首个
-sprite 阶段取指之前的低电平段长了一个 dot），`RenderTiming` 与 `ppu.render_v` 已删除。
+随逐 dot 背景与 sprite 一起落地的还有：真实取指地址让 `4-scanline_timing` 转绿（先前的重建
+让首个 sprite 阶段取指之前的低电平段长了一个 dot），`RenderTiming`、`ppu.render_v` 与整行渲染器
+都已删除。
 
 Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTileInfo`、
 `LoadSprite`/`LoadExtraSprites`、`ShiftTileRegisters`、`GetPixelColor`、`DrawPixel`、
@@ -182,6 +182,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | A12 之二 | 预渲染行也跑取指流水线 | 从第 3 到第 4 子项，方向翻转 |
 | A12 之三 | 过滤以 CPU 周期计长度，且**每次**上升都结束当前低电平段 | **`2-details` 转绿**（"每帧 241 次"）；`4-scanline_timing` 推进到第 12 子项 |
 | 逐 dot 背景 | `PixelPipeline` 替换整行渲染器：取指落在 `cycle % 8 == 1/3/5/7`、移位寄存器、每 dot 一个像素，滚动取真实的 `v`/`t`；卡带拿到的是真实读过的地址；删除 `RenderTiming` 与 `ppu.render_v` | **`4-scanline_timing` 转绿**（先前的重建长了一个 dot）；其余基线不变（AccuracyCoin 46）；帧耗时 1.32 → 1.80 ms |
+| 逐 dot sprite | sprite 阶段的图案取指、逐 dot 像素、以及落在自己那个 dot 上的 sprite 0 命中；整行渲染器（`BackgroundRenderer`、`SpriteRenderer`、`ScanlineProcessor`）删除 | ROM 无移动（基线不变，AccuracyCoin 46）；帧耗时 1.80 → 1.68 ms |
 
 ### 实现、实测、随后撤回的实验
 

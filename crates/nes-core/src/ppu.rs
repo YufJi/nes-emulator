@@ -9,10 +9,8 @@ pub mod rendering;
 pub mod sprite;
 
 use crate::mapper::Mapper;
-pub use rendering::{BackgroundRenderer, FrameBuffer, Mirroring, ScanlineProcessor};
-pub use sprite::{
-    SecondaryOam, Sprite, SpriteAttributes, SpriteEvaluator, SpritePatternFetcher, SpriteRenderer,
-};
+pub use rendering::{FrameBuffer, Mirroring};
+pub use sprite::{SecondaryOam, Sprite, SpriteAttributes, SpriteEvaluator};
 
 /// Memory the PPU register logic needs beyond its own state.
 ///

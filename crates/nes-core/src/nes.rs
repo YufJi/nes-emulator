@@ -10,7 +10,7 @@ use crate::bus::Bus;
 use crate::cpu::Cpu;
 use crate::mapper::{create_mapper, Mapper};
 use crate::ppu::pipeline::{PixelPipeline, SpriteSlot};
-use crate::ppu::rendering::{BackgroundRenderer, FrameBuffer, MapperChr, Mirroring, VramChr};
+use crate::ppu::rendering::{FrameBuffer, MapperChr, Mirroring, VramChr};
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::prelude::*;
@@ -302,7 +302,6 @@ struct NesBus {
     /// 340 itself.
     skip_odd_frame_dot: bool,
     frame_buffer: FrameBuffer,
-    bg_renderer: BackgroundRenderer,
     /// The per-dot renderer: fetches, shift registers, sprites and the picture.
     pipeline: PixelPipeline,
     /// Sprite evaluator for the current scanline
@@ -335,7 +334,6 @@ crate::state::state_fields!(NesBus {
     dma_stall_cycles,
     skip_odd_frame_dot,
     bus_address,
-    bg_renderer,
     pipeline,
     sprite_evaluator,
     mirroring,
@@ -376,7 +374,6 @@ impl NesBus {
             ppu_bus_trace_capacity: DEFAULT_PPU_BUS_TRACE_DOTS,
             pending_dots: 0,
             frame_buffer: FrameBuffer::new(),
-            bg_renderer: BackgroundRenderer::new(),
             pipeline: PixelPipeline::new(),
             sprite_evaluator: SpriteEvaluator::new(),
             mirroring: Mirroring::Horizontal,
@@ -442,7 +439,6 @@ impl NesBus {
         // Apply the cartridge's nametable mirroring to both the renderer
         // (which reads nametables) and the bus (which mirrors PPUDATA writes).
         self.mirroring = header.mirroring;
-        self.bg_renderer.set_mirroring(header.mirroring);
         self.pipeline.set_mirroring(header.mirroring);
         self.region = self.region_override.unwrap_or(header.region);
         self.has_battery = header.has_battery;
@@ -769,76 +765,25 @@ impl NesBus {
         let cycle = self.ppu.cycle;
         let pre_render = self.region.last_scanline();
 
-        // The sprite phase fetches from the line's secondary-OAM slots, which
-        // are filled by the previous line's evaluation.
-        if cycle == 0 && (scanline < 240 || scanline == pre_render) {
-            let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
-            let sprite_table = self.ppu.ctrl.contains(PpuCtrl::SPRITE_PATTERN);
-            let mut slots = [SpriteSlot::default(); 8];
-            for (index, slot) in slots.iter_mut().enumerate() {
-                // An empty slot fetches tile $FF from the sprite table, which
-                // is what the hardware does with the sprites it did not find.
-                let tile = self
-                    .sprite_evaluator
-                    .secondary_oam
-                    .get_sprite(index)
-                    .map_or(0xFF, |sprite| sprite.tile);
-                let table = if eight_by_sixteen {
-                    tile & 0x01
-                } else if sprite_table {
-                    1
-                } else {
-                    0
-                };
-                slot.tile = tile;
-                slot.pattern_table = if table != 0 { 0x1000 } else { 0x0000 };
-            }
-            self.pipeline.set_sprite_slots(slots);
-        }
-
         self.step_pipeline(pre_render);
 
-        if scanline < 240 {
-            // Visible scanlines: sprites are still composited a line at a time
-            // (the per-dot sprite path is the next step), once the background
-            // pipeline has drawn the whole line.
-            if cycle == 256 {
-                let mask = self.ppu.mask;
-                // The sprite pass tests against the background the per-dot
-                // pipeline just drew: priority and the sprite-0 hit both need
-                // to know which pixels the background made opaque.
-                self.bg_renderer.bg_pixels = self.pipeline.bg_opaque_plane().to_vec();
-                match self.mapper.as_deref_mut() {
-                    Some(mapper) => {
-                        let mut chr = MapperChr(mapper);
-                        self.bg_renderer
-                            .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
-                    }
-                    None => {
-                        let mut chr = VramChr;
-                        self.bg_renderer
-                            .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
-                    }
-                }
-                if self.bg_renderer.check_sprite_0_hit() {
-                    self.ppu.status.insert(PpuStatus::SPRITE_0_HIT);
-                }
-
-                // Evaluate sprites for the next scanline.
-                let next_scanline = scanline + 1;
-                if next_scanline < 240 {
-                    let overflow = self.sprite_evaluator.evaluate(
-                        &self.ppu.oam,
-                        next_scanline,
-                        self.ppu.ctrl,
-                        self.ppu.oam_addr,
-                    );
-                    if overflow {
-                        self.ppu.status.insert(PpuStatus::SPRITE_OVERFLOW);
-                    }
-                    self.bg_renderer.secondary_oam = self.sprite_evaluator.secondary_oam.clone();
-                }
+        if scanline == pre_render {
+            // Pre-render scanline: the flags the last frame left go, the
+            // background shift registers start the new frame empty, and the
+            // sprites for line 0 are evaluated and prefetched here.
+            if cycle == 1 {
+                self.ppu.status.remove(PpuStatus::VBLANK);
+                self.ppu.status.remove(PpuStatus::SPRITE_OVERFLOW);
+                self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
+                self.pipeline.reset_shifters();
             }
+            self.step_sprite_pipeline(0, cycle);
+        } else if scanline < 240 {
+            // The sprite pipeline is driven at Mesen's dots: the evaluation
+            // that fills secondary OAM runs at dot 65 and the pattern fetches
+            // at 257-320, both for the *next* line, which is the line they will
+            // be drawn on.
+            self.step_sprite_pipeline(scanline + 1, cycle);
         } else if scanline == 241 {
             // Start of VBlank
             if cycle == 1 {
@@ -848,18 +793,45 @@ impl NesBus {
                     self.ppu.status.insert(PpuStatus::VBLANK);
                 }
             }
-        } else if scanline == pre_render {
-            // Pre-render scanline
-            if cycle == 1 {
-                self.ppu.status.remove(PpuStatus::VBLANK);
-                self.ppu.status.remove(PpuStatus::SPRITE_OVERFLOW);
-                self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
-                // The hit latch must also be forgotten, otherwise the
-                // renderer would keep reporting last frame's hit.
-                self.bg_renderer.sprite_renderer.clear_sprite_0_hit();
-                self.pipeline.reset_shifters();
+        }
+    }
+
+    /// The sprite half of the pipeline for `sprite_line`, at this dot.
+    fn step_sprite_pipeline(&mut self, sprite_line: u16, cycle: u16) {
+        if cycle == 65 {
+            let overflow = self.sprite_evaluator.evaluate(
+                &self.ppu.oam,
+                sprite_line,
+                self.ppu.ctrl,
+                self.ppu.oam_addr,
+            );
+            if overflow {
+                self.ppu.status.insert(PpuStatus::SPRITE_OVERFLOW);
             }
         }
+        if cycle == 257 {
+            let slots = self.sprite_slots_from_secondary_oam();
+            self.pipeline.set_sprite_slots(slots);
+        }
+    }
+
+    /// The line's secondary-OAM slots, in the form the sprite pipeline wants.
+    fn sprite_slots_from_secondary_oam(&self) -> [SpriteSlot; 8] {
+        let mut slots = [SpriteSlot::default(); 8];
+        for (index, slot) in slots.iter_mut().enumerate() {
+            if let Some(sprite) = self.sprite_evaluator.secondary_oam.get_sprite(index) {
+                *slot = SpriteSlot {
+                    y: sprite.y,
+                    tile: sprite.tile,
+                    attributes: sprite.attributes,
+                    x: sprite.x,
+                    is_sprite_zero: self.sprite_evaluator.secondary_oam.has_sprite_0()
+                        && index == 0,
+                    occupied: true,
+                };
+            }
+        }
+        slots
     }
 
     /// Run the pixel pipeline for the dot the PPU is standing on.
@@ -1277,7 +1249,6 @@ impl NesBus {
                 if let Some(mode) = mapper.mirroring() {
                     if mode != self.mirroring {
                         self.mirroring = mode;
-                        self.bg_renderer.set_mirroring(mode);
                         self.pipeline.set_mirroring(mode);
                     }
                 }

@@ -952,11 +952,11 @@ clone needs `npm run build:wasm` before building the front end.
   mapping reaches the renderer through `nametable_read`/`nametable_write`, so ExRAM
   nametables and fill mode work. Extended-attribute mode (`$5104` = 3) would need its own
   byte layout decoded, and the vertical split is out of scope by decision (§15.6).
-- **Sprites are still composited a line at a time**: the background is drawn per dot and the
-  sprite *fetches* run on their dots, so A12 sees them, but the sprites themselves are drawn
-  once per line from the secondary-OAM snapshot. The sprite-0 hit therefore lands on the
-  line rather than on the pixel, which is the next piece of §2.1 of
-  `docs/mesen-alignment.md`.
+- **The sprite evaluation is still a line at a time**: everything else about sprites runs per
+  dot — the pattern fetches at 257-320, the pixels, and the sprite-0 hit, which is raised on
+  the dot its pixel is drawn on — but the evaluation that fills secondary OAM is one call per
+  line rather than the chip's odd/even OAM read pattern, so the OAM corruption a mid-line
+  `$2003` write causes is not modelled (see §2.1 of `docs/mesen-alignment.md`).
 - **The VBlank flag's neighbours are dot-exact, except the odd-frame skip**: a `$2002` read
   is performed two dots into its own cycle, where the chip performs it, so a read on the dot
   just before the flag is set takes the frame's flag *and* its NMI away, and one on the

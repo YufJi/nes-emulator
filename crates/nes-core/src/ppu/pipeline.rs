@@ -31,7 +31,7 @@
 //! a scanline's first tile comes from.
 
 use crate::ppu::rendering::{nes_color, ChrSource, FrameBuffer, Mirroring};
-use crate::ppu::{Ppu, PpuMask};
+use crate::ppu::{Ppu, PpuMask, PpuStatus};
 use crate::prelude::*;
 
 /// Width of the picture in pixels, and of one line of the frame buffer.
@@ -109,35 +109,78 @@ pub struct PixelPipeline {
     /// Address of the last access the pipeline made, for the cartridge's A12
     /// filter. `None` on dots that made no access.
     bus_access: Option<u16>,
-    /// The sprite phase's inputs for the line being drawn, one entry per
-    /// secondary-OAM slot: the pattern table the slot's tile comes from, and
-    /// the tile itself.
+    /// The secondary-OAM slots the sprite phase fetches for, filled by the
+    /// line's evaluation: one entry per slot.
     ///
-    /// The sprite *evaluation* that fills these is still done a line at a time;
-    /// what runs at the dot is the fetch, which is what the cartridge's A12
-    /// filter sees.
+    /// The *evaluation* that fills these is still done a line at a time; the
+    /// fetch, the drawing and the sprite-0 hit all run at the dot.
     sprite_slots: [SpriteSlot; 8],
+    /// The pattern bytes fetched for those slots, which is what the drawing
+    /// phase reads.
+    sprite_tiles: [SpriteTile; 8],
 }
 
-/// One sprite's fetch inputs: which pattern table its tile is read from.
+/// One of the line's eight secondary-OAM slots, as the evaluation found it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SpriteSlot {
-    /// Pattern-table base ($0000 or $1000).
-    pub pattern_table: u16,
-    /// Tile index; $FF is what the chip fetches for an empty slot.
+    /// OAM byte 0: the sprite's Y position, one less than its top line.
+    pub y: u8,
+    /// OAM byte 1: tile index.
     pub tile: u8,
+    /// OAM byte 2: attributes (flips, priority, palette).
+    pub attributes: u8,
+    /// OAM byte 3: X position.
+    pub x: u8,
+    /// Whether this slot holds OAM sprite 0, which is the only one that can
+    /// raise the sprite-0 hit.
+    pub is_sprite_zero: bool,
+    /// Whether the evaluation put a sprite here at all.
+    ///
+    /// The chip reports an empty slot by fetching tile $FF; this is what keeps
+    /// that fetch from ever being drawn.
+    pub occupied: bool,
 }
 
-impl crate::state::StateField for SpriteSlot {
-    fn write(&self, w: &mut crate::state::StateWriter) {
-        w.u16(self.pattern_table);
-        w.u8(self.tile);
+crate::state::state_fields!(SpriteSlot {
+    y,
+    tile,
+    attributes,
+    x,
+    is_sprite_zero,
+    occupied,
+});
+
+impl SpriteSlot {
+    fn vertical_flip(&self) -> bool {
+        self.attributes & 0x80 != 0
     }
-    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
-        self.pattern_table = r.u16();
-        self.tile = r.u8();
+    fn horizontal_flip(&self) -> bool {
+        self.attributes & 0x40 != 0
+    }
+    fn behind_background(&self) -> bool {
+        self.attributes & 0x20 != 0
+    }
+    fn palette(&self) -> u8 {
+        (self.attributes >> 2) & 0x03
     }
 }
+
+/// A secondary-OAM slot's pattern bytes for the line being drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SpriteTile {
+    low: u8,
+    high: u8,
+    /// Whether the slot was occupied, i.e. whether the fetched bytes mean
+    /// anything. The chip fetches tile $FF for an empty slot; this is what
+    /// keeps that fetch from being drawn.
+    occupied: bool,
+}
+
+crate::state::state_fields!(SpriteTile {
+    low,
+    high,
+    occupied
+});
 
 crate::state::state_fields!(PixelPipeline {
     shifters,
@@ -149,6 +192,7 @@ crate::state::state_fields!(PixelPipeline {
     bg_opaque,
     mirroring,
     sprite_slots,
+    sprite_tiles,
 });
 
 impl Default for PixelPipeline {
@@ -171,12 +215,18 @@ impl PixelPipeline {
             mirroring: Mirroring::Horizontal,
             bus_access: None,
             sprite_slots: [SpriteSlot::default(); 8],
+            sprite_tiles: [SpriteTile::default(); 8],
         }
     }
 
     /// Hand the sprite phase the line's secondary-OAM slots.
     pub fn set_sprite_slots(&mut self, slots: [SpriteSlot; 8]) {
         self.sprite_slots = slots;
+        for (tile, slot) in self.sprite_tiles.iter_mut().zip(slots.iter()) {
+            tile.low = 0;
+            tile.high = 0;
+            tile.occupied = slot.occupied;
+        }
     }
 
     /// Forget the shift registers, as the chip does at the pre-render line.
@@ -274,9 +324,13 @@ impl PixelPipeline {
                     self.bus_access = Some(addr);
                 }
                 4 | 6 => {
-                    let info = self.sprite_slots[slot];
-                    let addr = info.pattern_table + (info.tile as u16) * 16;
-                    let _ = chr.read_pattern(ppu, addr + (cycle - 257) % 8 - 4);
+                    let (addr, row) = self.sprite_pattern_addr(ppu, slot);
+                    let byte = chr.read_pattern(ppu, addr + row);
+                    if (cycle - 257) % 8 == 4 {
+                        self.sprite_tiles[slot].low = byte;
+                    } else {
+                        self.sprite_tiles[slot].high = byte;
+                    }
                     self.bus_access = Some(addr);
                 }
                 _ => {}
@@ -312,6 +366,9 @@ impl PixelPipeline {
                 // wire, and sprites draw over it.
                 let backdrop = nes_color(ppu.palette[0], ppu.mask);
                 self.frame.set_pixel(x, scanline as usize, backdrop);
+            }
+            if show_sprites {
+                self.draw_sprite_pixel(ppu, x);
             }
         }
 
@@ -375,6 +432,105 @@ impl PixelPipeline {
             return byte;
         }
         ppu.vram[self.mirroring.mirror_vram_addr(addr) as usize]
+    }
+
+    /// Pattern address of a slot's sprite row, and the row within the tile.
+    ///
+    /// The sprites the evaluation found during the line being drawn are for the
+    /// *next* line, so the row comes from that one: how far the sprite's own
+    /// top is above it, flipped if the attributes say so. 8x16 sprites pick
+    /// their pattern table from bit 0 of the tile and their second tile from
+    /// bit 0 of the row.
+    fn sprite_pattern_addr(&self, ppu: &Ppu, slot: usize) -> (u16, u16) {
+        let sprite = self.sprite_slots[slot];
+        let height = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_SIZE) {
+            16u16
+        } else {
+            8u16
+        };
+        // The evaluation only keeps sprites that cover that line, so the
+        // subtraction stays in range; saturate anyway so a slot the evaluation
+        // did not fill cannot wrap.
+        let mut row = ppu
+            .scanline
+            .saturating_add(1)
+            .saturating_sub(sprite.y as u16 + 1);
+        if sprite.vertical_flip() {
+            row = height - 1 - row;
+        }
+
+        let (table, tile) = if height == 16 {
+            let table = if sprite.tile & 1 != 0 { 0x1000 } else { 0x0000 };
+            (table, (sprite.tile & 0xFE) as u16 + (row / 8))
+        } else {
+            let table = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_PATTERN) {
+                0x1000
+            } else {
+                0x0000
+            };
+            (table, sprite.tile as u16)
+        };
+        (table + tile * 16, row & 7)
+    }
+
+    /// Draw the sprite pixel for this dot, if any sprite covers it.
+    ///
+    /// Secondary OAM is in priority order, so the first slot with an opaque
+    /// pixel wins. The sprite-0 hit is raised *here*, on the dot the pixel is
+    /// drawn on, which is what makes it usable as a mid-line timing reference.
+    fn draw_sprite_pixel(&mut self, ppu: &mut Ppu, x: usize) {
+        let y = ppu.scanline as usize;
+        for slot in 0..8 {
+            let sprite = self.sprite_slots[slot];
+            let tile = self.sprite_tiles[slot];
+            if !tile.occupied {
+                continue;
+            }
+            if x < sprite.x as usize || x >= sprite.x as usize + 8 {
+                continue;
+            }
+            // Bit 7 of the pattern byte is the sprite's leftmost pixel, so the
+            // pixel for this column is counted from the other end — unless the
+            // sprite is flipped, which is exactly the other way round.
+            let column = x - sprite.x as usize;
+            let bit = if sprite.horizontal_flip() {
+                column
+            } else {
+                7 - column
+            };
+            let low = (tile.low >> bit) & 0x01;
+            let high = (tile.high >> bit) & 0x01;
+            let color_index = (high << 1) | low;
+            if color_index == 0 {
+                // A transparent pixel of a higher-priority sprite does not hide
+                // the ones behind it.
+                continue;
+            }
+
+            let clipped = x < 8 && !ppu.mask.contains(PpuMask::SHOW_SPRITES_LEFT);
+            let bg_opaque = self.bg_opaque[y * WIDTH + x] != 0;
+
+            // Sprite 0's hit: both planes have an opaque pixel here, the pixel
+            // is not the rightmost column (where the chip never reports it),
+            // and neither plane is clipped at the left edge.
+            if sprite.is_sprite_zero
+                && !clipped
+                && bg_opaque
+                && x != 255
+                && !ppu.status.contains(PpuStatus::SPRITE_0_HIT)
+                && ppu.mask.contains(PpuMask::SHOW_BG)
+                && !(x < 8 && !ppu.mask.contains(PpuMask::SHOW_BG_LEFT))
+            {
+                ppu.status.insert(PpuStatus::SPRITE_0_HIT);
+            }
+
+            if !clipped && !(sprite.behind_background() && bg_opaque) {
+                let palette_addr = 0x10 + (sprite.palette() as usize) * 4 + color_index as usize;
+                let color = nes_color(ppu.palette[palette_addr], ppu.mask);
+                self.frame.set_pixel(x, y, color);
+            }
+            return;
+        }
     }
 
     /// Draw the pixel the background shift registers hold for this dot.
@@ -491,6 +647,14 @@ mod tests {
         ppu
     }
 
+    /// Give every row of a tile in pattern table 0 the same low-plane byte, so
+    /// a test does not have to know which fine Y a line lands on.
+    fn fill_tile_rows(ppu: &mut Ppu, tile: u8, low: u8) {
+        for row in 0..8 {
+            ppu.vram[(tile as usize) * 16 + row] = low;
+        }
+    }
+
     /// Run one whole scanline's dots (0-340) through the pipeline.
     fn run_line(pipeline: &mut PixelPipeline, ppu: &mut Ppu, scanline: u16) {
         ppu.scanline = scanline;
@@ -539,5 +703,124 @@ mod tests {
             .filter(|&x| pipeline.frame_buffer().get_pixel(x, 0) == nes_color(0x30, ppu.mask))
             .collect();
         assert_eq!(drawn, vec![0]);
+    }
+
+    /// The sprite-0 hit arrives on the dot the overlapping pixel is drawn on,
+    /// which is what makes it usable as a timing reference mid-line.
+    #[test]
+    fn test_sprite_zero_hit_lands_on_its_pixel() {
+        for sprite_x in [0u8, 10] {
+            // The background is opaque on the whole row — tile 1 in every
+            // column of the nametable, and all of its pixels lit — so wherever
+            // the sprite lands there is something to hit.
+            let mut ppu = ppu_with(&[(0, 1), (1, 1)], &[(1, 0xFF)]);
+            fill_tile_rows(&mut ppu, 1, 0xFF);
+            // Both planes are on, and the left edge is not clipped.
+            ppu.mask = PpuMask::SHOW_BG
+                | PpuMask::SHOW_BG_LEFT
+                | PpuMask::SHOW_SPRITES
+                | PpuMask::SHOW_SPRITES_LEFT;
+            ppu.v = 0x0000;
+            ppu.t = 0x0000;
+            ppu.x = 0;
+
+            let mut pipeline = PixelPipeline::new();
+            run_line(&mut pipeline, &mut ppu, 261);
+
+            // Sprite 0 sits on line 1 (an OAM Y of 0 means the sprite's top row
+            // is line 1), and its tile lights pixel 0.
+            let mut slots = [SpriteSlot::default(); 8];
+            slots[0] = SpriteSlot {
+                y: 0,
+                tile: 2,
+                attributes: 0,
+                x: sprite_x,
+                is_sprite_zero: true,
+                occupied: true,
+            };
+            ppu.vram[2 * 16] = 0x80;
+            pipeline.set_sprite_slots(slots);
+
+            // Line 0's sprite phase fetches the pattern bytes for line 1.
+            run_line(&mut pipeline, &mut ppu, 0);
+            assert!(
+                !ppu.status.contains(PpuStatus::SPRITE_0_HIT),
+                "the hit belongs to line 1, not to the line the fetch ran on"
+            );
+
+            ppu.scanline = 1;
+            let mut hit_dot = None;
+            for dot in 0..=340u16 {
+                ppu.cycle = dot;
+                let mut chr = VramChr;
+                pipeline.step(&mut ppu, &mut chr, 261);
+                if hit_dot.is_none() && ppu.status.contains(PpuStatus::SPRITE_0_HIT) {
+                    hit_dot = Some(dot);
+                }
+            }
+
+            // The sprite covers screen x = sprite_x .. sprite_x + 7, and the
+            // background is opaque on pixel 0, so the hit lands on the first
+            // overlapping pixel.
+            assert_eq!(
+                hit_dot,
+                Some(sprite_x as u16 + 1),
+                "sprite at x = {sprite_x} should hit on its own pixel"
+            );
+        }
+    }
+
+    /// A transparent pixel does not hide the sprite behind it, and a sprite
+    /// behind an opaque background pixel does not draw over it.
+    #[test]
+    fn test_sprite_priority_and_transparency() {
+        let mut ppu = ppu_with(&[(0, 1)], &[(1, 0xF0)]);
+        fill_tile_rows(&mut ppu, 1, 0xF0);
+        ppu.mask = PpuMask::SHOW_BG
+            | PpuMask::SHOW_BG_LEFT
+            | PpuMask::SHOW_SPRITES
+            | PpuMask::SHOW_SPRITES_LEFT;
+        ppu.v = 0x0000;
+        ppu.t = 0x0000;
+        // Palette 0 of the sprite palettes, colour 3 (both pattern planes are
+        // lit on the sprite's rows).
+        ppu.palette[0x13] = 0x37;
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+
+        // Slot 0's tile is blank (transparent) where slot 1 has a pixel, and
+        // slot 1 is drawn behind the background.
+        let mut slots = [SpriteSlot::default(); 8];
+        slots[0] = SpriteSlot {
+            y: 0,
+            tile: 3,
+            attributes: 0,
+            x: 0,
+            is_sprite_zero: false,
+            occupied: true,
+        };
+        slots[1] = SpriteSlot {
+            y: 0,
+            tile: 4,
+            attributes: 0b0010_0000,
+            x: 0,
+            is_sprite_zero: false,
+            occupied: true,
+        };
+        for row in 0..8 {
+            ppu.vram[4 * 16 + row] = 0xFF;
+        }
+        pipeline.set_sprite_slots(slots);
+        run_line(&mut pipeline, &mut ppu, 0);
+        run_line(&mut pipeline, &mut ppu, 1);
+
+        // The background covers x = 0..3 (its pattern is 0b1111_0000) and the
+        // sprite is behind it there, so only x = 4..7 gets the sprite colour.
+        let sprite_color = nes_color(0x37, ppu.mask);
+        let drawn: Vec<usize> = (0..8)
+            .filter(|&x| pipeline.frame_buffer().get_pixel(x, 1) == sprite_color)
+            .collect();
+        assert_eq!(drawn, vec![4, 5, 6, 7]);
     }
 }

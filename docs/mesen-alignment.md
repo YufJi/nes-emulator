@@ -36,29 +36,27 @@ Two rules, in order:
 
 ## 2. What is not aligned yet
 
-### 2.1 PPU: sprites are still composited a line at a time
+### 2.1 PPU: the sprite *evaluation* is still a line at a time
 
-The background is per dot now — `PixelPipeline` fetches a tile every eight dots
-(`LoadTileInfo`'s nametable/attribute/pattern reads on `cycle % 8 == 1/3/5/7`), shifts it out
-one pixel per dot and draws the pixel on its own dot, off the chip's own `v`/`t`/`x` — and the
-sprite *fetches* run on their dots too, so A12 sees them. What is left of Mesen's
-`ProcessScanlineImpl` is the sprite side proper: `ProcessSpriteEvaluation` (65-256, with the
-OAM addressing and the corruption flags), `LoadSpriteTileInfo` (257-320) into per-sprite
-shifters, and per-dot sprite pixels.
+Rendering is per dot (`PixelPipeline`): a background tile is fetched every eight dots,
+shifted out one pixel per dot and drawn on its own dot, off the chip's own `v`/`t`/`x`; the
+sprite phase's pattern fetches run on their dots (257-320), and the sprite pixels and the
+sprite-0 hit are drawn per dot from the fetched bytes. What is left of Mesen's
+`ProcessScanlineImpl` is the evaluation itself: `ProcessSpriteEvaluation` (65-256) is still a
+single call that fills secondary OAM for the next line, rather than the chip's odd/even OAM
+read pattern with `SetOamCorruptionFlags`/`ProcessOamCorruption`.
 
 Consequences still outstanding:
 
-- **sprite 0 hit is not at the pixel.** The hit is still recorded by the line renderer, not
-  when the PPU's dot counter passes that x.
-- **Sprite rendering is a line behind A12**: the fetches are per dot, the drawn sprites come
-  from a per-line secondary-OAM snapshot.
-- MMC5's vertical split is declined on that basis.
-- **Raster splits** (`$2005`/`$2006` writes during the visible line) now land where they should
-  for the background, because the fetches follow the modified scroll registers.
+- **A sprite can only be shifted into secondary OAM once**: the OAM-address corruption the
+  hardware does when `$2003` is written mid-evaluation is not modelled.
+- MMC5's vertical split remains declined.
+- Sprite pixels and the sprite-0 hit follow the fetches, so a mid-line CHR bank switch now
+  affects sprites on the dot it lands on.
 
-Landed with the per-dot background: real fetch addresses took `4-scanline_timing` green
-(the reconstructed run before the first sprite-phase fetch was a dot long), and `RenderTiming`
-and `ppu.render_v` are gone.
+Landed with the per-dot background and sprites: real fetch addresses took `4-scanline_timing`
+green (the reconstructed run before the first sprite-phase fetch was a dot long), and
+`RenderTiming`, `ppu.render_v` and the whole-line renderer are gone.
 
 What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`, `LoadTileInfo`,
 `LoadSprite`/`LoadExtraSprites`, `ShiftTileRegisters`, `GetPixelColor`, `DrawPixel`,
@@ -213,6 +211,7 @@ several runs.
 | A12, part 2 | The pre-render line runs the fetch pipeline | from its 3rd to its 4th sub-test, direction flipped |
 | A12, part 3 | The filter measures the low run in CPU cycles, and *every* rise ends it | **`2-details` green** ("clocked 241 times"); `4-scanline_timing` to its 12th sub-test |
 | Per-dot background | `PixelPipeline` replaces the whole-line renderer: fetches on `cycle % 8 == 1/3/5/7`, shift registers, a pixel per dot, off the real `v`/`t`; the cartridge gets the addresses really read; `RenderTiming` and `ppu.render_v` removed | **`4-scanline_timing` green** (the reconstruction was a dot long); rest of the baseline unchanged (AccuracyCoin 46); frame cost 1.32 → 1.80 ms |
+| Per-dot sprites | The sprite phase's pattern fetches, per-dot pixels, and the sprite-0 hit on its own dot; the whole-line renderer (`BackgroundRenderer`, `SpriteRenderer`, `ScanlineProcessor`) is deleted | No ROM moved (baseline unchanged, AccuracyCoin 46); frame cost 1.80 → 1.68 ms |
 
 ### Experiments that were implemented, measured and reverted
 
