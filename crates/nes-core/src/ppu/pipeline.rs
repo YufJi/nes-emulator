@@ -699,6 +699,28 @@ mod tests {
         assert_eq!(drawn, vec![0], "only pixel 0 of the tile is set");
     }
 
+    /// The emphasis bits reach the frame buffer as Mesen's nine-bit palette
+    /// resolves them, not through the renderer's own arithmetic.
+    #[test]
+    fn test_emphasis_reaches_the_frame_buffer_as_mesens_palette_resolves_it() {
+        let mut ppu = ppu_with(&[(0, 1)], &[(1, 0x80)]);
+        ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_BG_LEFT | PpuMask::EMPHASIZE_RED;
+        ppu.v = 0x0000;
+        ppu.t = 0x0000;
+        ppu.x = 0;
+        ppu.palette[1] = 0x21;
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        run_line(&mut pipeline, &mut ppu, 0);
+
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(0, 0),
+            0xFF64_93D6,
+            "red emphasis damps green and blue to 84% of the palette entry"
+        );
+    }
+
     #[test]
     fn test_scroll_penalty() {
         // The same tile, but fine X = 1: pixel 0 of the tile lands at screen

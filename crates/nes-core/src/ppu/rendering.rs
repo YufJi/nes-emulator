@@ -57,8 +57,11 @@ impl ChrSource for MapperChr<'_> {
     }
 }
 
-/// NES color palette (64 colors, 6-bit values converted to ARGB)
-/// These are the standard NES NTSC palette colors.
+/// NES color palette (64 colors, 6-bit values converted to ARGB).
+///
+/// Mesen's 2C02 table, entry for entry (`NesDefaultVideoFilter.cpp`,
+/// `_ppuPaletteArgb[0]`), which is the palette its default video filter starts
+/// from.
 pub const NES_PALETTE: [u32; 64] = [
     0xFF666666, 0xFF002A88, 0xFF1412A7, 0xFF3B00A4, 0xFF5C007E, 0xFF6E0040, 0xFF6C0600, 0xFF561D00,
     0xFF333500, 0xFF0B4800, 0xFF005200, 0xFF004F08, 0xFF00404D, 0xFF000000, 0xFF000000, 0xFF000000,
@@ -70,15 +73,78 @@ pub const NES_PALETTE: [u32; 64] = [
     0xFFE4E594, 0xFFCFEF96, 0xFFBDF4AB, 0xFFB3F3CC, 0xFFB5EBF2, 0xFFB8B8B8, 0xFF000000, 0xFF000000,
 ];
 
-/// How much the two non-emphasised channels are darkened when a colour
-/// emphasis bit is set.
-const EMPHASIS_ATTENUATION: f32 = 0.75;
-
-/// Convert a 6-bit NES colour index into an ARGB pixel.
+/// What the two non-emphasised channels keep of their value, in percent, when
+/// an emphasis bit is set.
 ///
-/// Applies the PPUMASK grayscale bit, which clamps the colour index to the
-/// `$x0` column of the palette, and the three colour-emphasis bits, which
-/// darken the two channels that are not emphasised.
+/// Mesen's `GenerateFullColorPalette` multiplies by 0.84 and truncates; the
+/// integer form below is that same truncation — `v * 84 / 100` equals
+/// `(uint8_t)(v * 0.84)` for every 8-bit `v`.
+const EMPHASIS_ATTENUATION_PERCENT: u32 = 84;
+
+/// The 512-entry palette the PPU's nine colour bits index into.
+///
+/// Mesen builds it in `NesDefaultVideoFilter::GenerateFullColorPalette`: the
+/// low six bits are the palette RAM value, and the top three are the emphasis
+/// bits (red in bit 6, green in bit 7, blue in bit 8 — Mesen's
+/// `_intensifyColorBits`). Setting one damps the *other* two channels to 84%,
+/// and — the part worth copying exactly — the three black columns `$xE` and
+/// `$xF` are left alone: emphasis does not tint them.
+const fn emphasis_palette() -> [u32; 512] {
+    let mut table = [0u32; 512];
+    let mut index = 0;
+    while index < 64 {
+        let base = NES_PALETTE[index];
+        let r = (base >> 16) & 0xFF;
+        let g = (base >> 8) & 0xFF;
+        let b = base & 0xFF;
+        // Emphasis leaves the black column alone, and entry 0 is the plain
+        // colour.
+        let affected = (index & 0x0F) <= 0x0D;
+        let mut emphasis = 0;
+        while emphasis < 8 {
+            let (r, g, b) = if affected {
+                let red_on = emphasis & 0b001 != 0;
+                let green_on = emphasis & 0b010 != 0;
+                let blue_on = emphasis & 0b100 != 0;
+                (
+                    if green_on || blue_on {
+                        r * EMPHASIS_ATTENUATION_PERCENT / 100
+                    } else {
+                        r
+                    },
+                    if red_on || blue_on {
+                        g * EMPHASIS_ATTENUATION_PERCENT / 100
+                    } else {
+                        g
+                    },
+                    if red_on || green_on {
+                        b * EMPHASIS_ATTENUATION_PERCENT / 100
+                    } else {
+                        b
+                    },
+                )
+            } else {
+                (r, g, b)
+            };
+            table[(emphasis << 6) | index] = 0xFF00_0000 | (r << 16) | (g << 8) | b;
+            emphasis += 1;
+        }
+        index += 1;
+    }
+    table
+}
+
+/// The nine colour bits — six of palette RAM plus three of emphasis — resolved
+/// to ARGB, exactly as Mesen's default video filter resolves them.
+pub const NES_EMPHASIS_PALETTE: [u32; 512] = emphasis_palette();
+
+/// Convert a palette RAM value into an ARGB pixel.
+///
+/// This is the nine bits Mesen hands to its video filter: the low six are the
+/// palette RAM value (clamped to the `$x0` column by the PPUMASK grayscale
+/// bit, Mesen's `_paletteRamMask`), and the top three are the emphasis bits —
+/// red, green and blue, in that order — which index
+/// [`NES_EMPHASIS_PALETTE`].
 ///
 /// # Arguments
 /// * `color_index` - Palette RAM value (only the low 6 bits are used)
@@ -89,11 +155,6 @@ pub fn nes_color(color_index: u8, mask: PpuMask, region: Region) -> u32 {
         index &= 0x30;
     }
 
-    let argb = NES_PALETTE[index as usize];
-    let mut r = ((argb >> 16) & 0xFF) as f32;
-    let mut g = ((argb >> 8) & 0xFF) as f32;
-    let mut b = (argb & 0xFF) as f32;
-
     // "Note that on the Dendy and PAL NES, the green and red bits swap
     // meaning" (Mesen's `SetMaskRegister`), so the register's bit 5 is the
     // green emphasis on those and the red one on NTSC.
@@ -102,20 +163,13 @@ pub fn nes_color(color_index: u8, mask: PpuMask, region: Region) -> u32 {
         Region::Pal => (PpuMask::EMPHASIZE_GREEN, PpuMask::EMPHASIZE_RED),
     };
 
-    if mask.contains(red_bit) {
-        g *= EMPHASIS_ATTENUATION;
-        b *= EMPHASIS_ATTENUATION;
-    }
-    if mask.contains(green_bit) {
-        r *= EMPHASIS_ATTENUATION;
-        b *= EMPHASIS_ATTENUATION;
-    }
-    if mask.contains(PpuMask::EMPHASIZE_BLUE) {
-        r *= EMPHASIS_ATTENUATION;
-        g *= EMPHASIS_ATTENUATION;
-    }
+    // Mesen's `_intensifyColorBits`: emphasis is the top three bits of the
+    // value the video filter looks up, red lowest of the three.
+    let emphasis = usize::from(mask.contains(red_bit))
+        | (usize::from(mask.contains(green_bit)) << 1)
+        | (usize::from(mask.contains(PpuMask::EMPHASIZE_BLUE)) << 2);
 
-    0xFF00_0000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+    NES_EMPHASIS_PALETTE[(emphasis << 6) | index as usize]
 }
 
 /// Background rendering state
@@ -440,6 +494,71 @@ mod tests {
         let emphasised_green = (emphasised >> 8) & 0xFF;
         assert!(emphasised_green < plain_green);
         assert_eq!(emphasised >> 16 & 0xFF, plain >> 16 & 0xFF);
+    }
+
+    /// The emphasis bits are the top three bits of the value the palette is
+    /// looked up with, and setting one damps the other two channels to 84% of
+    /// their value — truncating, exactly as Mesen's
+    /// `GenerateFullColorPalette` does. `$21` is `0xFF64B0FF`, so red emphasis
+    /// leaves red at `0x64` and takes green `0xB0` → `0x93` and blue `0xFF` →
+    /// `0xD6`.
+    #[test]
+    fn test_nes_color_emphasis_matches_mesens_generation() {
+        let plain = NES_PALETTE[0x21];
+        assert_eq!(plain, 0xFF64_B0FF);
+
+        let red = nes_color(0x21, PpuMask::EMPHASIZE_RED, Region::Ntsc);
+        assert_eq!(red, 0xFF64_93D6, "green and blue keep 84%");
+        assert_eq!(
+            red,
+            NES_EMPHASIS_PALETTE[0x40 | 0x21],
+            "red emphasis is bit 6 of the lookup"
+        );
+
+        let green = nes_color(0x21, PpuMask::EMPHASIZE_GREEN, Region::Ntsc);
+        assert_eq!(green, 0xFF54_B0D6, "red and blue keep 84%");
+        assert_eq!(green, NES_EMPHASIS_PALETTE[0x80 | 0x21]);
+
+        let blue = nes_color(0x21, PpuMask::EMPHASIZE_BLUE, Region::Ntsc);
+        assert_eq!(blue, 0xFF54_93FF, "red and green keep 84%");
+        assert_eq!(blue, NES_EMPHASIS_PALETTE[0x100 | 0x21]);
+    }
+
+    /// Mesen's generator skips the `$xE`/`$xF` columns: emphasis does not tint
+    /// them. On the 2C02 table those entries are black, so the rule changes
+    /// nothing here — but the table is built the way Mesen builds it.
+    #[test]
+    fn test_emphasis_leaves_the_black_columns_alone() {
+        for black in [0x0E, 0x0F, 0x1E, 0x1F, 0x2F, 0x3F] {
+            assert_eq!(NES_PALETTE[black], 0xFF00_0000);
+            for bit in [
+                PpuMask::EMPHASIZE_RED,
+                PpuMask::EMPHASIZE_GREEN,
+                PpuMask::EMPHASIZE_BLUE,
+            ] {
+                assert_eq!(
+                    nes_color(black as u8, bit, Region::Ntsc),
+                    NES_PALETTE[black],
+                    "{black:#04X} keeps its colour"
+                );
+            }
+        }
+    }
+
+    /// Every entry of the 512-value table is reachable from a palette RAM
+    /// value and a mask, and the plain row is the base palette.
+    #[test]
+    fn test_the_plain_row_of_the_table_is_the_base_palette() {
+        for index in 0..64u8 {
+            assert_eq!(
+                NES_EMPHASIS_PALETTE[index as usize],
+                NES_PALETTE[index as usize]
+            );
+            assert_eq!(
+                nes_color(index, PpuMask::empty(), Region::Ntsc),
+                NES_PALETTE[index as usize]
+            );
+        }
     }
 
     #[test]

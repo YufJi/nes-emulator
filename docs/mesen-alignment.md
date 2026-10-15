@@ -80,10 +80,15 @@ What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`,
   with rendering off) the documented 1/32 increment stands.
 - ~~**Emphasis/grayscale**~~ Aligned to `UpdateColorBitMasks`: the grayscale bit masks a palette
   value with $30 on its way out of `$2007` as well as on its way to the screen, and PAL and
-  Dendy swap what the register's emphasis bits mean. What is *not* aligned is the RGB those
-  nine bits resolve to: Mesen ORs `Red/Green/Blue` into the pixel value and its video filter
-  looks the result up in a 512-entry palette, while this core converts per pixel with a
-  three-quarter attenuation of the channels that are not emphasised.
+  Dendy swap what the register's emphasis bits mean.
+- ~~**The RGB the nine colour bits resolve to**~~ Aligned to Mesen's default video filter
+  (`NesDefaultVideoFilter.cpp`): the pixel value is `palette | Red<<6 | Green<<7 | Blue<<8`
+  (Mesen's `_intensifyColorBits`), and a 512-entry table resolves it. Setting an emphasis bit
+  damps the *other* two channels to 84% of their value, truncating, and the `$xE`/`$xF` columns
+  are left alone — Mesen's `GenerateFullColorPalette`. The 64-colour base this core already had
+  turns out to be Mesen's 2C02 table (`_ppuPaletteArgb[0]`) entry for entry, so all that moved
+  was the emphasis: 0.75 → 0.84, the black-column rule, and a lookup instead of per-pixel float
+  arithmetic.
 - PAL's own PPU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) are still absent.
 
 ### 2.3 CPU: DMA is applied after the instruction
@@ -164,8 +169,8 @@ randomised CPU/PPU alignment (this core has offset 0).
 4. ~~**§2.2's register details**~~ — done: open-bus decay (`ppu_open_bus`), the rendering-time
    `$2007` behaviour, the grayscale mask on palette reads and the PAL emphasis swap. OAM decay
    turned out to be an off-by-default Mesen setting, so not modelling it *is* the default. The
-   one piece left is the RGB the nine colour bits resolve to (Mesen's 512-entry table, which
-   its video filter owns).
+   RGB the nine colour bits resolve to is in as well — Mesen's 512-entry table, its 84%
+   truncation and the black-column rule (§2.2/§7).
 5. **PAL**. The ratio is done — PAL runs 16/5 with the fractional dot accumulator, so a PAL
    frame is 33247.5 CPU cycles and the audio clock derives from the real 3.2 rather than from
    the NTSC-shaped constant. What is left is PAL's own PPU/APU rules (`_nmiScanline`,
@@ -266,6 +271,7 @@ several runs.
 | The access dot | Ran `ACCESS_DOTS` at 0, 1 and 2 against the whole ROM baseline now that the pipeline fetches at the dot | **2 is the measured value**: 0 and 1 each cost five ROMs (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `2-nmi_and_brk`, `4-scanline_timing`); 2 passes every suite |
 | NES 2.0 header + bus conflicts | The header parses the version, the submapper, byte 9's size bits and byte 12's region (and refuses the exponent-multiplier encoding); `Mapper::has_bus_conflicts` makes a cartridge write the AND of the CPU's value and the board's byte, for 2/3/7/11/66/71 | No ROM moved (the local suites use mappers 0/1/4, none of which has the conflict trap); `Nes::rom_submapper` exposes what was parsed |
 | PPU register details (§2.2) | Read from Mesen's own sources (`NesPpu.cpp`, `BaseNesPpu.cpp`): a `$2007` access on a drawing line advances the scroll both ways, a second `$2007` access within six dots is ignored, palette reads take the grayscale mask, PAL/Dendy swap the emphasis bits; OAM decay turns out to be off by default | No ROM moved (`blargg_ppu_tests` covers the `$2007` paths); three unit tests pin the behaviours |
+| The nine colour bits' RGB (§2.2) | Mesen's default video filter read (`NesDefaultVideoFilter.cpp`): the pixel value is `palette \| Red<<6 \| Green<<7 \| Blue<<8`, looked up in a 512-entry table whose emphasis entries damp the other two channels to **84%** and leave the `$xE`/`$xF` columns alone. The base table this core had is Mesen's 2C02 one, entry for entry | No ROM moves (no local ROM looks at rendered colour); four unit tests pin the table, the 84% truncation, the black columns and the PAL swap, one end-to-end test pins a rendered pixel to `0xFF6493D6`; frame cost 1.74 → 1.69 ms |
 | Mesen's DMC source | `Core/NES/APU/DeltaModulationChannel.cpp` read (the manifest listed the path; the file was fetched): status = `_bytesRemaining > 0`; the counter and the IRQ move in `SetDmcReadBuffer`, i.e. at the fetch; the register takes the buffer when `_bitsRemaining` hits 0, with a silence flag holding the DAC; `SetEnabled` delays its transfer 2/3 cycles by parity; PAL has its own period table | The Mesen-shaped implementation was tried and **withdrawn**: it puts `8-dmc_rates` at ~128 periods where the ROM's window wants ~135, and `7-dmc_basics` regresses to its 2nd check. The tree keeps the playback-based counter (135.3 periods) |
 | DMC fetch charged twice | The channel's request latch stayed set until the byte was supplied, and the bus re-armed its pending transfer from it on every cycle the APU ticked — so the transfer's own four cycles armed a second one. Two four-cycle transfers per byte, and no CPU read of `$4000` ever saw the byte on the bus. The bus now *takes* the request (`Apu::take_dmc_dma_request`), which is Mesen's one-shot halt latch | **AccuracyCoin boots again**: 155 tests ran, 85 passed, 43 failing (the rows above recorded 46); every other suite unchanged; frame cost 1.72 → 1.70 ms; two new unit tests (the latch, and a hand-built ROM that polls `$4000` the way AccuracyCoin's boot-time sync does) |
 | DMC is Mesen's | The length counter moves at the fetch rather than at the end of playback, a fetched byte waits in the buffer for the output unit's byte boundary (so the buffer holds one byte and a restart cannot queue a second), the register holds its level while silent instead of decaying over zeroes, and the timer's period is the table's value rather than one more | **`7-dmc_basics` and `8-dmc_rates` green** (apu_test 6/8 → **8/8**); AccuracyCoin 43 → **34 failing** (143 ran, 94 passed); nothing else moved; frame cost 1.70 → 1.74 ms; state version 10 → 11 |
@@ -409,7 +415,7 @@ double-charged fetch hid here for several steps (§7).
 `blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
 2/5, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94 passed,
-0 skipped). Unit tests: 588. Frame cost: about 1.74 ms (release, 600 frames of nestest, median).
+0 skipped). Unit tests: 592. Frame cost: about 1.69 ms (release, 600 frames of nestest, median).
 Branch:
 `codex/mesen-alignment`.
 
@@ -420,7 +426,7 @@ Branch:
 | P2 | DMA inside `MemoryRead` (`process_pending_dma`) | Done | `8ec693d`: `4-irq_and_dma`'s trace is byte-identical | Nothing (DMC's prerequisite is in) — but it is also where the DMC's double-charged fetch came in; see the last §7 row |
 | P3a | APU frame counter phase (`$4017` three cycles late, IRQ flag three cycles in a row) | Done | `a1fbaa3`: `4-jitter`, `5-len_timing`, `6-irq_flag_timing` green | Nothing |
 | P3b | DMC | Done | `f9984d4` (two semantics bugs), the one-shot fetch latch (§7), and Mesen's channel shape: counter at the fetch, byte held in the buffer, silence flag, period = the table's value. **`7-dmc_basics` and `8-dmc_rates` green** (apu_test 8/8); AccuracyCoin 43 → 34 | Nothing for the roms; the mixing rate (P7) and the DMC IRQ's effect on the CPU's IRQ line are the neighbouring items |
-| P4 | §2.2's register details: open-bus decay, rendering-time `$2007`, grayscale mask, PAL emphasis swap | Done | `af2f375`, `8247f10`: `ppu_open_bus` green; three unit tests | The RGB those nine colour bits resolve to (Mesen's 512-entry table lives in its video filter) |
+| P4 | §2.2's register details: open-bus decay, rendering-time `$2007`, grayscale mask, PAL emphasis swap, and the nine colour bits' RGB | Done | `af2f375`, `8247f10`, and the 512-entry emphasis table (§7): `ppu_open_bus` green; eight unit tests | Nothing — the sprite *evaluation* being per line (P1) is the neighbouring item |
 | P5 | PAL 16/5, fractional dot accumulator, region-correct audio clock | Done (the ratio) | `dbdf7cc`: a PAL frame is 33,247.5 CPU cycles | PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) — unverifiable without a PAL ROM |
 | P6 | Mappers: NES 2.0 header, bus conflicts | Partly done | `4e1c7a6`: conflicts for 2/3/7/11/66/71; five header and two conflict tests | Dispatching on the submapper (Mesen reads that from its CRC-keyed database, not the header); then boards 64/158/185/115 |
 | P7 | Audio resampling | Not started | — | Band-limited (blip) resampling; no reference recording, so acceptance is "does not break what passes" |
