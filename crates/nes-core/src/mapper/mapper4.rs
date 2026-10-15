@@ -336,17 +336,26 @@ impl Mapper for Mapper4 {
     fn on_ppu_bus(&mut self, addr: u16) {
         let a12 = addr & 0x1000 != 0;
         if !a12 {
+            // The length of the *current* low run: Mesen's `_cyclesDown`.
             self.a12_low = true;
             self.a12_low_dots = self.a12_low_dots.saturating_add(1);
             return;
         }
 
+        // "A rise only counts if A12 has been low for three CPU cycles" - and
+        // Mesen's `IsA12RisingEdge` measures that as three ticks of the CPU's
+        // cycle count, which is the nine dots the threshold below is in. The
+        // important half is what happens to a rise that does *not* count: it
+        // still ends the run (`_cyclesDown = 0`). Counting across runs instead
+        // makes every later rise in the frame qualify, which clocks a scanline
+        // counter far more than the once per scanline it really is.
         let was_low = self.a12_low;
         self.a12_low = false;
-        if !was_low || self.a12_low_dots < 9 {
+        let counted = was_low && self.a12_low_dots >= 9;
+        self.a12_low_dots = 0;
+        if !counted {
             return;
         }
-        self.a12_low_dots = 0;
 
         if self.irq_counter == 0 || self.irq_reload {
             self.irq_counter = self.irq_latch;
