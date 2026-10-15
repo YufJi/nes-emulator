@@ -180,14 +180,12 @@ Key points:
   own working buffer, and at a frame boundary the two buffers are swapped. So mid-frame reads
   always see the **previous complete frame**, and there is no tearing — with no 245 KB copy
   per frame to make that true.
-- **PPU writes are decoupled from rendering**: rendering uses a separate `ppu.render_v`
-  scroll counter, so the CPU changing `v` through `$2006/$2007` doesn't corrupt the frame
-  being rendered.
-- **A scanline is drawn at once, so the write/render order is a setting**: `RenderTiming`
-  picks whether line *N* is drawn at dot 256 (`ScanlineEnd`, the default: a write earlier in
-  the line still affects it) or at dot 0 (`ScanlineStart`). Games with raster effects do not
-  all agree which they want, so `Config::render_timing` / `Nes::set_render_timing` is a
-  per-game compatibility switch rather than a constant (§15.1).
+- **Rendering is per dot, on the chip's own scroll registers**: the pipeline fetches a tile
+  every eight dots (`LoadTileInfo`'s nametable/attribute/pattern reads), shifts the fetched
+  tile out one pixel per dot, and draws the pixel on the dot it belongs to — Mesen's
+  `ProcessScanlineImpl`. It reads `v`/`t`/`x` directly, so a `$2005`/`$2006` write lands
+  behind the very fetch it should: raster splits need no compatibility switch, and there is
+  no second copy of the scroll registers to keep in step.
 - **DMA stalls the CPU**: OAM DMA (`$4014`) stalls it for 513/514 cycles and a DMC byte
   fetch for 4 cycles; PPU and APU keep advancing during the stall.
 - **The CPU drives its own cycles, the way Mesen's does**: an instruction is not a lump of
@@ -386,7 +384,7 @@ flowchart LR
 
 | Component | Key structures | Notes |
 | --- | --- | --- |
-| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` / `render_v` | Registers and internal latches |
+| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` | Registers and internal latches |
 | `BackgroundRenderer` | `BgRenderState` | Whole-scanline rendering: tiles are fetched left to right at one dot (§3.2 picks which), so there is no shift-register pipeline; the mirroring mode can be switched at runtime |
 | `SpriteEvaluator` | `SecondaryOam` | Per-line evaluation (including the 8-sprite overflow bug behavior) |
 | `FrameBuffer` | `pixels: Vec<u32>`, `width`, `height` | The externally visible picture; its size derives from the `WIDTH`/`HEIGHT` constants |
@@ -942,23 +940,23 @@ clone needs `npm run build:wasm` before building the front end.
   counter's rise is measured against. The fetch dots and the addresses on them are Mesen's
   (`LoadTileInfo`: nametable on `cycle % 8 == 1`, attribute on 3, pattern on 5 and 7; the
   sprite phase's garbage nametable/attribute reads on `(cycle - 257) % 8 == 0` and `2` before
-  the sprite's pattern bytes on 4; the pre-render line fetches too), reconstructed from the
-  dot counter because the renderer still draws whole scanlines. The counter's filter is
+  the sprite's pattern bytes on 4; the pre-render line fetches too), and the addresses are
+  the ones the per-dot pipeline really read rather than a reconstruction. The counter's filter is
   Mesen's `_cyclesDown` rule: a rise counts only after three CPU cycles of low, and *every*
   rise ends the run whether or not it counted. That is four of blargg's six MMC3 tests.
-  What is still approximate:
-  the exact dot the first rise of a frame lands on (`4-scanline_timing`), the "alternate"
-  NEC IRQ revision that needs mapper-4 submapper 4 (`6-MMC3_alt`), and the fine detail of
-  which sprite fetch raises A12 with 8x16 sprites.
+  What is still approximate: the "alternate" NEC IRQ revision that needs mapper-4 submapper 4
+  (`6-MMC3_alt`) and the fine detail of which sprite fetch raises A12 with 8x16 sprites.
+  `4-scanline_timing` went green once the fetches became real: the reconstruction made the
+  run before the first sprite-phase fetch one dot too long.
 - **MMC5's ExRAM is wired; extended attributes and the split are not**: `$5105` nametable
   mapping reaches the renderer through `nametable_read`/`nametable_write`, so ExRAM
   nametables and fill mode work. Extended-attribute mode (`$5104` = 3) would need its own
   byte layout decoded, and the vertical split is out of scope by decision (§15.6).
-- **Raster effects get a compatibility switch, not a fix**: because a whole scanline is
-  drawn at once (§3.2), a write made during line *N* either does or does not affect line *N*,
-  and `RenderTiming` chooses which. That is a knob for games whose splits sit a line high or
-  low; making the choice unnecessary means drawing at dot granularity, which is the same
-  work as §6's pipeline and is not on this list yet.
+- **Sprites are still composited a line at a time**: the background is drawn per dot and the
+  sprite *fetches* run on their dots, so A12 sees them, but the sprites themselves are drawn
+  once per line from the secondary-OAM snapshot. The sprite-0 hit therefore lands on the
+  line rather than on the pixel, which is the next piece of §2.1 of
+  `docs/mesen-alignment.md`.
 - **The VBlank flag's neighbours are dot-exact, except the odd-frame skip**: a `$2002` read
   is performed two dots into its own cycle, where the chip performs it, so a read on the dot
   just before the flag is set takes the frame's flag *and* its NMI away, and one on the
@@ -1054,8 +1052,8 @@ clone needs `npm run build:wasm` before building the front end.
   palette.
 - No screen recording/screenshot export (a front end can build it on `frame_buffer()`).
 - Save slots are fixed at 4 (a front-end convention; the core doesn't care).
-- `RenderTiming` is exported by the core and both bindings, but no front end exposes it in
-  its UI yet: it is a per-game compatibility switch waiting for a settings screen.
+- Raster effects no longer need a compatibility switch (the renderer is per dot), so the
+  old `RenderTiming` setting is gone from the core and both bindings.
 
 ### 15.6 What is deliberately out of scope
 

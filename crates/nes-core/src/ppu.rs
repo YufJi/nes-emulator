@@ -4,6 +4,7 @@
 //! It generates a 256x240 pixel display at 60 FPS (NTSC) or 50 FPS (PAL).
 
 use bitflags::bitflags;
+pub mod pipeline;
 pub mod rendering;
 pub mod sprite;
 

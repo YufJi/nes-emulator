@@ -113,16 +113,14 @@ fn blargg_mmc3() {
         "blargg/mmc3_test_2/rom_singles",
         BLARGG_SLOW_FRAMES,
         // The A12 model now follows Mesen in both halves: the cartridge is
-        // handed the address of the last real access and it is held between
-        // accesses (instead of following the VRAM address register), and a
-        // rise resets the low-run length whether or not it counts, which is
-        // Mesen's `_cyclesDown = 0` on every rise. That took `2-details`
-        // ("clocked 241 times") green and carried `4-scanline_timing` from its
-        // second sub-test to its twelfth, where what is left is the boundary
-        // between the last visible line and vertical blanking. The "alternate"
-        // IRQ revision `6-MMC3_alt` needs is a submapper this project does not
+        // handed the addresses the pipeline *really read*, on the dot it read
+        // them, and held between accesses. That is what carried
+        // `4-scanline_timing` the last dot to green: with the renderer
+        // reconstructing the fetches from the dot counter, the run before the
+        // first sprite-phase fetch was one dot too long. The "alternate" IRQ
+        // revision `6-MMC3_alt` needs is a submapper this project does not
         // parse (§15.1).
-        &["4-scanline_timing.nes", "6-MMC3_alt.nes"],
+        &["6-MMC3_alt.nes"],
     );
 }
 

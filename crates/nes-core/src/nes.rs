@@ -9,14 +9,13 @@ use crate::apu::Apu;
 use crate::bus::Bus;
 use crate::cpu::Cpu;
 use crate::mapper::{create_mapper, Mapper};
-use crate::ppu::rendering::{
-    BackgroundRenderer, FrameBuffer, MapperChr, Mirroring, ScanlineProcessor, VramChr,
-};
+use crate::ppu::pipeline::{PixelPipeline, SpriteSlot};
+use crate::ppu::rendering::{BackgroundRenderer, FrameBuffer, MapperChr, Mirroring, VramChr};
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
 use crate::prelude::*;
 use crate::state::{StateReader, StateWriter};
-use crate::{Config, NesError, Region, RenderTiming, DEFAULT_SAMPLE_RATE};
+use crate::{Config, NesError, Region, DEFAULT_SAMPLE_RATE};
 
 /// Button indices used by [`Nes::set_button`].
 pub const BUTTON_A: u8 = 0;
@@ -304,6 +303,8 @@ struct NesBus {
     skip_odd_frame_dot: bool,
     frame_buffer: FrameBuffer,
     bg_renderer: BackgroundRenderer,
+    /// The per-dot renderer: fetches, shift registers, sprites and the picture.
+    pipeline: PixelPipeline,
     /// Sprite evaluator for the current scanline
     sprite_evaluator: SpriteEvaluator,
     /// Nametable mirroring mode from the cartridge header
@@ -318,8 +319,6 @@ struct NesBus {
     open_bus: u8,
     /// Whether the cartridge declares battery-backed work RAM
     has_battery: bool,
-    /// When the renderer draws each scanline, relative to the CPU's writes
-    render_timing: RenderTiming,
     frame_ready: bool,
 }
 
@@ -337,12 +336,12 @@ crate::state::state_fields!(NesBus {
     skip_odd_frame_dot,
     bus_address,
     bg_renderer,
+    pipeline,
     sprite_evaluator,
     mirroring,
     region,
     open_bus,
     has_battery,
-    render_timing,
     frame_ready,
 });
 
@@ -378,6 +377,7 @@ impl NesBus {
             pending_dots: 0,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
+            pipeline: PixelPipeline::new(),
             sprite_evaluator: SpriteEvaluator::new(),
             mirroring: Mirroring::Horizontal,
             region: Region::Ntsc,
@@ -385,7 +385,6 @@ impl NesBus {
             enable_audio: true,
             open_bus: 0,
             has_battery: false,
-            render_timing: RenderTiming::ScanlineEnd,
             frame_ready: false,
         }
     }
@@ -397,7 +396,6 @@ impl NesBus {
     fn apply_config(&mut self, config: &Config) {
         self.region_override = config.region_override;
         self.enable_audio = config.enable_audio;
-        self.render_timing = config.render_timing;
         self.set_sample_rate(config.sample_rate);
     }
 
@@ -445,6 +443,7 @@ impl NesBus {
         // (which reads nametables) and the bus (which mirrors PPUDATA writes).
         self.mirroring = header.mirroring;
         self.bg_renderer.set_mirroring(header.mirroring);
+        self.pipeline.set_mirroring(header.mirroring);
         self.region = self.region_override.unwrap_or(header.region);
         self.has_battery = header.has_battery;
 
@@ -758,42 +757,65 @@ impl NesBus {
 
     /// Advance the PPU by the single cycle that was just counted.
     ///
-    /// Rendering works off `ppu.render_v` (a dedicated scroll counter) rather
-    /// than `ppu.v`, so the CPU writing nametables through $2006/$2007 during
-    /// VBlank cannot disturb an in-progress frame.
+    /// The pixel pipeline runs off the PPU's own dot counter and the *real*
+    /// scroll registers, exactly as the chip does: a tile is fetched every
+    /// eight dots, the fetched tile is shifted out one pixel per dot, and a
+    /// `$2001`/`$2005`/`$2006` write therefore takes effect from the dot it
+    /// lands on. What is left here is the frame's own bookkeeping — the picture
+    /// for a line with rendering off, the sprite evaluator, the VBlank flag and
+    /// the hit latch.
     fn ppu_step(&mut self) {
         let scanline = self.ppu.scanline;
         let cycle = self.ppu.cycle;
         let pre_render = self.region.last_scanline();
 
-        if scanline < 240 {
-            // Visible scanlines
-            // The whole line is drawn at once, so the only choice left is
-            // whether a write made during this line still counts for it.
-            let draw_at = match self.render_timing {
-                RenderTiming::ScanlineEnd => 256,
-                RenderTiming::ScanlineStart => 0,
-            };
-            if cycle == draw_at {
-                // Reload the horizontal scroll for this line from t.
-                self.ppu.render_v = (self.ppu.render_v & !0x041F) | (self.ppu.t & 0x041F);
+        // The sprite phase fetches from the line's secondary-OAM slots, which
+        // are filled by the previous line's evaluation.
+        if cycle == 0 && (scanline < 240 || scanline == pre_render) {
+            let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
+            let sprite_table = self.ppu.ctrl.contains(PpuCtrl::SPRITE_PATTERN);
+            let mut slots = [SpriteSlot::default(); 8];
+            for (index, slot) in slots.iter_mut().enumerate() {
+                // An empty slot fetches tile $FF from the sprite table, which
+                // is what the hardware does with the sprites it did not find.
+                let tile = self
+                    .sprite_evaluator
+                    .secondary_oam
+                    .get_sprite(index)
+                    .map_or(0xFF, |sprite| sprite.tile);
+                let table = if eight_by_sixteen {
+                    tile & 0x01
+                } else if sprite_table {
+                    1
+                } else {
+                    0
+                };
+                slot.tile = tile;
+                slot.pattern_table = if table != 0 { 0x1000 } else { 0x0000 };
+            }
+            self.pipeline.set_sprite_slots(slots);
+        }
 
-                // Background + sprites for this scanline. Pattern data is
-                // read through the cartridge so mid-frame CHR bank
-                // switches take effect immediately.
+        self.step_pipeline(pre_render);
+
+        if scanline < 240 {
+            // Visible scanlines: sprites are still composited a line at a time
+            // (the per-dot sprite path is the next step), once the background
+            // pipeline has drawn the whole line.
+            if cycle == 256 {
                 let mask = self.ppu.mask;
+                // The sprite pass tests against the background the per-dot
+                // pipeline just drew: priority and the sprite-0 hit both need
+                // to know which pixels the background made opaque.
+                self.bg_renderer.bg_pixels = self.pipeline.bg_opaque_plane().to_vec();
                 match self.mapper.as_deref_mut() {
                     Some(mapper) => {
                         let mut chr = MapperChr(mapper);
-                        self.bg_renderer
-                            .render_scanline(&self.ppu, &mut chr, scanline, mask);
                         self.bg_renderer
                             .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
                     }
                     None => {
                         let mut chr = VramChr;
-                        self.bg_renderer
-                            .render_scanline(&self.ppu, &mut chr, scanline, mask);
                         self.bg_renderer
                             .render_sprites_for_scanline(&self.ppu, &mut chr, scanline, mask);
                     }
@@ -801,9 +823,6 @@ impl NesBus {
                 if self.bg_renderer.check_sprite_0_hit() {
                     self.ppu.status.insert(PpuStatus::SPRITE_0_HIT);
                 }
-
-                // Advance the vertical scroll for the next scanline.
-                self.ppu.render_v = ScanlineProcessor::increment_scroll_y(self.ppu.render_v);
 
                 // Evaluate sprites for the next scanline.
                 let next_scanline = scanline + 1;
@@ -838,10 +857,25 @@ impl NesBus {
                 // The hit latch must also be forgotten, otherwise the
                 // renderer would keep reporting last frame's hit.
                 self.bg_renderer.sprite_renderer.clear_sprite_0_hit();
+                self.pipeline.reset_shifters();
             }
-            if cycle == 304 {
-                // Vertical + horizontal scroll both reload from t.
-                self.ppu.render_v = self.ppu.t;
+        }
+    }
+
+    /// Run the pixel pipeline for the dot the PPU is standing on.
+    ///
+    /// Pattern data and nametables go through the cartridge, so a mid-frame CHR
+    /// bank switch or an MMC5 nametable window takes effect on the fetch that
+    /// follows it.
+    fn step_pipeline(&mut self, pre_render: u16) {
+        match self.mapper.as_deref_mut() {
+            Some(mapper) => {
+                let mut chr = MapperChr(mapper);
+                self.pipeline.step(&mut self.ppu, &mut chr, pre_render);
+            }
+            None => {
+                let mut chr = VramChr;
+                self.pipeline.step(&mut self.ppu, &mut chr, pre_render);
             }
         }
     }
@@ -951,112 +985,19 @@ impl NesBus {
         self.ppu.vblank_flag_set() && self.ppu.ctrl.contains(PpuCtrl::NMI_ENABLE)
     }
 
-    /// Address the PPU drives for the dot it is on.
-    ///
-    /// The renderer draws a whole scanline in one go, so the fetches the
-    /// cartridge actually sees — the ones that toggle A12 — are reconstructed
-    /// from the dot clock: dots group in eights that fetch nametable,
-    /// attribute, pattern low and pattern high, and the sprite phase fetches
-    /// from the sprite pattern table.
-    ///
-    /// Only bit 12 matters here, and a fetch from the $0000 pattern table can
-    /// never set it (the highest address in that table is $0FF7), so the
-    /// background side is decided by the table the cartridge selected. Sprites
-    /// are tracked per sprite: 8x16 ones choose their table with bit 0 of the
-    /// Drive the PPU bus for the dot being stepped, the way the chip's own
-    /// fetches do.
+    /// Hand the PPU's accesses to the cartridge for the dot just stepped.
     ///
     /// Mesen's `SetBusAddress`, called from every `ReadVram`: the cartridge
     /// sees the address of the *last* access, held between accesses. The
-    /// pipeline reads at fixed dots — `LoadTileInfo` takes the nametable byte
-    /// on `cycle % 8 == 1`, the attribute byte on 3 and the two pattern bytes
-    /// on 5 and 7, and the sprite phase at 257-320 does its garbage nametable
-    /// and attribute reads on `(cycle - 257) % 8 == 0` and `2` before the
-    /// sprite's own pattern bytes on 4 — so reproducing the sequence from the
-    /// dot counter gives the cartridge the same addresses, on the same dots,
-    /// that the fetches would.
-    ///
-    /// Nothing is fetched during vertical blanking or with rendering off
-    /// (Mesen only runs the pipeline for `scanline < 240`, and the pre-render
-    /// line counts as one of those): the address is left where it was.
-    fn drive_ppu_bus(&mut self) {
-        let rendering = self
-            .ppu
-            .mask
-            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
-        // The pre-render line is *not* in this range: Mesen's pipeline runs for
-        // `_scanline < 240`, and the pre-render line is -1 to it, so its
-        // fetches happen - including the sprite phase, whose first pattern
-        // fetch is the rise a game with an all-nametable background waits for.
-        let in_vblank = self.ppu.scanline >= 240 && self.ppu.scanline < self.region.last_scanline();
-        if !rendering || in_vblank {
-            return;
-        }
-
-        let cycle = self.ppu.cycle;
-        // The nametable and attribute fetches address $2000-$2FFF, where bit 12
-        // is clear; the pattern fetches address the table the control register
-        // selects, and bit 12 is the only bit a cartridge's A12 filter looks at.
-        let nametable = 0x2000 | (self.ppu.render_v & 0x0FFF);
-        let background_pattern = if self.ppu.ctrl.contains(PpuCtrl::BACKGROUND_PATTERN) {
-            0x1000
-        } else {
-            0x0000
-        };
-
-        // Only the dots that really read drive the bus (Mesen's `SetBusAddress`
-        // is called from `ReadVram`, and nowhere else). The dots in between
-        // change nothing: the address the cartridge sees is the one the last
-        // access left, which is what lets a CPU access through `$2007` stay on
-        // the bus until the pipeline's next fetch — overwriting it with the
-        // "held" address every dot would erase it a dot later.
-        let fetch_address = match cycle {
-            337 | 339 => Some(nametable),
-            257..=320 => {
-                let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
-                let sprite = self
-                    .sprite_evaluator
-                    .secondary_oam
-                    .get_sprite(((cycle - 257) / 8) as usize);
-                // An empty slot fetches tile $FF from the sprite table, which
-                // is what the hardware does with the sprites it did not find.
-                let tile = sprite.map_or(0xFF, |sprite| sprite.tile);
-                let table = if eight_by_sixteen {
-                    tile & 0x01
-                } else if self.ppu.ctrl.contains(PpuCtrl::SPRITE_PATTERN) {
-                    1
-                } else {
-                    0
-                };
-                let sprite_pattern = if table != 0 { 0x1000 } else { 0x0000 };
-                match (cycle - 257) % 8 {
-                    // The group's nametable and attribute reads come first, so
-                    // A12 goes low between the sprite pattern fetches; that is
-                    // what an MC-ACC clone's IRQ is built on.
-                    0 => Some(nametable),
-                    2 => Some(nametable),
-                    4 => Some(sprite_pattern),
-                    _ => None,
-                }
-            }
-            _ => match cycle.wrapping_sub(1) % 8 {
-                // `cycle & 7 == 1` reads the nametable byte, 3 the attribute
-                // byte, 5 and 7 the two pattern bytes; the rest are holding
-                // dots.
-                0 => Some(nametable),
-                2 => Some(nametable),
-                4 | 6 => Some(background_pattern),
-                _ => None,
-            },
-        };
-
-        if let Some(addr) = fetch_address {
+    /// pipeline reports the addresses it really read, on the dot it read them,
+    /// so an A12 filter clocks on real fetches instead of on a reconstruction.
+    /// Dots that made no access leave the held address alone, which is what
+    /// lets a CPU access through `$2007` stay on the bus until the pipeline's
+    /// next fetch.
+    fn feed_ppu_bus(&mut self) {
+        if let Some(addr) = self.pipeline.take_bus_access() {
             self.bus_address = addr;
         }
-    }
-
-    /// Hand the current PPU address to the cartridge.
-    fn feed_ppu_bus(&mut self) {
         let addr = self.bus_address;
         let cycles = self.cpu_cycles;
         if let Some(ref mut mapper) = self.mapper {
@@ -1318,7 +1259,7 @@ impl NesBus {
                 // renderer: the host keeps reading a complete frame while
                 // the next one is drawn, and no pixels are copied.
                 self.frame_buffer
-                    .swap_pixels(self.bg_renderer.frame_buffer_mut());
+                    .swap_pixels(self.pipeline.frame_buffer_mut());
             }
 
             // Let mappers with a scanline counter tick here.
@@ -1337,12 +1278,12 @@ impl NesBus {
                     if mode != self.mirroring {
                         self.mirroring = mode;
                         self.bg_renderer.set_mirroring(mode);
+                        self.pipeline.set_mirroring(mode);
                     }
                 }
             }
         }
         self.ppu_step();
-        self.drive_ppu_bus();
         self.feed_ppu_bus();
         self.record_ppu_bus_sample();
     }
@@ -1643,20 +1584,6 @@ impl Nes {
     /// leaving them with a frozen screen.
     pub fn is_cpu_halted(&self) -> bool {
         self.cpu.is_halted()
-    }
-
-    /// Change when the renderer draws each scanline.
-    ///
-    /// The setting can be changed while a game runs — it only decides which
-    /// side of a CPU write a scanline falls on — so a host can offer it as a
-    /// per-game compatibility toggle.
-    pub fn set_render_timing(&mut self, timing: RenderTiming) {
-        self.bus.render_timing = timing;
-    }
-
-    /// When the renderer draws each scanline.
-    pub fn render_timing(&self) -> RenderTiming {
-        self.bus.render_timing
     }
 
     /// Read a byte straight off the system bus.
@@ -2181,39 +2108,6 @@ mod tests {
         assert_eq!(
             nes.bus.ppu.scanline, 0,
             "the frame ends just after the last scanline, at the top of the next"
-        );
-    }
-
-    /// The two render timings put a mid-line write on different sides of the
-    /// scanline it lands in.
-    #[test]
-    fn test_render_timing_decides_the_side_of_a_write() {
-        /// Index of the first scanline drawn entirely in the backdrop colour.
-        fn first_blank_line(timing: RenderTiming) -> usize {
-            let mut nes = Nes::new();
-            nes.load_rom(&background_off_rom()).unwrap();
-            nes.set_render_timing(timing);
-            nes.frame();
-
-            let backdrop = crate::ppu::rendering::nes_color(0, PpuMask::empty());
-            let pixels = nes.frame_buffer();
-            (0..240)
-                .find(|line| {
-                    let row = &pixels[line * 256..(line + 1) * 256];
-                    row.iter().all(|pixel| *pixel == backdrop)
-                })
-                .unwrap_or(240)
-        }
-
-        let end = first_blank_line(RenderTiming::ScanlineEnd);
-        let start = first_blank_line(RenderTiming::ScanlineStart);
-        assert!(
-            end < 240 && start < 240,
-            "the write should land inside the frame (end {end}, start {start})"
-        );
-        assert_ne!(
-            end, start,
-            "the timing setting has to move the line the write takes effect on"
         );
     }
 

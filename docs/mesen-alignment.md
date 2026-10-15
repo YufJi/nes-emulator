@@ -36,25 +36,29 @@ Two rules, in order:
 
 ## 2. What is not aligned yet
 
-### 2.1 PPU: the renderer draws whole scanlines
+### 2.1 PPU: sprites are still composited a line at a time
 
-This is the root of most of the rest. Mesen fetches per dot (`NesPpu::ProcessScanlineImpl`
-calls `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ProcessSpriteEvaluation` during 65-256,
-`LoadSpriteTileInfo` during 257-320, `ShiftTileRegisters` every dot, `DrawPixel` every dot);
-this core renders a line in one call at dot 256 (or 0) and reconstructs the fetch *addresses*
-from the dot counter.
+The background is per dot now — `PixelPipeline` fetches a tile every eight dots
+(`LoadTileInfo`'s nametable/attribute/pattern reads on `cycle % 8 == 1/3/5/7`), shifts it out
+one pixel per dot and draws the pixel on its own dot, off the chip's own `v`/`t`/`x` — and the
+sprite *fetches* run on their dots too, so A12 sees them. What is left of Mesen's
+`ProcessScanlineImpl` is the sprite side proper: `ProcessSpriteEvaluation` (65-256, with the
+OAM addressing and the corruption flags), `LoadSpriteTileInfo` (257-320) into per-sprite
+shifters, and per-dot sprite pixels.
 
-Consequences, each of which is a real ROM failure:
+Consequences still outstanding:
 
-- **sprite 0 hit is not at the pixel.** The renderer records where the hit is and the flag is
-  set at the render point, not when the PPU's dot counter passes that x.
-- **A mid-line `$2001` change** takes effect for a whole line or not at all; `RenderTiming` is a
-  per-game switch that exists only because of this (Mesen has no such concept, and it should be
-  deleted once the renderer is per-dot).
-- **Raster splits** (`$2005`/`$2006` writes during the visible line) land on the wrong side.
-- **A12 is reconstructed** rather than produced by real fetches, which is why `4-scanline_timing`
-  still has a dot of error.
-- MMC5's vertical split is declined for the same reason.
+- **sprite 0 hit is not at the pixel.** The hit is still recorded by the line renderer, not
+  when the PPU's dot counter passes that x.
+- **Sprite rendering is a line behind A12**: the fetches are per dot, the drawn sprites come
+  from a per-line secondary-OAM snapshot.
+- MMC5's vertical split is declined on that basis.
+- **Raster splits** (`$2005`/`$2006` writes during the visible line) now land where they should
+  for the background, because the fetches follow the modified scroll registers.
+
+Landed with the per-dot background: real fetch addresses took `4-scanline_timing` green
+(the reconstructed run before the first sprite-phase fetch was a dot long), and `RenderTiming`
+and `ppu.render_v` are gone.
 
 What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`, `LoadTileInfo`,
 `LoadSprite`/`LoadExtraSprites`, `ShiftTileRegisters`, `GetPixelColor`, `DrawPixel`,
@@ -133,10 +137,6 @@ randomised CPU/PPU alignment (this core has offset 0).
   the hang cannot be interrupted. This core keeps the hardware's behaviour — an interrupt or a
   reset restarts the CPU — because the host reports the hang (`Nes::is_cpu_halted`, and the web
   front end surfaces it). The PC rewind is Mesen's; the sample clearing is not.
-- **The renderer scroll register.** Rendering uses its own `ppu.render_v` so a `$2006`/`$2007`
-  write during vertical blanking cannot disturb the frame being drawn. Mesen uses the single
-  `_videoRamAddr` and accepts that it can. This is a deliberate decoupling; the per-dot renderer
-  should revisit it, because on hardware the fetches *do* follow the modified address.
 - **The access dot inside a cycle.** `ACCESS_DOTS = 2`: the chip's access lands after the cycle's
   first two dots. Mesen's `_startClockCount`/`_endClockCount` (6/6 of 12) put it about one dot in.
   The dot was measured against blagg's `05-nmi_timing`/`06-suppression`/`02-vbl_set_time`, and no
@@ -145,7 +145,6 @@ randomised CPU/PPU alignment (this core has offset 0).
 - **PAL models 15/5** (3 dots per CPU cycle) rather than the real 16/5, so PAL frame rate, audio
   and CPU cycles stay self-consistent. Flipping it is two numbers plus
   `has_whole_dot_ratio`, which a test ties together.
-- **`RenderTiming`** exists only because the renderer is per line; it goes away with §2.1.
 
 ## 5. Instruments
 
@@ -213,6 +212,7 @@ several runs.
 | A12, part 1 | The cartridge is handed the last real access's address and it is held between accesses | `4-scanline_timing` from its 2nd to its 4th sub-test |
 | A12, part 2 | The pre-render line runs the fetch pipeline | from its 3rd to its 4th sub-test, direction flipped |
 | A12, part 3 | The filter measures the low run in CPU cycles, and *every* rise ends it | **`2-details` green** ("clocked 241 times"); `4-scanline_timing` to its 12th sub-test |
+| Per-dot background | `PixelPipeline` replaces the whole-line renderer: fetches on `cycle % 8 == 1/3/5/7`, shift registers, a pixel per dot, off the real `v`/`t`; the cartridge gets the addresses really read; `RenderTiming` and `ppu.render_v` removed | **`4-scanline_timing` green** (the reconstruction was a dot long); rest of the baseline unchanged (AccuracyCoin 46); frame cost 1.32 → 1.80 ms |
 
 ### Experiments that were implemented, measured and reverted
 

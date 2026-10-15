@@ -99,11 +99,6 @@ pub struct Config {
     /// resample: a 44.1 kHz device asks for 44_100 and reads the result with
     /// [`Nes::fill_audio`]. Zero means "use the default" (48_000).
     pub sample_rate: u32,
-    /// When the renderer draws a scanline (§[`RenderTiming`]).
-    ///
-    /// Leave it alone unless a game's raster effects sit a line high or low:
-    /// this is a compatibility knob, not an accuracy setting.
-    pub render_timing: RenderTiming,
 }
 
 impl Default for Config {
@@ -112,49 +107,12 @@ impl Default for Config {
             region_override: None,
             enable_audio: true,
             sample_rate: DEFAULT_SAMPLE_RATE,
-            render_timing: RenderTiming::ScanlineEnd,
         }
     }
 }
 
 /// Sample rate used when [`Config::sample_rate`] is left at zero.
 pub const DEFAULT_SAMPLE_RATE: u32 = 48_000;
-
-/// When the renderer draws a scanline, relative to the CPU's own writes.
-///
-/// The real PPU draws pixels as it fetches them, so a write to `$2000`, `$2001`
-/// or `$2005` lands at a specific dot in a specific line. This core draws a
-/// whole scanline at once, which leaves one question open: does a write made
-/// during line *N* affect line *N* or line *N+1*? Games with raster effects
-/// care, and they do not all agree — hence a knob rather than one guess.
-///
-/// The default is the behaviour the core shipped with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RenderTiming {
-    /// Draw line *N* at dot 256, so writes made earlier in the line still
-    /// affect it. Effects that appear one line early for a game are usually
-    /// this.
-    ScanlineEnd,
-    /// Draw line *N* at dot 0, so only the state as the line starts counts.
-    /// The picture is a line "fresher", which is what games that set up a
-    /// split just in time expect.
-    ScanlineStart,
-}
-
-impl crate::state::StateField for RenderTiming {
-    fn write(&self, w: &mut crate::state::StateWriter) {
-        w.u8(match self {
-            RenderTiming::ScanlineEnd => 0,
-            RenderTiming::ScanlineStart => 1,
-        });
-    }
-    fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
-        *self = match r.u8() {
-            1 => RenderTiming::ScanlineStart,
-            _ => RenderTiming::ScanlineEnd,
-        };
-    }
-}
 
 /// PPU dots per scanline. Each CPU cycle covers three of them.
 pub const PPU_CYCLES_PER_SCANLINE: u32 = 341;

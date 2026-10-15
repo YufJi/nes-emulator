@@ -32,22 +32,25 @@
 
 ## 2. 尚未对齐的部分
 
-### 2.1 PPU：渲染器仍是整行绘制
+### 2.1 PPU：sprite 仍是整行合成
 
-这是其余多数问题的根源。Mesen 逐 dot 取指（`NesPpu::ProcessScanlineImpl` 在
-`cycle % 8 == 1/3/5/7` 调 `LoadTileInfo`，65-256 做 `ProcessSpriteEvaluation`，257-320 做
-`LoadSpriteTileInfo`，每 dot `ShiftTileRegisters` 与 `DrawPixel`）；内核则在 dot 256（或 0）
-一次画完整行，并由 dot 计数器**重建**取指地址。
+背景已经是逐 dot 的了——`PixelPipeline` 每八个 dot 取一个瓦片（`LoadTileInfo` 的名称表/
+属性/图案读，落在 `cycle % 8 == 1/3/5/7`），每 dot 移出一像素并在它自己的 dot 上画出来，
+滚动取的就是芯片自己的 `v`/`t`/`x`；sprite 的**取指**也在各自的 dot 上跑，因此 A12 能看到它们。
+Mesen 的 `ProcessScanlineImpl` 里还剩的是 sprite 侧本体：`ProcessSpriteEvaluation`
+（65-256，含 OAM 地址行为与损坏标志）、`LoadSpriteTileInfo`（257-320）写入每 sprite 的移位
+寄存器，以及逐 dot 的 sprite 像素。
 
-后果（每一条都对应真实的 ROM 失败）：
+仍未解决的后果：
 
-- **sprite 0 命中不在像素处**：渲染器记下命中位置，并由渲染点置标志，而不是在 PPU 的 dot
-  计数器走过那个 x 时置位。
-- **行内改动 `$2001`** 要么对整行生效、要么完全不生效；`RenderTiming` 这个按游戏切换的开关正是
-  为此而存在（Mesen 没有这个概念，逐 dot 渲染后应删除）。
-- **光栅分屏**（可见行内写 `$2005`/`$2006`）会落错边。
-- **A12 是"重建"的**而非真实取指产生，这正是 `4-scanline_timing` 还差一个 dot 的原因。
-- MMC5 竖向分屏因同一原因被放弃。
+- **sprite 0 命中不在像素处**：命中仍由整行渲染器记录，而不是在 PPU 的 dot 计数器走过那个 x 时。
+- **sprite 的绘制比 A12 晚一行**：取指已逐 dot，画出来的 sprite 来自逐行的二级 OAM 快照。
+- MMC5 竖向分屏基于同一理由仍然不做。
+- **光栅分屏**（可见行内写 `$2005`/`$2006`）现在背景侧落在正确的边上了，因为取指跟随被改过的
+  滚动寄存器。
+
+随逐 dot 背景一起落地的还有：真实取指地址让 `4-scanline_timing` 转绿（先前的重建让首个
+sprite 阶段取指之前的低电平段长了一个 dot），`RenderTiming` 与 `ppu.render_v` 已删除。
 
 Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTileInfo`、
 `LoadSprite`/`LoadExtraSprites`、`ShiftTileRegisters`、`GetPixelColor`、`DrawPixel`、
@@ -112,16 +115,12 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 - **KIL/JAM**。Mesen 把 KIL 当作不可恢复的崩溃并清掉中断采样，使挂死无法被打断。内核保留硬件
   行为——中断或复位可以把 CPU 重新拉起——因为宿主需要上报挂死（`Nes::is_cpu_halted`，Web 前端
   会提示）。PC 回退沿用 Mesen，清采样**不是**。
-- **渲染器的滚动寄存器**。渲染使用独立的 `ppu.render_v`，使垂直消隐期间的 `$2006`/`$2007` 写入
-  不会干扰正在绘制的帧。Mesen 用同一个 `_videoRamAddr`，并接受它会被影响。这是有意解耦；逐 dot
-  渲染器应当重新审视它，因为真机上取指**确实**跟随被改过的地址。
 - **访问在周期内的落点**。`ACCESS_DOTS = 2`：芯片的访问落在该周期前两个 dot 之后。Mesen 的
   `_startClockCount`/`_endClockCount`（12 中的 6/6）把它放在约一个 dot 处。这个 dot 是拿
   blargg 的 `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` 测出来的，且没有任何套件能区分
   写入时的 0/1/2；逐 dot 渲染落地后作为一次实验重新审视。
 - **PAL 建模为 15/5**（每 CPU 周期 3 个 dot）而不是真机的 16/5，使 PAL 的帧率/音频/CPU 周期自洽。
   切换它只需两个数加上 `has_whole_dot_ratio`，有测试把三者钉在一起。
-- **`RenderTiming`** 只因渲染器是整行而存在，随 §2.1 一并消失。
 
 ## 5. 观测手段
 
@@ -182,6 +181,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | A12 之一 | 交给卡带的是最后真实访问的地址并保持 | `4-scanline_timing` 从第 2 子项到第 4 子项 |
 | A12 之二 | 预渲染行也跑取指流水线 | 从第 3 到第 4 子项，方向翻转 |
 | A12 之三 | 过滤以 CPU 周期计长度，且**每次**上升都结束当前低电平段 | **`2-details` 转绿**（"每帧 241 次"）；`4-scanline_timing` 推进到第 12 子项 |
+| 逐 dot 背景 | `PixelPipeline` 替换整行渲染器：取指落在 `cycle % 8 == 1/3/5/7`、移位寄存器、每 dot 一个像素，滚动取真实的 `v`/`t`；卡带拿到的是真实读过的地址；删除 `RenderTiming` 与 `ppu.render_v` | **`4-scanline_timing` 转绿**（先前的重建长了一个 dot）；其余基线不变（AccuracyCoin 46）；帧耗时 1.32 → 1.80 ms |
 
 ### 实现、实测、随后撤回的实验
 

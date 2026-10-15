@@ -13,7 +13,7 @@ use nes_core::nes::{
     BUTTON_START, BUTTON_UP,
 };
 use nes_core::{supported_mappers, HEIGHT, PIXEL_FORMAT, WIDTH};
-use nes_core::{FrameClock as CoreFrameClock, Region, RenderTiming as CoreRenderTiming};
+use nes_core::{FrameClock as CoreFrameClock, Region};
 use wasm_bindgen::prelude::*;
 
 /// WASM-exposed NES emulator.
@@ -129,22 +129,6 @@ impl Nes {
     #[wasm_bindgen]
     pub fn is_cpu_halted(&self) -> bool {
         self.nes.is_cpu_halted()
-    }
-
-    /// When the renderer draws each scanline.
-    ///
-    /// `true` draws a line at its start (only the state as the line begins
-    /// counts), `false` at dot 256 (a write earlier in the line still affects
-    /// it). A whole scanline is drawn at once, so this is the only way to
-    /// choose which side of a write a line falls on — a per-game compatibility
-    /// switch for raster effects, not an accuracy setting.
-    #[wasm_bindgen]
-    pub fn set_render_timing(&mut self, scanline_start: bool) {
-        self.nes.set_render_timing(if scanline_start {
-            CoreRenderTiming::ScanlineStart
-        } else {
-            CoreRenderTiming::ScanlineEnd
-        });
     }
 
     /// Run at most `cycles` CPU cycles, stopping early at a frame boundary.
