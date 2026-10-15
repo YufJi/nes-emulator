@@ -131,6 +131,33 @@ So it is reverted, and this is now the concrete argument for the per-dot rendere
 addresses *and* the dot they land on have to come from the same place, which is the fetch
 itself.
 
+### 2.5 What the A12 work landed, and the instrument it now needs
+
+Landed since that revert, each measured against the MMC3 suite:
+
+- the cartridge is handed the address of the *last real access* and it is held between
+  accesses (Mesen's `SetBusAddress`/`_ppuBusAddress`), instead of following the VRAM address
+  register - which is what keeps the long low run over vertical blanking intact, and what
+  makes the pre-render line's fetches matter;
+- only the dots that really fetch drive it (Mesen calls `SetBusAddress` from `ReadVram`, and
+  nowhere else), so an address a CPU access left on the bus through `$2007` survives until the
+  pipeline's next fetch;
+- the counter's filter is `_cyclesDown`'s rule: a rise resets the run whether or not it
+  counted (counting across runs clocks a scanline counter many times per line).
+
+Measured: `2-details` ("clocked 241 times") green, and `4-scanline_timing` from its second
+sub-test to its twelfth - where `$2000=$10` leaves the last visible line's IRQ one dot early.
+
+**The instrument this now needs.** `tests/cycle_trace.rs`'s `trace_a12_for_a_scanline` prints
+the bus address per *instruction*, which is too coarse: the filter's threshold is nine dots (a
+third of a cycle's worth of resolution is missing), and several fetches can land inside one
+instruction. What the next step needs is a dot-level sampler: either a `Nes::step_dot()`
+alongside `step_instruction` (a debugger-grade primitive, which is what `run_cycles` /
+`step_instruction` already are), or a `Nes::ppu_bus_trace()` that the core fills in. With that,
+the last sub-test is a comparison rather than an argument: which line's rise is one dot early,
+and whether it is the boundary run (dots 337-340 plus the next line's 0-4) or the first pattern
+fetch after the sprite phase's long low run.
+
 Three experiments were implemented, measured and **reverted**; their evidence is the
 starting point for what follows (§4). L3a's bus-side parking has since come back as L3 step
 1, with the dependents its revert was about moved along with it, and the step-4 read
