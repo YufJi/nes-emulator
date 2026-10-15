@@ -42,12 +42,14 @@ pub struct Mapper4 {
     irq_pending: bool,
     /// Set when R0/R1 was written, forcing a reload on the next A12 rise
     irq_reload: bool,
-    /// Whether A12 was low on the previous PPU dot
+    /// The CPU cycle A12 last went low on, if it is low now.
+    ///
+    /// Mesen's `_a12LowClock`: the filter measures the run in CPU cycles, not
+    /// dots.
+    a12_low_since: Option<u64>,
+    /// Whether A12 is low at all, which is all the save state needs: the run
+    /// itself is measured in cycles now.
     a12_low: bool,
-    /// PPU dots A12 has been low for; the hardware ignores rises shorter than
-    /// three CPU cycles, which is what keeps sprite fetches from clocking the
-    /// counter twice per scanline.
-    a12_low_dots: u16,
 
     // Mirroring
     /// 0=vertical, 1=horizontal
@@ -85,8 +87,8 @@ impl Mapper4 {
             irq_enabled: false,
             irq_pending: false,
             irq_reload: false,
+            a12_low_since: None,
             a12_low: true,
-            a12_low_dots: 0,
             mirroring: 0,
             prg_rom_banks: prg_rom_banks.max(2),
             chr_rom_banks: chr_rom_banks.max(8),
@@ -243,7 +245,7 @@ impl Mapper4 {
 impl Mapper for Mapper4 {
     crate::state::mapper_state!(chr_if ram: chr_is_ram, chr_rom, prg_ram, command,
         prg_address_select, chr_address_select, bank_regs, irq_counter, irq_latch,
-        irq_enabled, irq_pending, irq_reload, a12_low, a12_low_dots, mirroring, prg_rom_banks,
+        irq_enabled, irq_pending, irq_reload, a12_low, a12_low_since, mirroring, prg_rom_banks,
         chr_rom_banks);
 
     fn read(&mut self, addr: u16) -> u8 {
@@ -333,26 +335,30 @@ impl Mapper for Mapper4 {
     /// clocking the counter on their own. The counter reloads from the latch
     /// when it is at zero or when the game just wrote R0/R1, and raises the IRQ
     /// when it lands on zero with interrupts enabled.
-    fn on_ppu_bus(&mut self, addr: u16) {
+    fn on_ppu_bus(&mut self, addr: u16, cpu_cycles: u64) {
         let a12 = addr & 0x1000 != 0;
         if !a12 {
-            // The length of the *current* low run: Mesen's `_cyclesDown`.
             self.a12_low = true;
-            self.a12_low_dots = self.a12_low_dots.saturating_add(1);
+            if self.a12_low_since.is_none() {
+                self.a12_low_since = Some(cpu_cycles);
+            }
             return;
         }
 
-        // "A rise only counts if A12 has been low for three CPU cycles" - and
-        // Mesen's `IsA12RisingEdge` measures that as three ticks of the CPU's
-        // cycle count, which is the nine dots the threshold below is in. The
-        // important half is what happens to a rise that does *not* count: it
-        // still ends the run (`_cyclesDown = 0`). Counting across runs instead
-        // makes every later rise in the frame qualify, which clocks a scanline
-        // counter far more than the once per scanline it really is.
-        let was_low = self.a12_low;
+        // "A rise only counts if A12 has been low for three CPU cycles", in
+        // Mesen's own terms: `_a12LowClock > 0 && (GetMasterClock() -
+        // _a12LowClock) >= 3`, where the master clock is the CPU's cycle count.
+        // Measured in cycles rather than dots, a run of nine dots that straddles
+        // a cycle boundary measures as two and is filtered out - which is the
+        // difference between clocking once a scanline and twice.
+        //
+        // What a rise that does *not* count still does is end the run: counting
+        // across runs makes every later rise in the frame qualify.
+        let counted = self
+            .a12_low_since
+            .is_some_and(|since| cpu_cycles.saturating_sub(since) >= 3);
         self.a12_low = false;
-        let counted = was_low && self.a12_low_dots >= 9;
-        self.a12_low_dots = 0;
+        self.a12_low_since = None;
         if !counted {
             return;
         }
@@ -576,13 +582,14 @@ mod tests {
         assert!(mapper.irq_enabled);
 
         // Each rise of A12 counts; the first one honours the reload request.
-        clock_a12(&mut mapper); // reload to 3
+        let mut cycles = 0u64;
+        clock_a12(&mut mapper, &mut cycles); // reload to 3
         assert!(!mapper.irq_pending());
-        clock_a12(&mut mapper); // 3 -> 2
+        clock_a12(&mut mapper, &mut cycles); // 3 -> 2
         assert!(!mapper.irq_pending());
-        clock_a12(&mut mapper); // 2 -> 1
+        clock_a12(&mut mapper, &mut cycles); // 2 -> 1
         assert!(!mapper.irq_pending());
-        clock_a12(&mut mapper); // 1 -> 0, and the IRQ is raised
+        clock_a12(&mut mapper, &mut cycles); // 1 -> 0, and the IRQ is raised
         assert!(mapper.irq_pending());
     }
 
@@ -700,13 +707,19 @@ mod tests {
         assert_eq!(mapper.read(0x0000), 0x5A, "CHR-RAM was not restored");
     }
 
-    /// Raises A12 the way a rendered scanline does: low long enough to pass the
-    /// filter, then high.
-    fn clock_a12(mapper: &mut Mapper4) {
+    /// Raises A12 the way a rendered scanline does: low for three CPU cycles,
+    /// then high.
+    ///
+    /// The filter is measured in cycles now, so the helper spends cycles the
+    /// way the machine does - three dots to one.
+    fn clock_a12(mapper: &mut Mapper4, dot: &mut u64) {
+        // Twelve dots is four CPU cycles: comfortably past the filter's three.
         for _ in 0..12 {
-            mapper.on_ppu_bus(0x2000); // A12 low
+            mapper.on_ppu_bus(0x2000, *dot / 3); // A12 low
+            *dot += 1;
         }
-        mapper.on_ppu_bus(0x1000); // A12 rises
+        mapper.on_ppu_bus(0x1000, *dot / 3); // A12 rises
+        *dot += 1;
     }
 
     /// One rendered scanline of PPU fetches clocks the counter once.
@@ -724,33 +737,37 @@ mod tests {
         /// background tiles from the left pattern table (A12 low all through
         /// the background fetch groups) and sprites from the right one, so the
         /// only rise is the sprite phase.
-        fn scanline(mapper: &mut Mapper4) {
+        fn scanline(mapper: &mut Mapper4, dot: &mut u64) {
             for _ in 0..42 {
                 for _ in 0..8 {
-                    mapper.on_ppu_bus(0x0000); // nametable, attribute, pattern
+                    mapper.on_ppu_bus(0x0000, *dot / 3); // nametable, attribute, pattern
+                    *dot += 1;
                 }
             }
             for _ in 0..64 {
-                mapper.on_ppu_bus(0x1000); // sprite pattern fetches
+                mapper.on_ppu_bus(0x1000, *dot / 3); // sprite pattern fetches
+                *dot += 1;
             }
             for _ in 0..4 {
-                mapper.on_ppu_bus(0x0000); // and back to idle
+                mapper.on_ppu_bus(0x0000, *dot / 3); // and back to idle
+                *dot += 1;
             }
         }
 
-        scanline(&mut mapper);
+        let mut dot = 0u64;
+        scanline(&mut mapper, &mut dot);
         assert_eq!(
             mapper.irq_counter, 5,
             "the first clock reloaded from the latch"
         );
         assert!(!mapper.irq_pending());
 
-        scanline(&mut mapper);
+        scanline(&mut mapper, &mut dot);
         assert_eq!(mapper.irq_counter, 4, "one clock per scanline, not more");
         assert!(!mapper.irq_pending());
 
         for _ in 0..4 {
-            scanline(&mut mapper);
+            scanline(&mut mapper, &mut dot);
         }
         assert!(
             mapper.irq_pending(),

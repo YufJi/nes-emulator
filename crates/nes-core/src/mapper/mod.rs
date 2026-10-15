@@ -77,13 +77,20 @@ pub trait Mapper: Send + Sync + Debug {
         0.0
     }
 
-    /// Called once per PPU dot with the address the PPU drives.
+    /// Called once per PPU dot with the address the PPU drives, and the CPU
+    /// cycle the machine is on.
     ///
     /// This is what a cartridge sees of the PPU: bit 12 of the address (A12)
     /// rising is how MMC3 and its clones clock their IRQ counter, and how the
     /// CIRAM-A10 boards know which nametable a fetch belongs to. The default
     /// does nothing, for the many boards that never look at the PPU.
-    fn on_ppu_bus(&mut self, _addr: u16) {}
+    ///
+    /// The cycle count is there because A12's filter is measured in *CPU
+    /// cycles*, not dots: Mesen's `IsA12RisingEdge` compares the console's
+    /// master clock — the CPU's cycle count — between the fall and the rise, so
+    /// a run of nine dots that straddles a cycle boundary measures as two
+    /// cycles and does not count.
+    fn on_ppu_bus(&mut self, _addr: u16, _cpu_cycles: u64) {}
 
     /// Byte the cartridge supplies for a nametable read, if it overrides VRAM.
     ///

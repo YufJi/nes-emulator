@@ -37,7 +37,7 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// save-state field.
 /// 5: the CPU no longer latches a taken branch's poll as deferred - the poll
 /// belongs to the branch itself, on its penultimate cycle.
-const STATE_VERSION: u8 = 8;
+const STATE_VERSION: u8 = 9;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
@@ -1025,8 +1025,9 @@ impl NesBus {
     /// Hand the current PPU address to the cartridge.
     fn feed_ppu_bus(&mut self) {
         let addr = self.bus_address;
+        let cycles = self.cpu_cycles;
         if let Some(ref mut mapper) = self.mapper {
-            mapper.on_ppu_bus(addr);
+            mapper.on_ppu_bus(addr, cycles);
         }
     }
 
