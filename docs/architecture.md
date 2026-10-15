@@ -925,11 +925,19 @@ clone needs `npm run build:wasm` before building the front end.
   flipping those two numbers plus `has_whole_dot_ratio`, which is guarded by a test that
   fails if the three disagree. Doing it also moves PAL's audio resampler, frame-cycle
   target and mapper IRQ phase, which is why it waits for PAL test ROMs.
-- **A12 timing is derived, not fetched**: `Mapper::on_ppu_bus` hands the cartridge the
-  address the PPU would drive on every dot, reconstructed from the dot clock because the
-  renderer draws whole scanlines. MMC3's IRQ counter now follows the hardware rule (a rise
-  counts only after A12 has been low for three CPU cycles, and the reload flag comes from
-  `$C001`), which is enough for four of blargg's six MMC3 tests. What is still approximate:
+- **A12 is Mesen's model, with the addresses reconstructed**: the cartridge is handed the
+  address of the *last real access*, held between accesses (`NesBus::bus_address`, the shape
+  of Mesen's `SetBusAddress`/`_ppuBusAddress`), and only the dots that really fetch drive it —
+  so an address a CPU access left on the bus through `$2006`/`$2007` stays there until the
+  pipeline's next fetch, and the long low run over vertical blanking is what a scanline
+  counter's rise is measured against. The fetch dots and the addresses on them are Mesen's
+  (`LoadTileInfo`: nametable on `cycle % 8 == 1`, attribute on 3, pattern on 5 and 7; the
+  sprite phase's garbage nametable/attribute reads on `(cycle - 257) % 8 == 0` and `2` before
+  the sprite's pattern bytes on 4; the pre-render line fetches too), reconstructed from the
+  dot counter because the renderer still draws whole scanlines. The counter's filter is
+  Mesen's `_cyclesDown` rule: a rise counts only after three CPU cycles of low, and *every*
+  rise ends the run whether or not it counted. That is four of blargg's six MMC3 tests.
+  What is still approximate:
   the exact dot the first rise of a frame lands on (`4-scanline_timing`), the "alternate"
   NEC IRQ revision that needs mapper-4 submapper 4 (`6-MMC3_alt`), and the fine detail of
   which sprite fetch raises A12 with 8x16 sprites.
