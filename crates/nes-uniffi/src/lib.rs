@@ -43,8 +43,8 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use nes_core::{
-    Config as CoreConfig, FrameClock as CoreClock, Nes as CoreNes, Region as CoreRegion,
-    RenderTiming as CoreRenderTiming,
+    Config as CoreConfig, FrameClock as CoreClock, Nes as CoreNes,
+    PpuBusSample as CorePpuBusSample, Region as CoreRegion, RenderTiming as CoreRenderTiming,
 };
 
 uniffi::setup_scaffolding!();
@@ -72,6 +72,29 @@ impl From<Region> for CoreRegion {
         match region {
             Region::Ntsc => CoreRegion::Ntsc,
             Region::Pal => CoreRegion::Pal,
+        }
+    }
+}
+
+/// One dot of the PPU's bus timeline, as [`Nes::ppu_bus_trace`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct PpuBusSample {
+    /// Scanline the dot belongs to: 0-239 visible, 240 post-render, then
+    /// vertical blanking, with the pre-render line last.
+    pub scanline: u16,
+    /// Dot within the scanline, 0-340.
+    pub dot: u16,
+    /// Address the PPU is driving, which is what a cartridge's A12 filter
+    /// looks at.
+    pub address: u16,
+}
+
+impl From<CorePpuBusSample> for PpuBusSample {
+    fn from(sample: CorePpuBusSample) -> Self {
+        Self {
+            scanline: sample.scanline,
+            dot: sample.dot,
+            address: sample.address,
         }
     }
 }
@@ -294,6 +317,45 @@ impl Nes {
     /// Execute a single CPU instruction, returning the cycles it consumed.
     pub fn step_instruction(&self) -> Result<u8, NesError> {
         guard(|| self.machine().step_instruction())
+    }
+
+    /// Advance the machine by exactly one PPU dot.
+    ///
+    /// Returns `true` when that dot completed a frame. The CPU still runs whole
+    /// instructions, so what moves a dot at a time is the PPU; a caller that
+    /// wants dot-exact samples rather than dot-exact pacing reads
+    /// [`Nes::ppu_bus_trace`].
+    pub fn step_dot(&self) -> bool {
+        self.machine().step_dot()
+    }
+
+    /// The PPU's bus timeline, oldest sample first, one entry per dot.
+    ///
+    /// This is the resolution a cartridge's A12 filter works at: A12 rises
+    /// between fetch dots, and a scanline counter's filter is measured in dots,
+    /// so counting them needs the bus sampled every dot rather than every
+    /// instruction.
+    pub fn ppu_bus_trace(&self) -> Vec<PpuBusSample> {
+        self.machine().ppu_bus_trace().map(Into::into).collect()
+    }
+
+    /// Drop the recorded bus timeline, so the next samples start a fresh one.
+    pub fn clear_ppu_bus_trace(&self) {
+        self.machine().clear_ppu_bus_trace();
+    }
+
+    /// Raise or lower how many dots of bus timeline [`Nes::ppu_bus_trace`]
+    /// keeps; the oldest samples go when it shrinks.
+    ///
+    /// A whole NTSC frame is 89,342 dots; ask for at least that many to count
+    /// A12 rises a frame at a time.
+    pub fn set_ppu_bus_trace_capacity(&self, dots: u64) {
+        self.machine().set_ppu_bus_trace_capacity(dots as usize);
+    }
+
+    /// How many dots of bus timeline [`Nes::ppu_bus_trace`] keeps.
+    pub fn ppu_bus_trace_capacity(&self) -> u64 {
+        self.machine().ppu_bus_trace_capacity() as u64
     }
 
     /// The last completed frame, as `0xAARRGGBB` pixels, row-major.

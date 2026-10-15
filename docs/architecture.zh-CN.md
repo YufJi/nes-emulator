@@ -194,11 +194,18 @@ sequenceDiagram
 | `Nes::frame()` | 跑满一帧（或提前到帧边界） | 常规前端，配合 `FrameClock` |
 | `Nes::run_cycles(n)` | 跑至多 n 个 CPU 周期，遇到帧边界提前停；返回实际周期数 | 亚帧调度、音频驱动、精确追帧 |
 | `Nes::step_instruction()` | 执行一条指令，返回其周期数 | 调试器、单步回归 |
+| `Nes::step_dot()` | 推进 PPU 一个 dot，返回该 dot 是否结束了一帧 | 调试器、与逐 cycle oracle 的差分 |
 
 三者共享同一份单步实现（`NesBus::step_instruction`），因此**分片执行与整帧执行的结果完全一致**
 ——回归测试会逐字节比对 `save_state()`。`frame_ready` 标志在三者中的语义统一：
 `frame()` / `run_cycles()` 进入时清零，执行中置位；`step_instruction()` 不动它，
 便于单步跨越帧边界后仍能观察到标志。
+
+`step_dot()` 是"另一颗芯片上的同一件事"：CPU 仍以整条指令推进，因此逐 dot 移动的是 PPU。
+两种走法下**通过 PPU 观察到的量**都是机器顺序；其中精度工作真正需要的那个——卡带在总线上看到
+的地址——由 `Nes::ppu_bus_trace()` 按每 dot 一条采样给出（历史上限可调，
+`set_ppu_bus_trace_capacity`；NTSC 一帧是 89,342 个 dot）。A12 的上升发生在取指 dot 之间，
+扫描线计数器的过滤以 dot 计长，所以这是讨论 mapper IRQ 时必须用的分辨率。
 
 ---
 

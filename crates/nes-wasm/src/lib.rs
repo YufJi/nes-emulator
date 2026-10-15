@@ -162,6 +162,49 @@ impl Nes {
         self.nes.step_instruction()
     }
 
+    /// Advance the machine by exactly one PPU dot.
+    ///
+    /// Returns `true` when that dot completed a frame. The CPU still runs whole
+    /// instructions, so what moves a dot at a time is the PPU; see
+    /// `ppu_bus_trace` for the dot-exact samples.
+    #[wasm_bindgen]
+    pub fn step_dot(&mut self) -> bool {
+        self.nes.step_dot()
+    }
+
+    /// The PPU's bus timeline, oldest sample first, one entry per dot.
+    ///
+    /// Each `u32` packs `address | dot << 14 | scanline << 23` (the address is
+    /// 14 bits, so a dot fits in bits 14-22 and a scanline in 23-31). This is
+    /// the resolution a cartridge's A12 filter works at, which is why it is
+    /// sampled per dot rather than per instruction.
+    #[wasm_bindgen]
+    pub fn ppu_bus_trace(&self) -> Vec<u32> {
+        self.nes
+            .ppu_bus_trace()
+            .map(|sample| {
+                (sample.address & 0x3FFF) as u32
+                    | (sample.dot as u32) << 14
+                    | (sample.scanline as u32) << 23
+            })
+            .collect()
+    }
+
+    /// Drop the recorded bus timeline, so the next samples start a fresh one.
+    #[wasm_bindgen]
+    pub fn clear_ppu_bus_trace(&mut self) {
+        self.nes.clear_ppu_bus_trace();
+    }
+
+    /// Raise or lower how many dots of bus timeline `ppu_bus_trace` keeps.
+    ///
+    /// A whole NTSC frame is 89,342 dots; ask for at least that many to count
+    /// A12 rises a frame at a time.
+    #[wasm_bindgen]
+    pub fn set_ppu_bus_trace_capacity(&mut self, dots: usize) {
+        self.nes.set_ppu_bus_trace_capacity(dots);
+    }
+
     /// Drop every queued audio sample, e.g. when loading a cartridge.
     #[wasm_bindgen]
     pub fn clear_audio_samples(&mut self) {

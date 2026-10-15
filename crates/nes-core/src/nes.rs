@@ -28,6 +28,33 @@ pub const BUTTON_DOWN: u8 = 5;
 pub const BUTTON_LEFT: u8 = 6;
 pub const BUTTON_RIGHT: u8 = 7;
 
+/// One dot of the PPU's bus timeline.
+///
+/// This is the resolution the cartridge sees — A12 rises between *fetch
+/// dots*, and the nine-dot filter a scanline counter uses is measured there —
+/// so it is also the resolution the accuracy work has to be able to observe.
+/// [`Nes::ppu_bus_trace`] returns the samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpuBusSample {
+    /// Scanline the dot belongs to (0-239 visible, 240 post-render, then
+    /// vertical blanking, with the pre-render line last).
+    pub scanline: u16,
+    /// Dot within the scanline (0-340).
+    pub dot: u16,
+    /// Address the PPU is driving, which is what a cartridge's A12 filter
+    /// looks at.
+    pub address: u16,
+}
+
+/// Dots of per-dot PPU bus history kept by default: a little over twelve NTSC
+/// scanlines.
+///
+/// The trace exists to be read at dot resolution (A12 rises, the fetch a
+/// mid-frame register write lands behind), and a caller that wants a whole
+/// frame raises it with [`Nes::set_ppu_bus_trace_capacity`] rather than paying
+/// for a frame's worth of samples on every machine.
+pub const DEFAULT_PPU_BUS_TRACE_DOTS: usize = 4096;
+
 /// Magic prefix identifying a [`Nes::save_state`] blob.
 const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// Save-state format version, bumped whenever the encoding changes.
@@ -241,14 +268,19 @@ struct NesBus {
     cpu_cycles: u64,
     /// CPU cycles the next OAM/DMC DMA transfer still has to steal
     dma_stall_cycles: u16,
-    /// Every dot's PPU bus address, for a test that has to see the fetch
-    /// sequence at the resolution it happens at.
+    /// The last [`NesBus::ppu_bus_trace_capacity`] dots, oldest first.
     ///
     /// `cycle_trace`'s A12 tool samples once per instruction, which is too
     /// coarse for a scanline counter's nine-dot filter; this is the same view
-    /// the chip has, and outside a test build it does not exist.
-    #[cfg(test)]
-    ppu_bus_log: Vec<(u16, u16, u16)>,
+    /// the chip has. It is host-side diagnostic state, like the audio buffer:
+    /// it stays out of the save state, and its contents are re-derived by
+    /// running the machine.
+    ppu_bus_trace: VecDeque<PpuBusSample>,
+    /// How many dots of history [`NesBus::ppu_bus_trace`] keeps.
+    ppu_bus_trace_capacity: usize,
+    /// Dots a previous instruction already produced that the caller has not
+    /// stepped through yet; [`NesBus::step_dot`] spends one per call.
+    pending_dots: u32,
     /// The address the PPU is driving for the cartridge: Mesen's
     /// `_ppuBusAddress`, set by `SetBusAddress` on every access and *held*
     /// between them.
@@ -341,8 +373,9 @@ impl NesBus {
             dma_stall_cycles: 0,
             skip_odd_frame_dot: false,
             bus_address: 0,
-            #[cfg(test)]
-            ppu_bus_log: Vec::new(),
+            ppu_bus_trace: VecDeque::with_capacity(DEFAULT_PPU_BUS_TRACE_DOTS),
+            ppu_bus_trace_capacity: DEFAULT_PPU_BUS_TRACE_DOTS,
+            pending_dots: 0,
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
             sprite_evaluator: SpriteEvaluator::new(),
@@ -1149,17 +1182,52 @@ impl NesBus {
         self.end_cpu_cycle();
     }
 
-    /// Every dot's `(scanline, dot, bus address)` since the last
-    /// [`NesBus::clear_ppu_bus_log`]. Test-only.
-    #[cfg(test)]
-    pub(crate) fn ppu_bus_log(&self) -> &[(u16, u16, u16)] {
-        &self.ppu_bus_log
+    /// The PPU's bus timeline, oldest sample first, one entry per dot.
+    ///
+    /// Only the last [`NesBus::ppu_bus_trace_capacity`] dots are kept.
+    fn ppu_bus_trace(&self) -> &VecDeque<PpuBusSample> {
+        &self.ppu_bus_trace
     }
 
-    /// Test-only companion to [`NesBus::ppu_bus_log`].
-    #[cfg(test)]
-    pub(crate) fn clear_ppu_bus_log(&mut self) {
-        self.ppu_bus_log.clear();
+    /// Drop the recorded bus timeline, so the next samples start a fresh one.
+    fn clear_ppu_bus_trace(&mut self) {
+        self.ppu_bus_trace.clear();
+    }
+
+    /// Set how many dots of bus timeline to keep, dropping the oldest samples
+    /// if the new capacity is smaller.
+    fn set_ppu_bus_trace_capacity(&mut self, dots: usize) {
+        self.ppu_bus_trace_capacity = dots;
+        while self.ppu_bus_trace.len() > dots {
+            self.ppu_bus_trace.pop_front();
+        }
+    }
+
+    /// Advance the machine by exactly one PPU dot.
+    ///
+    /// The CPU runs whole instructions, so the instruction this dot falls
+    /// inside has already executed by the time the call returns: what moves a
+    /// dot at a time is the PPU — its dot counter, its fetches, the address the
+    /// cartridge sees on the bus and the lines the CPU samples. Everything
+    /// observed through the PPU (A12, the fetch a mid-frame write lands behind,
+    /// the VBlank flag and its NMI line) is therefore in machine order, while
+    /// the CPU's own registers may be up to one instruction ahead. A caller
+    /// that needs dot-exact samples reads [`NesBus::ppu_bus_trace`], which the
+    /// machine fills in the order the dots happen; dot stepping a debugger is
+    /// what *this* is for.
+    ///
+    /// Returns `true` when this dot completed a frame. That is decided against
+    /// the PPU's own frame counter rather than the frame-ready flag, so a
+    /// caller can step frame after frame without clearing anything in between
+    /// — and a host reading [`Nes::is_frame_ready`] still sees the flag.
+    fn step_dot(&mut self, cpu: &mut Cpu) -> bool {
+        let frame_before = self.ppu.frame;
+        if self.pending_dots == 0 {
+            let cycles = self.step_instruction(cpu);
+            self.pending_dots = cycles as u32 * self.whole_dots_per_cpu_cycle();
+        }
+        self.pending_dots -= 1;
+        self.ppu.frame != frame_before
     }
 
     /// The tail of a CPU cycle: the APU tick and the cycle counter.
@@ -1276,9 +1344,22 @@ impl NesBus {
         self.ppu_step();
         self.drive_ppu_bus();
         self.feed_ppu_bus();
-        #[cfg(test)]
-        self.ppu_bus_log
-            .push((self.ppu.scanline, self.ppu.cycle, self.bus_address));
+        self.record_ppu_bus_sample();
+    }
+
+    /// Append the dot the PPU just finished to the bus timeline.
+    fn record_ppu_bus_sample(&mut self) {
+        if self.ppu_bus_trace_capacity == 0 {
+            return;
+        }
+        if self.ppu_bus_trace.len() == self.ppu_bus_trace_capacity {
+            self.ppu_bus_trace.pop_front();
+        }
+        self.ppu_bus_trace.push_back(PpuBusSample {
+            scanline: self.ppu.scanline,
+            dot: self.ppu.cycle,
+            address: self.bus_address,
+        });
     }
 }
 
@@ -1358,6 +1439,25 @@ impl Nes {
     /// instruction at a time.
     pub fn step_instruction(&mut self) -> u8 {
         self.bus.step_instruction(&mut self.cpu)
+    }
+
+    /// Advance the machine by exactly one PPU dot, returning `true` when that
+    /// dot completed a frame.
+    ///
+    /// The companion to [`Nes::step_instruction`], one chip over: this is the
+    /// granularity the PPU, and therefore the cartridge's view of the bus,
+    /// works at. The CPU still runs whole instructions, so the instruction the
+    /// dot falls inside has already executed when this returns — what moves a
+    /// dot at a time is the PPU. Observations made through the PPU (A12, the
+    /// fetches, the VBlank flag's NMI line) are in machine order; a caller that
+    /// wants dot-exact *samples* rather than dot-exact pacing reads
+    /// [`Nes::ppu_bus_trace`], which the machine fills as the dots happen.
+    ///
+    /// The frame-ready flag is left alone, exactly as [`Nes::step_instruction`]
+    /// leaves it, so a debugger can step across a frame boundary and still see
+    /// it with [`Nes::is_frame_ready`].
+    pub fn step_dot(&mut self) -> bool {
+        self.bus.step_dot(&mut self.cpu)
     }
 
     /// ARGB frame buffer (256x240).
@@ -1497,6 +1597,38 @@ impl Nes {
         self.bus.bus_address
     }
 
+    /// The PPU's bus timeline, oldest sample first, one entry per dot.
+    ///
+    /// This is the companion to `tests/cycle_trace.rs`'s per-instruction view,
+    /// at the resolution the cartridge sees: A12 rises between *fetch dots*,
+    /// and a scanline counter's nine-dot filter is measured in dots, so
+    /// anything that asks "which fetches clocked the counter" has to read the
+    /// bus a dot at a time. Samples are recorded as the machine runs; only the
+    /// last [`Nes::ppu_bus_trace_capacity`] dots are kept.
+    pub fn ppu_bus_trace(&self) -> impl Iterator<Item = PpuBusSample> + '_ {
+        self.bus.ppu_bus_trace().iter().copied()
+    }
+
+    /// Drop the recorded bus timeline, so the next samples start a fresh one.
+    pub fn clear_ppu_bus_trace(&mut self) {
+        self.bus.clear_ppu_bus_trace();
+    }
+
+    /// Raise or lower how many dots of bus timeline [`Nes::ppu_bus_trace`]
+    /// keeps; the oldest samples go when it shrinks.
+    ///
+    /// A whole NTSC frame is 89,342 dots, so counting qualifying A12 rises a
+    /// frame at a time — the measurement `mmc3_test_2` turns on — asks for at
+    /// least that many.
+    pub fn set_ppu_bus_trace_capacity(&mut self, dots: usize) {
+        self.bus.set_ppu_bus_trace_capacity(dots);
+    }
+
+    /// How many dots of bus timeline [`Nes::ppu_bus_trace`] keeps.
+    pub fn ppu_bus_trace_capacity(&self) -> usize {
+        self.bus.ppu_bus_trace_capacity
+    }
+
     /// Clear the frame-ready flag.
     pub fn clear_frame_ready(&mut self) {
         self.bus.frame_ready = false;
@@ -1594,6 +1726,110 @@ mod tests {
     #[test]
     fn test_js_nes_new() {
         let _nes = Nes::new();
+    }
+
+    #[test]
+    fn test_step_dot_walks_a_frame_of_ppu_bus_timeline() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+
+        assert_eq!(nes.ppu_position(), (0, 0));
+        let frame_dots = nes.region().scanlines() as usize * 341;
+        nes.set_ppu_bus_trace_capacity(frame_dots * 2);
+        nes.clear_ppu_bus_trace();
+
+        // One call per dot, and the frame ends on the dot that wraps the
+        // counter past the pre-render line.
+        let mut calls = 0usize;
+        while !nes.step_dot() {
+            calls += 1;
+            assert!(calls <= frame_dots, "a frame should have ended by now");
+        }
+
+        // The bus timeline is the thing that is dot-exact: a frame's worth of
+        // samples, each one dot past the last. The machine may have recorded a
+        // few more, because the instruction the boundary fell inside runs to
+        // its end, so the claim is over the frame's own dots.
+        let trace: Vec<_> = nes.ppu_bus_trace().collect();
+        assert!(
+            trace.len() >= frame_dots,
+            "a frame is {frame_dots} dots of PPU bus timeline, got {}",
+            trace.len()
+        );
+        let scanlines = nes.region().scanlines() as usize;
+        for (index, sample) in trace[..frame_dots].iter().enumerate() {
+            let expected = (index + 1) % 341;
+            let expected_scanline = ((index + 1) / 341) % scanlines;
+            assert_eq!(
+                (sample.scanline as usize, sample.dot as usize),
+                (expected_scanline, expected),
+                "sample {index} is out of step with the dot grid"
+            );
+        }
+    }
+
+    #[test]
+    fn test_step_dot_reports_the_frame_boundary_once_per_frame() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+
+        for frame in 1..=3 {
+            let mut calls = 0u32;
+            while !nes.step_dot() {
+                calls += 1;
+                assert!(calls < 200_000, "frame {frame} never ended");
+            }
+            assert_eq!(nes.frame_number(), frame);
+        }
+    }
+
+    #[test]
+    fn test_ppu_bus_trace_records_every_dot_in_order() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+
+        nes.clear_ppu_bus_trace();
+        for _ in 0..30 {
+            nes.step_dot();
+        }
+
+        // Walking 30 dots records at least 30 samples: one call spends one dot,
+        // and a call only runs more machine when the last instruction's dots
+        // have all been spent.
+        let trace: Vec<_> = nes.ppu_bus_trace().collect();
+        assert!(trace.len() >= 30, "got {} samples", trace.len());
+        for (index, sample) in trace.iter().enumerate() {
+            assert_eq!(sample.scanline, 0);
+            assert_eq!(
+                sample.dot as usize,
+                index + 1,
+                "sample {index} is out of step"
+            );
+        }
+        // The timeline ends where the machine actually is.
+        let last = trace.last().copied().expect("samples");
+        assert_eq!(nes.ppu_position(), (last.scanline, last.dot));
+    }
+
+    #[test]
+    fn test_ppu_bus_trace_keeps_only_the_requested_capacity() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+
+        assert_eq!(nes.ppu_bus_trace_capacity(), DEFAULT_PPU_BUS_TRACE_DOTS);
+        nes.set_ppu_bus_trace_capacity(8);
+        nes.clear_ppu_bus_trace();
+
+        // A single instruction already overshoots eight dots, so the buffer
+        // holds the newest eight and the timeline still ends where the machine
+        // is.
+        nes.step_instruction();
+
+        let trace: Vec<_> = nes.ppu_bus_trace().collect();
+        assert_eq!(trace.len(), 8, "the oldest samples are dropped");
+        let dots: Vec<u16> = trace.iter().map(|sample| sample.dot).collect();
+        assert_eq!(dots, (14..=21).collect::<Vec<u16>>());
+        assert_eq!(nes.ppu_position(), (0, 21));
     }
 
     #[test]
@@ -2304,22 +2540,27 @@ mod tests {
         let mut nes = Nes::new();
         nes.load_rom(&data).expect("load the ROM");
 
+        // A frame's worth of dots, so the count below covers the whole frame
+        // rather than the tail the default capacity holds.
+        let frame_dots = nes.bus.region.scanlines() as usize * 341;
+        nes.set_ppu_bus_trace_capacity(frame_dots);
+
         let mut busiest: Vec<(u16, u16)> = Vec::new();
         let mut busiest_frame = 0u64;
         for _ in 0..64 {
-            nes.bus.clear_ppu_bus_log();
+            nes.clear_ppu_bus_trace();
             nes.frame();
-            let log = nes.bus.ppu_bus_log().to_vec();
+            let log: Vec<_> = nes.ppu_bus_trace().collect();
 
             let mut clockings: Vec<(u16, u16)> = Vec::new();
             let mut low_run = 0u32;
-            for &(scanline, dot, addr) in &log {
-                if addr & 0x1000 == 0 {
+            for sample in &log {
+                if sample.address & 0x1000 == 0 {
                     low_run += 1;
                     continue;
                 }
                 if low_run >= 9 {
-                    clockings.push((scanline, dot));
+                    clockings.push((sample.scanline, sample.dot));
                 }
                 low_run = 0;
             }

@@ -210,6 +210,7 @@ Key points:
 | `Nes::frame()` | Run a full frame (or stop early at a frame boundary) | Ordinary front ends, paired with `FrameClock` |
 | `Nes::run_cycles(n)` | Run at most n CPU cycles, stopping early at a frame boundary; returns the cycles actually run | Sub-frame scheduling, audio driving, precise catch-up |
 | `Nes::step_instruction()` | Execute one instruction, returning its cycle count | Debuggers, single-step regression |
+| `Nes::step_dot()` | Advance the PPU by one dot, returning whether that dot ended a frame | Debuggers, differential runs against a cycle-accurate oracle |
 
 All three share the same single-step implementation (`NesBus::step_instruction`), so
 **sliced execution and whole-frame execution produce exactly the same result** — regression
@@ -217,6 +218,14 @@ tests compare `save_state()` byte for byte. The `frame_ready` flag has the same 
 all three: `frame()` / `run_cycles()` clear it on entry and set it during execution, while
 `step_instruction()` leaves it alone, so single-stepping across a frame boundary still lets
 you observe the flag.
+
+`step_dot()` is one chip over: the CPU still runs whole instructions, so what moves a dot at
+a time is the PPU. Observations made *through* the PPU are in machine order either way, and
+the one that matters for the accuracy work — the address the cartridge sees — is available as
+a sample per dot through `Nes::ppu_bus_trace()` (bounded history, `set_ppu_bus_trace_capacity`
+to size it; a whole NTSC frame is 89,342 dots). A12 rises between fetch dots and a scanline
+counter's filter is measured in dots, so this is the resolution a mapper's IRQ has to be
+reasoned about at.
 
 ---
 

@@ -32,7 +32,7 @@ pub mod state;
 pub use bus::Bus;
 pub use clock::FrameClock;
 pub use mapper::{supported_mappers, Mapper};
-pub use nes::Nes;
+pub use nes::{Nes, PpuBusSample, DEFAULT_PPU_BUS_TRACE_DOTS};
 pub use ppu::rendering::{PixelFormat, HEIGHT, PIXEL_FORMAT, WIDTH};
 
 /// The allocation-backed items that the `std` prelude normally injects.

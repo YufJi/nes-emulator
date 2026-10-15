@@ -160,14 +160,15 @@ Existing, and used for every measurement above:
 - The test-ROMs ship their own sources and readmes under `roms/blargg/*/source/` and
   `readme.txt`; blargg's suites state their precision ("Timing is tested to an accuracy of one
   PPU clock") and print expected traces. Compare against those, not against the shape of ours.
-- `NesBus`'s test-only per-dot PPU bus log (`ppu_bus_log`/`clear_ppu_bus_log`) plus
-  `test_a12_clockings_per_frame`, which counts qualifying A12 rises a frame at a time.
+- `Nes::ppu_bus_trace()` / `Nes::clear_ppu_bus_trace()` / `Nes::set_ppu_bus_trace_capacity()`:
+  the PPU's bus timeline, one sample per dot, filled by the machine as the dots happen (so it is
+  in machine order even though the CPU runs whole instructions). It is the same view the
+  cartridge has, and `test_a12_clockings_per_frame` counts qualifying A12 rises a frame at a
+  time through it. `Nes::step_dot()` is the pacing companion — a debugger's dot counter, with
+  `step_instruction()`'s semantics one chip over.
 
 Missing, and worth adding when it is needed:
 
-- a **dot-level sampler on the public API** (a `Nes::step_dot()` alongside `step_instruction`, or
-  a core-filled `Nes::ppu_bus_trace()`); `cycle_trace`'s A12 view is instruction-granular, which
-  is too coarse for a nine-dot filter;
 - PAL test ROMs, an MMC5 suite, a bus-conflict ROM, and a golden-audio comparison for the
   expansion chips;
 - an oracle comparison against Mesen itself (its debugger can emit cycle traces), which would

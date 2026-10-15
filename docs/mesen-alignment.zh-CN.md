@@ -134,13 +134,14 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   （`NES_TRACE_ROM`）与逐行 PPU 总线地址（`NES_A12_ROM`、`NES_A12_SKIP`、`NES_A12_LINE`）。
 - 测试 ROM 自带源码与 readme（`roms/blargg/*/source/`、`readme.txt`）：blargg 的套件写明精度是
   "一 PPU clock"，并打印期望轨迹。请与它们比对，而不是与我们的形状比对。
-- `NesBus` 的 `#[cfg(test)]` 逐 dot PPU 总线日志（`ppu_bus_log`/`clear_ppu_bus_log`）与
-  `test_a12_clockings_per_frame`，可按帧统计合格的 A12 上升。
+- `Nes::ppu_bus_trace()` / `Nes::clear_ppu_bus_trace()` / `Nes::set_ppu_bus_trace_capacity()`：
+  PPU 的总线时间线，每 dot 一条采样，由机器在 dot 发生时填充（因此即使 CPU 以整条指令推进，
+  顺序仍是机器顺序）。这与卡带看到的是同一个视图，`test_a12_clockings_per_frame` 就是通过它
+  按帧统计合格的 A12 上升。`Nes::step_dot()` 是与之配套的推进器——调试器用的 dot 计数器，
+  语义是把 `step_instruction()` 挪到另一颗芯片上。
 
 缺失、需要时应当补上：
 
-- **公开 API 上的逐 dot 采样器**（与 `step_instruction` 同族的 `Nes::step_dot()`，或由内核填充的
-  `Nes::ppu_bus_trace()`）；`cycle_trace` 的 A12 视图是逐指令粒度，对九个 dot 的过滤太粗；
 - PAL 测试 ROM、MMC5 套件、总线冲突 ROM，以及扩展音源的金标准音频比对；
 - 以 Mesen 本身作为 oracle 的差分（它的调试器能输出逐 cycle 轨迹），可把"整片 ROM 通过/失败"
   变成逐指令差异。
