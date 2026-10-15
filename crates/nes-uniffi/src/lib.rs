@@ -132,16 +132,23 @@ impl From<Config> for CoreConfig {
 }
 
 /// Everything the core can fail at, in a form Swift and Kotlin can switch on.
+///
+/// The text fields are called `reason` rather than `message` on purpose: UniFFI
+/// generates a Kotlin error variant as a class with a `message` property, so a
+/// field of that name produces `class Foo(val message: String) : NesError()` next
+/// to `override val message`, and the Kotlin compiler rejects the duplicate.
+/// Swift is indifferent to the name, which is why this is worth a comment rather
+/// than a bug report.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Error)]
 pub enum NesError {
     /// The image is not a usable iNES file.
-    InvalidRomFormat { message: String },
+    InvalidRomFormat { reason: String },
     /// The cartridge uses a mapper the core does not implement yet.
     UnsupportedMapper { mapper: u16 },
     /// A memory access fell outside anything the machine can answer.
     MemoryAccessError { address: u16 },
     /// A host-side I/O operation failed.
-    IoError { message: String },
+    IoError { reason: String },
     /// The emulated CPU panicked mid-instruction.
     ///
     /// A safety net rather than a routine outcome: undefined opcodes hang the
@@ -149,19 +156,19 @@ pub enum NesError {
     /// core. The binding catches the panic and hands it back as this error; the
     /// machine is left mid-instruction, so reload the cartridge before running
     /// another frame.
-    EmulationPanic { message: String },
+    EmulationPanic { reason: String },
 }
 
 impl std::fmt::Display for NesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NesError::InvalidRomFormat { message } => write!(f, "invalid iNES image: {message}"),
+            NesError::InvalidRomFormat { reason } => write!(f, "invalid iNES image: {reason}"),
             NesError::UnsupportedMapper { mapper } => write!(f, "unsupported mapper {mapper}"),
             NesError::MemoryAccessError { address } => {
                 write!(f, "memory access error at {address:#06X}")
             }
-            NesError::IoError { message } => write!(f, "host I/O error: {message}"),
-            NesError::EmulationPanic { message } => write!(f, "emulation panic: {message}"),
+            NesError::IoError { reason } => write!(f, "host I/O error: {reason}"),
+            NesError::EmulationPanic { reason } => write!(f, "emulation panic: {reason}"),
         }
     }
 }
@@ -171,12 +178,14 @@ impl std::error::Error for NesError {}
 impl From<nes_core::NesError> for NesError {
     fn from(error: nes_core::NesError) -> Self {
         match error {
-            nes_core::NesError::InvalidRomFormat(message) => NesError::InvalidRomFormat { message },
+            nes_core::NesError::InvalidRomFormat(message) => {
+                NesError::InvalidRomFormat { reason: message }
+            }
             nes_core::NesError::UnsupportedMapper(mapper) => NesError::UnsupportedMapper { mapper },
             nes_core::NesError::MemoryAccessError(address) => {
                 NesError::MemoryAccessError { address }
             }
-            nes_core::NesError::IoError(message) => NesError::IoError { message },
+            nes_core::NesError::IoError(message) => NesError::IoError { reason: message },
         }
     }
 }
@@ -196,7 +205,7 @@ impl From<nes_core::NesError> for NesError {
 fn guard<T>(body: impl FnOnce() -> T) -> Result<T, NesError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).map_err(|payload| {
         NesError::EmulationPanic {
-            message: panic_message(payload),
+            reason: panic_message(payload),
         }
     })
 }
@@ -329,6 +338,27 @@ impl Nes {
     /// `MTLPixelFormatBGRA8Unorm` expects, so the buffer can be uploaded as-is.
     pub fn frame_buffer(&self) -> Vec<u32> {
         self.machine().frame_buffer().to_vec()
+    }
+
+    /// The last completed frame as `frame_width * frame_height * 4` bytes,
+    /// row-major.
+    ///
+    /// The same pixels as [`Nes::frame_buffer`], written out in the byte order
+    /// [`pixel_format`] names: `0xAARRGGBB` little-endian, so one pixel is
+    /// `B, G, R, A` and the whole frame uploads as-is with
+    /// `glTexSubImage2D(..., GL_RGBA, GL_UNSIGNED_BYTE, ...)`.
+    ///
+    /// For hosts whose binding layer cannot dereference an address — Kotlin
+    /// through JNA sees [`Nes::frame_buffer_ptr`] as a `Long` and nothing more.
+    /// It costs one copy of the picture (240 KiB at 256×240) where
+    /// [`Nes::frame_buffer`] marshals a `Vec<u32>` across the boundary as a
+    /// *list*, one boxed integer per pixel.
+    pub fn frame_buffer_bytes(&self) -> Vec<u8> {
+        let machine = self.machine();
+        let pixels = machine.frame_buffer();
+        let mut bytes = Vec::with_capacity(pixels.len() * 4);
+        bytes.extend(pixels.iter().flat_map(|pixel| pixel.to_le_bytes()));
+        bytes
     }
 
     /// Width of one frame in pixels.
@@ -772,5 +802,36 @@ mod tests {
         let through_ptr =
             unsafe { std::slice::from_raw_parts(nes.frame_buffer_ptr() as *const u32, len) };
         assert_eq!(through_ptr, copied.as_slice());
+    }
+
+    #[test]
+    fn the_byte_view_is_the_little_endian_image_of_the_pixels() {
+        // A host that cannot follow a pointer (Kotlin through JNA) reads the
+        // picture through this method instead, so its layout is a contract: the
+        // bytes go straight to `glTexSubImage2D` as `GL_RGBA` /
+        // `GL_UNSIGNED_BYTE`.
+        let nes = Nes::new();
+        nes.load_rom(tiny_rom()).unwrap();
+        nes.frame().expect("frame should run");
+
+        let pixels = nes.frame_buffer();
+        let bytes = nes.frame_buffer_bytes();
+
+        assert_eq!(bytes.len(), pixels.len() * 4);
+        assert_eq!(bytes.len(), (frame_width() * frame_height() * 4) as usize);
+
+        let expected: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
+        assert_eq!(
+            bytes, expected,
+            "the view must be the pixels, little-endian"
+        );
+
+        // One pixel is blue, then green, then red: `0xAARRGGBB` little-endian.
+        // Without that order the upload would swap the channels.
+        assert_eq!(bytes[0], pixels[0] as u8);
+        assert_eq!(bytes[1], (pixels[0] >> 8) as u8);
+        assert_eq!(bytes[2], (pixels[0] >> 16) as u8);
+        assert_eq!(bytes[3], (pixels[0] >> 24) as u8);
+        assert_eq!(bytes[3], 0xFF, "the palette is opaque");
     }
 }
