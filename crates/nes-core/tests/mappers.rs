@@ -1106,6 +1106,7 @@ fn upload_byte_through_ppu(mapper: &mut (dyn Mapper + 'static), addr: u16, value
         chr: None,
         mirroring: Mirroring::Horizontal,
         open_bus: 0,
+        drawing_line: false,
     };
 
     ppu.write_register_with(0x2006, (addr >> 8) as u8, no_chr());
@@ -1116,6 +1117,7 @@ fn upload_byte_through_ppu(mapper: &mut (dyn Mapper + 'static), addr: u16, value
         PpuMemory::System {
             chr: Some(mapper),
             mirroring: Mirroring::Horizontal,
+            drawing_line: false,
             open_bus: 0,
         },
     );

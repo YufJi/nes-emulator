@@ -9,6 +9,7 @@
 use crate::mapper::Mapper;
 use crate::ppu::{Ppu, PpuMask};
 use crate::prelude::*;
+use crate::Region;
 
 /// Supplies pattern-table bytes to the renderers.
 ///
@@ -82,7 +83,7 @@ const EMPHASIS_ATTENUATION: f32 = 0.75;
 /// # Arguments
 /// * `color_index` - Palette RAM value (only the low 6 bits are used)
 /// * `mask` - PPUMASK register
-pub fn nes_color(color_index: u8, mask: PpuMask) -> u32 {
+pub fn nes_color(color_index: u8, mask: PpuMask, region: Region) -> u32 {
     let mut index = color_index & 0x3F;
     if mask.contains(PpuMask::GRAYSCALE) {
         index &= 0x30;
@@ -93,11 +94,19 @@ pub fn nes_color(color_index: u8, mask: PpuMask) -> u32 {
     let mut g = ((argb >> 8) & 0xFF) as f32;
     let mut b = (argb & 0xFF) as f32;
 
-    if mask.contains(PpuMask::EMPHASIZE_RED) {
+    // "Note that on the Dendy and PAL NES, the green and red bits swap
+    // meaning" (Mesen's `SetMaskRegister`), so the register's bit 5 is the
+    // green emphasis on those and the red one on NTSC.
+    let (red_bit, green_bit) = match region {
+        Region::Ntsc => (PpuMask::EMPHASIZE_RED, PpuMask::EMPHASIZE_GREEN),
+        Region::Pal => (PpuMask::EMPHASIZE_GREEN, PpuMask::EMPHASIZE_RED),
+    };
+
+    if mask.contains(red_bit) {
         g *= EMPHASIS_ATTENUATION;
         b *= EMPHASIS_ATTENUATION;
     }
-    if mask.contains(PpuMask::EMPHASIZE_GREEN) {
+    if mask.contains(green_bit) {
         r *= EMPHASIS_ATTENUATION;
         b *= EMPHASIS_ATTENUATION;
     }
@@ -378,20 +387,55 @@ mod tests {
 
     #[test]
     fn test_nes_color_without_effects_matches_palette() {
-        assert_eq!(nes_color(0x21, PpuMask::empty()), NES_PALETTE[0x21]);
-        assert_eq!(nes_color(0x21, PpuMask::SHOW_BG), NES_PALETTE[0x21]);
+        assert_eq!(
+            nes_color(0x21, PpuMask::empty(), Region::Ntsc),
+            NES_PALETTE[0x21]
+        );
+        assert_eq!(
+            nes_color(0x21, PpuMask::SHOW_BG, Region::Ntsc),
+            NES_PALETTE[0x21]
+        );
+    }
+
+    /// PAL and Dendy swap what the emphasis bits mean: the register's bit 5 is
+    /// the red emphasis on NTSC and the green one on those (Mesen's
+    /// `SetMaskRegister`).
+    #[test]
+    fn test_pal_swaps_the_emphasis_bits() {
+        let bit_five = PpuMask::EMPHASIZE_RED;
+
+        let ntsc = nes_color(0x21, bit_five, Region::Ntsc);
+        let plain = nes_color(0x21, PpuMask::empty(), Region::Ntsc);
+        assert!(
+            (ntsc >> 8) & 0xFF < (plain >> 8) & 0xFF,
+            "on NTSC the bit damps green"
+        );
+        assert_eq!(ntsc >> 16 & 0xFF, plain >> 16 & 0xFF, "red is untouched");
+
+        let pal = nes_color(0x21, bit_five, Region::Pal);
+        assert!(
+            (pal >> 16) & 0xFF < (plain >> 16) & 0xFF,
+            "on PAL the same bit damps red instead"
+        );
+        assert_eq!(pal >> 8 & 0xFF, plain >> 8 & 0xFF, "green is untouched");
     }
 
     #[test]
     fn test_nes_color_grayscale_masks_to_grey_column() {
-        assert_eq!(nes_color(0x2F, PpuMask::GRAYSCALE), NES_PALETTE[0x20]);
-        assert_eq!(nes_color(0x0F, PpuMask::GRAYSCALE), NES_PALETTE[0x00]);
+        assert_eq!(
+            nes_color(0x2F, PpuMask::GRAYSCALE, Region::Ntsc),
+            NES_PALETTE[0x20]
+        );
+        assert_eq!(
+            nes_color(0x0F, PpuMask::GRAYSCALE, Region::Ntsc),
+            NES_PALETTE[0x00]
+        );
     }
 
     #[test]
     fn test_nes_color_emphasis_darkens_the_other_channels() {
-        let plain = nes_color(0x21, PpuMask::empty());
-        let emphasised = nes_color(0x21, PpuMask::EMPHASIZE_RED);
+        let plain = nes_color(0x21, PpuMask::empty(), Region::Ntsc);
+        let emphasised = nes_color(0x21, PpuMask::EMPHASIZE_RED, Region::Ntsc);
         let plain_green = (plain >> 8) & 0xFF;
         let emphasised_green = (emphasised >> 8) & 0xFF;
         assert!(emphasised_green < plain_green);

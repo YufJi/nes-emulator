@@ -342,7 +342,11 @@ fn test_ppudata_read_buffered() {
     let data1 = ppu.read_register(0x2007);
     assert_eq!(data1, 0);
 
-    // Second read returns actual data
+    // Second read returns actual data, once the chip's six-dot window has
+    // passed (a second access inside it is ignored).
+    for _ in 0..6 {
+        ppu.tick_vram_access_window();
+    }
     let data2 = ppu.read_register(0x2007);
     assert_eq!(data2, 0x42);
 }
@@ -414,6 +418,9 @@ fn test_palette_read() {
     assert_eq!(data0, 0x0F);
 
     // Read palette 1
+    for _ in 0..6 {
+        ppu.tick_vram_access_window();
+    }
     ppu.write_register(0x2006, 0x3F);
     ppu.write_register(0x2006, 0x01);
     let data1 = ppu.read_register(0x2007);
@@ -421,12 +428,18 @@ fn test_palette_read() {
 
     // $3F10 is the sprite backdrop and mirrors the background backdrop at
     // $3F00, so it reads back the same byte.
+    for _ in 0..6 {
+        ppu.tick_vram_access_window();
+    }
     ppu.write_register(0x2006, 0x3F);
     ppu.write_register(0x2006, 0x10);
     let backdrop = ppu.read_register(0x2007);
     assert_eq!(backdrop, 0x0F);
 
     // A non-backdrop sprite palette entry maps to its own byte.
+    for _ in 0..6 {
+        ppu.tick_vram_access_window();
+    }
     ppu.write_register(0x2006, 0x3F);
     ppu.write_register(0x2006, 0x11);
     let data11 = ppu.read_register(0x2007);
@@ -1034,6 +1047,7 @@ fn test_cartridge_nametable_answers_ppudata() {
         PpuMemory::System {
             chr: Some(&mut mapper),
             mirroring: Mirroring::Horizontal,
+            drawing_line: false,
             open_bus: 0,
         },
     );
@@ -1045,14 +1059,19 @@ fn test_cartridge_nametable_answers_ppudata() {
         PpuMemory::System {
             chr: Some(&mut mapper),
             mirroring: Mirroring::Horizontal,
+            drawing_line: false,
             open_bus: 0,
         },
     );
+    for _ in 0..6 {
+        ppu.tick_vram_access_window();
+    }
     let value = ppu.read_register_with(
         0x2007,
         PpuMemory::System {
             chr: Some(&mut mapper),
             mirroring: Mirroring::Horizontal,
+            drawing_line: false,
             open_bus: 0,
         },
     );

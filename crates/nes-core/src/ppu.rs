@@ -33,6 +33,12 @@ pub enum PpuMemory<'a> {
         mirroring: Mirroring,
         /// Value currently driven on the CPU data bus, for open-bus reads.
         open_bus: u8,
+        /// Whether the PPU is on a line it draws (a visible line, or the
+        /// pre-render line, which Mesen counts as `_scanline == -1`).
+        ///
+        /// The register logic needs it: a `$2007` access on such a line
+        /// advances the VRAM address in the chip's odd way.
+        drawing_line: bool,
     },
 }
 
@@ -195,6 +201,9 @@ pub struct Ppu {
     read_buffer: u8,
     /// Open bus latch for PPU register reads
     open_bus_latch: u8,
+    /// PPU dots left in which a `$2007` read is ignored, counted down by the
+    /// machine once per dot (Mesen's `_ignoreVramRead`).
+    ignore_vram_read: u8,
     /// The frame each bit of the open bus was last driven on.
     ///
     /// The data bus is not a latch with infinite memory: a bit the chip drove
@@ -225,6 +234,7 @@ crate::state::state_fields!(Ppu {
     nmi_pending,
     read_buffer,
     open_bus_latch,
+    ignore_vram_read,
     open_bus_decay_stamp,
     suppress_vblank,
 });
@@ -266,6 +276,7 @@ impl Ppu {
             nmi_pending: false,
             read_buffer: 0,
             open_bus_latch: 0,
+            ignore_vram_read: 0,
             open_bus_decay_stamp: [0; 8],
             suppress_vblank: false,
         }
@@ -301,6 +312,7 @@ impl Ppu {
         self.suppress_vblank = false;
         self.read_buffer = 0;
         self.open_bus_latch = 0;
+        self.ignore_vram_read = 0;
         self.open_bus_decay_stamp = [0; 8];
     }
 
@@ -503,6 +515,14 @@ impl Ppu {
 
     /// Read from PPUDATA ($2007)
     fn read_ppudata(&mut self, memory: &mut PpuMemory<'_>) -> u8 {
+        // Two `$2007` reads in quick succession (within six dots) are one read
+        // too many for the chip: the second is ignored and hands back the open
+        // bus. Mesen spells the window out as `_ignoreVramRead = 6`, a countdown
+        // of PPU cycles.
+        if self.ignore_vram_read > 0 {
+            return self.open_bus(memory);
+        }
+
         let addr = self.v & 0x3FFF;
         let result;
 
@@ -517,15 +537,41 @@ impl Ppu {
             // the nametable data "behind" the palette. Palette entries are six
             // bits wide, so the top two bits of the byte the read returns are
             // not driven at all — they are whatever the data bus was holding.
-            result =
-                (self.palette[Self::palette_index(addr)] & 0x3F) | (self.open_bus(memory) & 0xC0);
+            // "Note: When grayscale is turned on, the read values also have the
+            // grayscale mask applied to them" (Mesen's `ReadRegister`), so the
+            // palette read runs through the same mask the drawn pixels do.
+            result = (self.palette[Self::palette_index(addr)] & self.palette_ram_mask())
+                | (self.open_bus(memory) & 0xC0);
             self.read_buffer = self.read_vram(addr & 0x2FFF, memory);
             self.drive_open_bus_bits(result, 0x3F);
         }
 
+        // Back-to-back accesses from here on are one too many.
+        self.ignore_vram_read = Self::IGNORE_VRAM_READ_DOTS;
+
         // Increment VRAM address
-        self.increment_vram_addr();
+        self.increment_vram_addr(memory);
         result
+    }
+
+    /// The mask a palette value goes through on its way to the screen: grayscale
+    /// clamps it to the grey column, which is a mask of $30 (Mesen's
+    /// `_paletteRamMask`).
+    fn palette_ram_mask(&self) -> u8 {
+        if self.mask.contains(PpuMask::GRAYSCALE) {
+            0x30
+        } else {
+            0x3F
+        }
+    }
+
+    /// PPU dots a second `$2007` access is ignored for.
+    const IGNORE_VRAM_READ_DOTS: u8 = 6;
+
+    /// Count one PPU dot off the `$2007`-access window, which the machine calls
+    /// once per dot.
+    pub fn tick_vram_access_window(&mut self) {
+        self.ignore_vram_read = self.ignore_vram_read.saturating_sub(1);
     }
 
     /// Write to PPUDATA ($2007)
@@ -546,7 +592,7 @@ impl Ppu {
         }
 
         // Increment VRAM address
-        self.increment_vram_addr();
+        self.increment_vram_addr(memory);
     }
 
     /// Map a palette RAM address ($3F00-$3F1F) to its storage index.
@@ -684,7 +730,31 @@ impl Ppu {
     }
 
     /// Increment VRAM address after $2007 read/write
-    fn increment_vram_addr(&mut self) {
+    /// Advance the VRAM address after a `$2007` access.
+    ///
+    /// Off a drawing line (or with rendering off) this is the documented
+    /// increment, 1 or 32. On one it is the chip's odd behaviour, which Mesen
+    /// spells out in `UpdateVideoRamAddr`: "it will update v in an odd way,
+    /// triggering a coarse X increment and a Y increment simultaneously" —
+    /// both halves of the scroll advance instead of the address.
+    fn increment_vram_addr(&mut self, memory: &PpuMemory<'_>) {
+        let drawing = matches!(
+            memory,
+            PpuMemory::System {
+                drawing_line: true,
+                ..
+            }
+        );
+        let rendering = self
+            .mask
+            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+
+        if drawing && rendering {
+            crate::ppu::pipeline::increment_coarse_x(self);
+            crate::ppu::pipeline::increment_y(self);
+            return;
+        }
+
         let increment = if self.ctrl.contains(PpuCtrl::INCREMENT) {
             32
         } else {
@@ -904,9 +974,79 @@ mod tests {
         let data = ppu.read_register(0x2007);
         // First read returns buffer (0), buffer gets actual value
         assert_eq!(data, 0);
-        // Second read returns previous buffer value
+
+        // A second read has to wait out the chip's six-dot window, or it is
+        // ignored and hands back the open bus (Mesen's `_ignoreVramRead`).
+        assert_eq!(
+            ppu.read_register(0x2007),
+            0,
+            "an immediate second read is ignored"
+        );
+        for _ in 0..Ppu::IGNORE_VRAM_READ_DOTS {
+            ppu.tick_vram_access_window();
+        }
         let data2 = ppu.read_register(0x2007);
         assert_eq!(data2, 0x55);
+    }
+
+    /// On a line the chip is drawing, a `$2007` access moves the scroll
+    /// instead of the address: "a coarse X increment and a Y increment
+    /// simultaneously" (Mesen's `UpdateVideoRamAddr`). Off such a line — or
+    /// with rendering off — the documented 1/32 increment applies.
+    #[test]
+    fn test_ppudata_advances_the_scroll_on_a_drawing_line() {
+        // Rendering on, and the PPU standing on a visible line.
+        let mut ppu = Ppu::new();
+        ppu.mask = PpuMask::SHOW_BG;
+        ppu.v = 0x0000;
+        ppu.write_register_with(
+            0x2007,
+            0x11,
+            PpuMemory::System {
+                chr: None,
+                mirroring: Mirroring::Horizontal,
+                open_bus: 0,
+                drawing_line: true,
+            },
+        );
+        // Coarse X went up by one and fine Y went up by one: neither the 1 nor
+        // the 32 the control register would have picked.
+        assert_eq!(ppu.v & 0x001F, 1, "coarse X advanced");
+        assert_eq!((ppu.v >> 12) & 0x07, 1, "fine Y advanced");
+
+        // The same access with rendering off is the ordinary increment.
+        let mut ppu = Ppu::new();
+        ppu.mask = PpuMask::empty();
+        ppu.v = 0x0000;
+        ppu.write_register_with(
+            0x2007,
+            0x11,
+            PpuMemory::System {
+                chr: None,
+                mirroring: Mirroring::Horizontal,
+                open_bus: 0,
+                drawing_line: true,
+            },
+        );
+        assert_eq!(ppu.v, 1, "with rendering off, v just increments");
+    }
+
+    /// The grayscale bit clamps palette values on their way out of $2007 too,
+    /// not only on their way to the screen.
+    #[test]
+    fn test_palette_reads_take_the_grayscale_mask() {
+        let mut ppu = Ppu::new();
+        ppu.palette[0] = 0x2A;
+
+        let read = |ppu: &mut Ppu| {
+            ppu.v = 0x3F00;
+            ppu.ignore_vram_read = 0;
+            ppu.read_register(0x2007)
+        };
+
+        assert_eq!(read(&mut ppu) & 0x3F, 0x2A, "colour as stored");
+        ppu.mask = PpuMask::GRAYSCALE;
+        assert_eq!(read(&mut ppu) & 0x3F, 0x20, "clamped to the grey column");
     }
 
     #[test]

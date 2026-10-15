@@ -68,12 +68,22 @@ What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`,
 
 ### 2.2 PPU: the bus, OAM and the registers around rendering
 
-- **OAM decay is not modelled at all** (`_oamDecayCycles`, `OamDecayCycleCount = 3000`).
-- **`$2007` during rendering**: the dummy read, `_ignoreVramRead`, and the `UpdateVideoRamAddr`
-  timing are not modelled.
-- Emphasis/grayscale is only partly implemented; it has not been diffed against
-  `UpdateGrayscaleAndIntensifyBits`.
-- PAL's PPU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) are absent.
+- ~~**OAM decay**~~ Not a gap: Mesen models it behind `EnableOamDecay`, a setting whose default
+  is *off* (`_enableOamDecay = false` in `BaseNesPpu.h`), and the rule itself is a 3000-cycle
+  per-eight-byte-row stamp whose decayed value is the row's own address
+  (`NesPpu::ReadSpriteRam`). Not modelling it matches Mesen's default.
+- ~~**`$2007` during rendering**~~ Modelled from `UpdateVideoRamAddr` and `ReadRegister`: on a
+  drawing line with rendering on a `$2007` access advances the *scroll* — a coarse X increment
+  and a Y increment together — instead of the address, and a second `$2007` access within six
+  PPU dots is ignored and reads the open bus (`_ignoreVramRead = 6`). Off a drawing line (or
+  with rendering off) the documented 1/32 increment stands.
+- ~~**Emphasis/grayscale**~~ Aligned to `UpdateColorBitMasks`: the grayscale bit masks a palette
+  value with $30 on its way out of `$2007` as well as on its way to the screen, and PAL and
+  Dendy swap what the register's emphasis bits mean. What is *not* aligned is the RGB those
+  nine bits resolve to: Mesen ORs `Red/Green/Blue` into the pixel value and its video filter
+  looks the result up in a 512-entry palette, while this core converts per pixel with a
+  three-quarter attenuation of the channels that are not emphasised.
+- PAL's own PPU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) are still absent.
 
 ### 2.3 CPU: DMA is applied after the instruction
 
@@ -134,8 +144,11 @@ randomised CPU/PPU alignment (this core has offset 0).
 3. **The APU frame counter's phase, then DMC** (§2.4). The frame counter is done — `4-jitter`,
    `5-len_timing` and `6-irq_flag_timing` are green. DMC is down to two checks
    (`7-dmc_basics`'s one-byte buffer, `8-dmc_rates`'s rate-0 window).
-4. **OAM decay** (§2.2). The open-bus half is done — `ppu_open_bus` is green; what is left is
-   the decay of OAM itself, the rendering-time `$2007` timing, and the grayscale/emphasis bits.
+4. ~~**§2.2's register details**~~ — done: open-bus decay (`ppu_open_bus`), the rendering-time
+   `$2007` behaviour, the grayscale mask on palette reads and the PAL emphasis swap. OAM decay
+   turned out to be an off-by-default Mesen setting, so not modelling it *is* the default. The
+   one piece left is the RGB the nine colour bits resolve to (Mesen's 512-entry table, which
+   its video filter owns).
 5. **PAL**. The ratio is done — PAL runs 16/5 with the fractional dot accumulator, so a PAL
    frame is 33247.5 CPU cycles and the audio clock derives from the real 3.2 rather than from
    the NTSC-shaped constant. What is left is PAL's own PPU/APU rules (`_nmiScanline`,
@@ -235,6 +248,7 @@ several runs.
 | PAL 16/5 | `cpu_divider` 15 → 16, `has_whole_dot_ratio` PAL → false so the master-clock path runs, and the APU's rate derives from `dots_per_cpu_cycle()` instead of a 3.0 constant | No ROM moved (no PAL ROMs); a PAL frame is 33,247.5 CPU cycles and the audio clock lands within 10 Hz of the published rate |
 | The access dot | Ran `ACCESS_DOTS` at 0, 1 and 2 against the whole ROM baseline now that the pipeline fetches at the dot | **2 is the measured value**: 0 and 1 each cost five ROMs (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `2-nmi_and_brk`, `4-scanline_timing`); 2 passes every suite |
 | NES 2.0 header + bus conflicts | The header parses the version, the submapper, byte 9's size bits and byte 12's region (and refuses the exponent-multiplier encoding); `Mapper::has_bus_conflicts` makes a cartridge write the AND of the CPU's value and the board's byte, for 2/3/7/11/66/71 | No ROM moved (the local suites use mappers 0/1/4, none of which has the conflict trap); `Nes::rom_submapper` exposes what was parsed |
+| PPU register details (§2.2) | Read from Mesen's own sources (`NesPpu.cpp`, `BaseNesPpu.cpp`): a `$2007` access on a drawing line advances the scroll both ways, a second `$2007` access within six dots is ignored, palette reads take the grayscale mask, PAL/Dendy swap the emphasis bits; OAM decay turns out to be off by default | No ROM moved (`blargg_ppu_tests` covers the `$2007` paths); three unit tests pin the behaviours |
 
 ### Experiments that were implemented, measured and reverted
 

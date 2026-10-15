@@ -524,6 +524,7 @@ impl NesBus {
         self.mirroring = header.mirroring;
         self.pipeline.set_mirroring(header.mirroring);
         self.region = self.region_override.unwrap_or(header.region);
+        self.pipeline.set_region(self.region);
         self.has_battery = header.has_battery;
         self.submapper = header.submapper;
 
@@ -680,10 +681,13 @@ impl NesBus {
         // The register state machine lives in `Ppu`; the bus only supplies the
         // cartridge CHR, nametable mirroring and data bus that the PPU cannot
         // own. Addresses mirror every 8 bytes across $2000-$3FFF.
+        let drawing_line =
+            self.ppu.scanline < 240 || self.ppu.scanline == self.region.last_scanline();
         let memory = PpuMemory::System {
             chr: self.mapper.as_deref_mut(),
             mirroring: self.mirroring,
             open_bus: self.open_bus,
+            drawing_line,
         };
         let value = self.ppu.read_register_with(addr, memory);
         if addr & 0x2007 == 0x2007 {
@@ -694,10 +698,13 @@ impl NesBus {
 
     /// Write to PPU register
     fn write_ppu_register(&mut self, addr: u16, value: u8) {
+        let drawing_line =
+            self.ppu.scanline < 240 || self.ppu.scanline == self.region.last_scanline();
         let memory = PpuMemory::System {
             chr: self.mapper.as_deref_mut(),
             mirroring: self.mirroring,
             open_bus: self.open_bus,
+            drawing_line,
         };
         self.ppu.write_register_with(addr, value, memory);
         // $2006 sets the VRAM address, $2007 moves it: both drive the PPU's
@@ -1383,6 +1390,7 @@ impl NesBus {
                 }
             }
         }
+        self.ppu.tick_vram_access_window();
         self.ppu_step();
         self.feed_ppu_bus();
         self.record_ppu_bus_sample();
@@ -1903,10 +1911,13 @@ mod tests {
         assert_eq!(bus.mapper.as_mut().unwrap().read(0x0000), 0x5A);
 
         // Reading back through $2007 is buffered: the old buffer first, then
-        // the byte fetched from cartridge CHR.
+        // the byte fetched from cartridge CHR. The machine has to run between
+        // the two reads, because the chip ignores a second access inside its
+        // six-dot window.
         bus.write(0x2006, 0x00);
         bus.write(0x2006, 0x00);
         assert_eq!(bus.read(0x2007), 0x00);
+        bus.advance_cycles(8);
         assert_eq!(bus.read(0x2007), 0x5A);
     }
 

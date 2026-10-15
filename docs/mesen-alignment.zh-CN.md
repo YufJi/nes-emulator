@@ -62,9 +62,17 @@ Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTi
 
 ### 2.2 PPU：总线、OAM 与渲染周边的寄存器
 
-- **OAM 衰减完全没有建模**（`_oamDecayCycles`、`OamDecayCycleCount = 3000`）。
-- **渲染期的 `$2007`**：dummy read、`_ignoreVramRead`、`UpdateVideoRamAddr` 的时序都未建模。
-- 强调色/灰阶只有部分实现，未与 `UpdateGrayscaleAndIntensifyBits` 逐位比对。
+- ~~**OAM 衰减**~~ 不算差距：Mesen 把它放在 `EnableOamDecay` 这个设置后面，而该设置**默认关闭**
+  （`BaseNesPpu.h` 里 `_enableOamDecay = false`）；规则本身是"每八个字节一行一个 3000 周期时间戳，
+  衰减后的值就是该行自己的地址"（`NesPpu::ReadSpriteRam`）。不做它正合 Mesen 的默认。
+- ~~**渲染期的 `$2007`**~~ 已按 `UpdateVideoRamAddr` 与 `ReadRegister` 建模：在绘制行上且渲染开启时，
+  `$2007` 的访问推进的是**滚动**——粗 X 自增与 Y 自增同时发生——而不是地址；同一 `$2007` 的第二次
+  访问若落在六个 PPU dot 内会被忽略并读回 open bus（`_ignoreVramRead = 6`）。不在绘制行上（或渲染
+  关闭时）仍是文档里的 1/32 自增。
+- ~~**强调色/灰阶**~~ 已对齐 `UpdateColorBitMasks`：灰阶位不仅在送往屏幕时、在 `$2007` 读出时也用
+  $30 掩蔽调色板值；PAL 与 Dendy 的强调位含义互换。**没有**对齐的是这九位最终解出的 RGB：Mesen 把
+  Red/Green/Blue 或进像素值、由视频滤镜查一张 512 项调色板，而本内核是逐像素转换、把未被强调的通道
+  乘 0.75。
 - PAL 的 PPU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）缺失。
 
 ### 2.3 CPU：DMA 是事后补周期
@@ -116,8 +124,9 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 3. **APU 帧计数器相位，然后 DMC**（§2.4）。帧计数器已完成——`4-jitter`、`5-len_timing`、
    `6-irq_flag_timing` 转绿。DMC 只剩两项检查（`7-dmc_basics` 的一字节缓冲、
    `8-dmc_rates` 的 rate 0 窗口）。
-4. **OAM 衰减**（§2.2）。open bus 那一半已完成（`ppu_open_bus` 转绿），剩下的是 OAM 自身的
-   衰减、渲染期 `$2007` 的时序，以及灰阶/强调色。
+4. ~~**§2.2 的寄存器细节**~~ —— 已完成：open bus 衰减（`ppu_open_bus` 转绿）、渲染期 `$2007` 的行为、
+   调色板读的灰阶掩蔽、PAL 的强调位互换。OAM 衰减查明是 Mesen 默认关闭的设置，因此"不做"正是它的
+   默认。唯一没对齐的是那九位颜色最终解出的 RGB（Mesen 的 512 项表，归它的视频滤镜所有）。
 5. **PAL**。比例已完成——PAL 跑 16/5，启用分数 dot 累加器，一帧是 33247.5 个 CPU 周期，音频时钟
    也改成按真实的 3.2 推导而不是照 NTSC 形状的常量。剩下的是 PAL 专属的 PPU/APU 规则
    （`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）；没有 PAL 测试 ROM 就无法验收。
@@ -205,6 +214,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | PAL 16/5 | `cpu_divider` 15 → 16，`has_whole_dot_ratio` 的 PAL 分支改 false 以启用主时钟路径，APU 的速率改由 `dots_per_cpu_cycle()` 推导而不再用 3.0 常量 | ROM 无移动（没有 PAL ROM）；PAL 一帧是 33,247.5 个 CPU 周期，音频时钟与公布值相差不到 10 Hz |
 | 访问的 dot | 逐 dot 渲染落地后，把 `ACCESS_DOTS` 取 0/1/2 各跑一遍完整 ROM 基线 | **实测值是 2**：0 与 1 各自让五个 ROM 失败（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`2-nmi_and_brk`、`4-scanline_timing`）；2 让所有套件通过 |
 | NES 2.0 头部 + 总线冲突 | 头部解析版本、submapper、byte 9 的尺寸高位与 byte 12 的制式（指数-乘数编码明确拒绝）；`Mapper::has_bus_conflicts` 让卡带写入等于 CPU 值与该地址板子字节的按位与，覆盖 2/3/7/11/66/71 | ROM 无移动（本地套件用的是 mapper 0/1/4，都不带那个冲突陷阱）；`Nes::rom_submapper` 把解析结果暴露出来 |
+| PPU 寄存器细节（§2.2） | 直接读 Mesen 源码（`NesPpu.cpp`、`BaseNesPpu.cpp`）：绘制行上 `$2007` 同时推进粗 X 与 Y、六个 dot 内的第二次 `$2007` 被忽略、调色板读带灰阶掩蔽、PAL/Dendy 互换强调位；OAM 衰减查明默认关闭 | ROM 无移动（`blargg_ppu_tests` 覆盖 `$2007` 路径）；三个单元测试钉住行为 |
 
 ### 实现、实测、随后撤回的实验
 

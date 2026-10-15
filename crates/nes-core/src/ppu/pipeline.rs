@@ -33,6 +33,7 @@
 use crate::ppu::rendering::{nes_color, ChrSource, FrameBuffer, Mirroring};
 use crate::ppu::{Ppu, PpuMask, PpuStatus};
 use crate::prelude::*;
+use crate::Region;
 
 /// Width of the picture in pixels, and of one line of the frame buffer.
 const WIDTH: usize = crate::ppu::rendering::WIDTH;
@@ -106,6 +107,8 @@ pub struct PixelPipeline {
     bg_opaque: Vec<u8>,
     /// Nametable mirroring, following the cartridge.
     mirroring: Mirroring,
+    /// TV system, which decides what the emphasis bits mean.
+    region: Region,
     /// Address of the last access the pipeline made, for the cartridge's A12
     /// filter. `None` on dots that made no access.
     bus_access: Option<u16>,
@@ -191,6 +194,7 @@ crate::state::state_fields!(PixelPipeline {
     frame,
     bg_opaque,
     mirroring,
+    region,
     sprite_slots,
     sprite_tiles,
 });
@@ -213,6 +217,7 @@ impl PixelPipeline {
             frame: FrameBuffer::new(),
             bg_opaque: vec![0; WIDTH * 240],
             mirroring: Mirroring::Horizontal,
+            region: Region::Ntsc,
             bus_access: None,
             sprite_slots: [SpriteSlot::default(); 8],
             sprite_tiles: [SpriteTile::default(); 8],
@@ -237,6 +242,12 @@ impl PixelPipeline {
     /// Follow the cartridge's mirroring, for the nametable fetches.
     pub fn set_mirroring(&mut self, mirroring: Mirroring) {
         self.mirroring = mirroring;
+    }
+
+    /// Follow the console's TV system, which swaps what the `$2001` emphasis
+    /// bits mean on PAL and Dendy (Mesen's `SetMaskRegister`).
+    pub fn set_region(&mut self, region: Region) {
+        self.region = region;
     }
 
     /// Nametable mirroring in use.
@@ -364,7 +375,7 @@ impl PixelPipeline {
             } else {
                 // With the background off the chip puts the backdrop on the
                 // wire, and sprites draw over it.
-                let backdrop = nes_color(ppu.palette[0], ppu.mask);
+                let backdrop = nes_color(ppu.palette[0], ppu.mask, self.region);
                 self.frame.set_pixel(x, scanline as usize, backdrop);
             }
             if show_sprites {
@@ -526,7 +537,7 @@ impl PixelPipeline {
 
             if !clipped && !(sprite.behind_background() && bg_opaque) {
                 let palette_addr = 0x10 + (sprite.palette() as usize) * 4 + color_index as usize;
-                let color = nes_color(ppu.palette[palette_addr], ppu.mask);
+                let color = nes_color(ppu.palette[palette_addr], ppu.mask, self.region);
                 self.frame.set_pixel(x, y, color);
             }
             return;
@@ -554,13 +565,13 @@ impl PixelPipeline {
             let color_index = (high << 1) | low;
 
             let palette_addr = (palette as usize) * 4 + color_index as usize;
-            let color = nes_color(ppu.palette[palette_addr], ppu.mask);
+            let color = nes_color(ppu.palette[palette_addr], ppu.mask, self.region);
             self.frame.set_pixel(x, y, color);
             self.bg_opaque[y * WIDTH + x] = 1;
         } else {
             // Lazy, because most calls land here and the palette lookup is not
             // free: this is the hottest line in the emulator.
-            let backdrop = nes_color(ppu.palette[0], ppu.mask);
+            let backdrop = nes_color(ppu.palette[0], ppu.mask, self.region);
             self.frame.set_pixel(x, y, backdrop);
         }
     }
@@ -587,7 +598,7 @@ fn background_pattern_addr(ppu: &Ppu, tile: u8) -> u16 {
 
 /// `v`'s coarse X increments after every nametable fetch, wrapping into the
 /// nametable select bit at the end of a row.
-fn increment_coarse_x(ppu: &mut Ppu) {
+pub(crate) fn increment_coarse_x(ppu: &mut Ppu) {
     if ppu.v & 0x001F == 0x001F {
         ppu.v &= !0x001F;
         ppu.v ^= 0x0400;
@@ -598,7 +609,7 @@ fn increment_coarse_x(ppu: &mut Ppu) {
 
 /// `v`'s coarse Y and fine Y increment at dot 256, wrapping at the bottom of a
 /// nametable.
-fn increment_y(ppu: &mut Ppu) {
+pub(crate) fn increment_y(ppu: &mut Ppu) {
     if ppu.v & 0x7000 != 0x7000 {
         ppu.v += 0x1000;
     } else {
@@ -680,7 +691,10 @@ mod tests {
         run_line(&mut pipeline, &mut ppu, 0);
 
         let drawn: Vec<usize> = (0..16)
-            .filter(|&x| pipeline.frame_buffer().get_pixel(x, 0) == nes_color(0x30, ppu.mask))
+            .filter(|&x| {
+                pipeline.frame_buffer().get_pixel(x, 0)
+                    == nes_color(0x30, ppu.mask, pipeline.region)
+            })
             .collect();
         assert_eq!(drawn, vec![0], "only pixel 0 of the tile is set");
     }
@@ -700,7 +714,10 @@ mod tests {
         run_line(&mut pipeline, &mut ppu, 0);
 
         let drawn: Vec<usize> = (0..16)
-            .filter(|&x| pipeline.frame_buffer().get_pixel(x, 0) == nes_color(0x30, ppu.mask))
+            .filter(|&x| {
+                pipeline.frame_buffer().get_pixel(x, 0)
+                    == nes_color(0x30, ppu.mask, pipeline.region)
+            })
             .collect();
         assert_eq!(drawn, vec![0]);
     }
@@ -817,7 +834,7 @@ mod tests {
 
         // The background covers x = 0..3 (its pattern is 0b1111_0000) and the
         // sprite is behind it there, so only x = 4..7 gets the sprite colour.
-        let sprite_color = nes_color(0x37, ppu.mask);
+        let sprite_color = nes_color(0x37, ppu.mask, pipeline.region);
         let drawn: Vec<usize> = (0..8)
             .filter(|&x| pipeline.frame_buffer().get_pixel(x, 1) == sprite_color)
             .collect();
