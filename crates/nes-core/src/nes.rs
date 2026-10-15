@@ -63,7 +63,11 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// save-state field.
 /// 5: the CPU no longer latches a taken branch's poll as deferred - the poll
 /// belongs to the branch itself, on its penultimate cycle.
-const STATE_VERSION: u8 = 9;
+/// 9: the renderer became per dot: the whole-line renderer's state gave way to
+/// the pipeline's shift registers and sprite fetch latches.
+/// 10: DMA moved into the memory-read path, so the stall count gave way to the
+/// pending-transfer state the machine now carries between accesses.
+const STATE_VERSION: u8 = 10;
 
 /// PPU dots the machine advances per CPU cycle.
 const PPU_DOTS_PER_CPU_CYCLE: f64 = 3.0;
@@ -265,8 +269,16 @@ struct NesBus {
     audio_capacity: usize,
     /// CPU cycles accumulated for audio generation
     cpu_cycles: u64,
-    /// CPU cycles the next OAM/DMC DMA transfer still has to steal
-    dma_stall_cycles: u16,
+    /// The page an OAM DMA transfer will copy from, set by a `$4014` write and
+    /// spent at the CPU's next access.
+    ///
+    /// Mesen's `ProcessPendingDma`: the transfer is not done where the write
+    /// lands, it is done when the CPU next reads memory, which is the moment
+    /// the chip stops it. The cycles it takes are real machine cycles, so the
+    /// interrupt lines are sampled during them.
+    pending_oam_dma: Option<u8>,
+    /// The address a DMC sample fetch will read from, asked for by the channel.
+    pending_dmc_dma: Option<u16>,
     /// The last [`NesBus::ppu_bus_trace_capacity`] dots, oldest first.
     ///
     /// `cycle_trace`'s A12 tool samples once per instruction, which is too
@@ -331,7 +343,8 @@ crate::state::state_fields!(NesBus {
     irq_pending,
     audio_accumulator,
     cpu_cycles,
-    dma_stall_cycles,
+    pending_oam_dma,
+    pending_dmc_dma,
     skip_odd_frame_dot,
     bus_address,
     pipeline,
@@ -367,7 +380,8 @@ impl NesBus {
             audio_sample_rate: DEFAULT_SAMPLE_RATE,
             audio_capacity: audio_capacity_floats(DEFAULT_SAMPLE_RATE, AUDIO_BUFFER_MS),
             cpu_cycles: 0,
-            dma_stall_cycles: 0,
+            pending_oam_dma: None,
+            pending_dmc_dma: None,
             skip_odd_frame_dot: false,
             bus_address: 0,
             ppu_bus_trace: VecDeque::with_capacity(DEFAULT_PPU_BUS_TRACE_DOTS),
@@ -540,16 +554,6 @@ impl NesBus {
             mapper.on_cpu_cycles(cycles);
         }
 
-        // The CPU is halted while OAM or DMC DMA runs; the rest of the
-        // machine keeps ticking. Mesen runs the DMA inside `MemoryRead`; until
-        // that moves, the stall is spent here, where the CPU cannot see the
-        // interrupt lines.
-        if self.dma_stall_cycles > 0 {
-            let stall = self.dma_stall_cycles;
-            self.dma_stall_cycles = 0;
-            self.advance_cycles(stall);
-        }
-
         cpu.set_cycle_count(self.cpu_cycles);
         (self.cpu_cycles - before) as u8
     }
@@ -673,15 +677,10 @@ impl NesBus {
     fn write_apu_register(&mut self, addr: u16, value: u8) {
         match addr {
             0x4014 => {
-                // OAMDMA - sprite DMA transfer of 256 bytes into OAM.
-                let source_addr = (value as u16) << 8;
-                for i in 0..256 {
-                    let byte = self.read(source_addr + i);
-                    self.ppu.oam[self.ppu.oam_addr.wrapping_add(i as u8) as usize] = byte;
-                }
-                // The transfer halts the CPU for 513 cycles, or 514 when it
-                // starts on an even cycle because of the extra alignment read.
-                self.dma_stall_cycles = 513 + (self.cpu_cycles & 1) as u16;
+                // OAMDMA: the write asks for a 256-byte copy into OAM. The
+                // copy itself happens at the CPU's next memory access, where
+                // the chip halts it (`NesBus::process_pending_dma`).
+                self.pending_oam_dma = Some(value);
             }
             0x4016 => {
                 // Controller strobe
@@ -705,13 +704,10 @@ impl NesBus {
     fn tick_apu_cycle(&mut self) {
         self.apu.tick();
 
-        // The DMC asks the bus for sample bytes; service the request
-        // immediately so the channel keeps playing.
+        // The DMC asks the bus for sample bytes. The fetch happens at the
+        // CPU's next memory access, where the chip halts it for four cycles.
         if let Some(addr) = self.apu.dmc_dma_request() {
-            let byte = self.read(addr);
-            self.apu.supply_dmc_byte(byte);
-            // A DMC sample fetch steals four cycles from the CPU.
-            self.dma_stall_cycles = self.dma_stall_cycles.saturating_add(4);
+            self.pending_dmc_dma = Some(addr);
         }
 
         // Resample the CPU-rate mixer output down to the host's device rate.
@@ -890,6 +886,7 @@ impl Bus for NesBus {
     }
 
     fn read_cycle(&mut self, addr: u16) -> u8 {
+        self.process_pending_dma();
         self.begin_cpu_cycle();
         let value = self.read(addr);
         self.end_cpu_cycle();
@@ -897,6 +894,7 @@ impl Bus for NesBus {
     }
 
     fn write_cycle(&mut self, addr: u16, value: u8) {
+        self.process_pending_dma();
         self.begin_cpu_cycle();
         self.write_now(addr, value);
         self.end_cpu_cycle();
@@ -977,9 +975,52 @@ impl NesBus {
         }
     }
 
+    /// Run the DMA the chip owes the CPU, halting it for the cycles it takes.
+    ///
+    /// Mesen's `ProcessPendingDma`, called at the start of every memory read:
+    /// a `$4014` write or a DMC sample request does not move any bytes where it
+    /// lands — it happens here, at the CPU's next access, which is the moment
+    /// the chip stops it. The cycles are ordinary machine cycles, so the PPU,
+    /// the APU and the interrupt lines all advance through them.
+    fn process_pending_dma(&mut self) {
+        // The DMC's own fetch goes first: it is shorter, and a sprite transfer
+        // that started earlier is still waiting afterwards.
+        if let Some(addr) = self.pending_dmc_dma.take() {
+            // One halt cycle, the read itself, then two cycles to get going
+            // again. Mesen models the same four cycles.
+            self.advance_one_cpu_cycle();
+            let byte = self.read(addr);
+            self.apu.supply_dmc_byte(byte);
+            self.advance_one_cpu_cycle();
+            self.advance_one_cpu_cycle();
+        }
+
+        if let Some(page) = self.pending_oam_dma.take() {
+            // The transfer takes 513 cycles, or 514 when it begins on an odd
+            // cycle, which needs an alignment cycle first.
+            if self.cpu_cycles & 1 == 1 {
+                self.advance_one_cpu_cycle();
+            }
+            // The halt cycle, and the dummy read the chip performs in it.
+            let _ = self.read(0x0000);
+            self.advance_one_cpu_cycle();
+
+            let source = (page as u16) << 8;
+            let mut oam_addr = self.ppu.oam_addr;
+            for i in 0..256u16 {
+                let byte = self.read(source.wrapping_add(i));
+                // The read's cycle, then the write into OAM's.
+                self.advance_one_cpu_cycle();
+                self.ppu.oam[oam_addr as usize] = byte;
+                oam_addr = oam_addr.wrapping_add(1);
+                self.advance_one_cpu_cycle();
+            }
+            self.ppu.oam_addr = oam_addr;
+        }
+    }
+
     /// Advance the PPU and APU by `cycles` CPU cycles without executing any
-    /// CPU instructions. Used for normal instruction timing and for the cycles
-    /// stolen by OAM/DMC DMA.
+    /// CPU instructions.
     fn advance_cycles(&mut self, cycles: u16) {
         for _ in 0..cycles {
             self.advance_one_cpu_cycle();
