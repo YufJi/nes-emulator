@@ -107,8 +107,12 @@ randomised CPU/PPU alignment (this core has offset 0).
 
 ### 2.5 Mappers
 
-- **NES 2.0 submappers are not parsed.** Mesen uses them to pick board behaviour, which is what
-  blocks `6-MMC3_alt` (the alternate IRQ revision), 116 and 176.
+- **NES 2.0 submappers are not parsed.** Mesen uses them to pick board behaviour, which blocks
+  116 and 176. `6-MMC3_alt` is a different case, and worth knowing before writing the parser:
+  its header is *plain iNES* (`flags7` = $00, so no NES 2.0 field, no submapper), so there is
+  nothing in the file to decode. Mesen reaches it through its game database — a CRC-keyed table
+  of per-ROM overrides — which is the only mechanism that can, and which is why the alternate
+  IRQ revision needs either that table or a small per-ROM list rather than a header field.
 - **Bus conflicts are not modelled** (`HasBusConflicts` is absent), which is the discrete boards
   (2/3/7 and friends).
 - Missing boards: 64 (RAMBO-1, and 158 with it), 115, 116, 176, 185 (needs the
@@ -267,11 +271,11 @@ Their value is the evidence; do not retry them without reading this first.
 
 ## 8. Decisions still open
 
-**Decided**: the renderer went all the way (background *and* sprites, §2.1); `6-MMC3_alt` will be
-reached through a NES 2.0 submapper table rather than a per-ROM override list (§2.5); PAL switches
-to 16/5 with the fractional dot accumulator (§4); the expansion chips keep their unit tests rather
-than a golden-audio comparison; and the access dot (§4) waits for an experiment with
-`ppu_bus_trace`, which the per-dot renderer now makes possible.
+**Decided**: the renderer went all the way (background *and* sprites, §2.1); PAL runs 16/5 with
+the fractional dot accumulator (§4); the expansion chips keep their unit tests rather than a
+golden-audio comparison; the access dot (§4) waits for an experiment with `ppu_bus_trace`; and
+`6-MMC3_alt` needs a per-ROM override list or a CRC-keyed database rather than a submapper — its
+header is plain iNES, which §2.5 now records.
 
 1. **The access dot** (§4): run the `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` experiment
    with `Nes::ppu_bus_trace` and keep `ACCESS_DOTS = 2` unless it says otherwise.

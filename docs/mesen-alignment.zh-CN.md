@@ -93,8 +93,11 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 
 ### 2.5 Mapper
 
-- **不解析 NES 2.0 submapper**。Mesen 用它决定板级行为，这正是 `6-MMC3_alt`（备用 IRQ 版本）、
-  116、176 被挡住的原因。
+- **不解析 NES 2.0 submapper**。Mesen 用它决定板级行为，116、176 因此被挡住。`6-MMC3_alt` 是
+  另一回事，动手写解析器之前值得先知道：它的头部是**纯 iNES**（`flags7` = $00，没有 NES 2.0
+  字段，也就没有 submapper），文件里根本没有可解析的东西。Mesen 是靠它的 game database（按 CRC
+  索引的逐 ROM 覆盖表）够到它的——这是唯一可行的机制，也正是"备用 IRQ 版本"需要那张表或一张小的
+  逐 ROM 清单、而不是一个头部字段的原因。
 - **总线冲突未建模**（没有 `HasBusConflicts`），即 2/3/7 这类离散板。
 - 缺失的板：64（RAMBO-1，158 随之）、115、116、176、185（需要 pattern-data-from-VRAM 窗口）。
 - MMC5：扩展属性模式（`$5104 = 3`）缺失；竖向分屏已决定不做。
@@ -229,9 +232,9 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 
 ## 8. 仍需拍板的决策
 
-**已拍板**：渲染器一次做到背景 + sprite（§2.1）；`6-MMC3_alt` 走 NES 2.0 submapper 表而不是按
-ROM 的覆盖表（§2.5）；PAL 切到 16/5 加分数 dot 累加器（§4）；扩展音源维持单元测试、不做金标准
-比对；访问的 dot（§4）等一次用 `Nes::ppu_bus_trace` 做的实验——逐 dot 渲染落地后它才可能做。
+**已拍板**：渲染器一次做到背景 + sprite（§2.1）；PAL 跑 16/5 加分数 dot 累加器（§4）；扩展音源
+维持单元测试、不做金标准比对；访问的 dot（§4）等一次用 `Nes::ppu_bus_trace` 做的实验；
+`6-MMC3_alt` 需要逐 ROM 覆盖表或按 CRC 的数据库而不是 submapper——它的头部是纯 iNES，§2.5 已记下。
 
 1. **访问的 dot**（§4）：用 `Nes::ppu_bus_trace` 跑
    `05-nmi_timing`/`06-suppression`/`02-vbl_set_time` 的实验，除非证据反对，继续保留
