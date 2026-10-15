@@ -850,9 +850,11 @@ flowchart LR
   取指），而这些地址是逐 dot 流水线**真实读过的**，不再是重建。过滤规则也照 Mesen 的
   `_cyclesDown`：低电平达到三个 CPU 周期才计数，且**每一次**上升都会结束当前这段低电平，无论
   是否计数。这足以通过 blargg 六个 MMC3 测试中的四个。
-  仍为近似的部分：需要 mapper 4 submapper 4 的 NEC"alternate"IRQ 版本（`6-MMC3_alt`）、
-  以及 8x16 精灵下具体哪次取址会抬高 A12 的细节。取指变成真实取指之后 `4-scanline_timing`
-  转绿了：先前的重建让首个 sprite 阶段取指之前的低电平段长了一个 dot。
+  sprite 阶段也是由它真正做的那次取指驱动的，8x16 精灵同样在内：它们的图案表来自 tile 的
+  bit 0，所以上升沿落在芯片会落的位置。仍为近似的部分只剩需要 mapper 4 submapper 的
+  NEC"alternate"IRQ 版本（`6-MMC3_alt`）——纯 iNES 头部里没有这个字段
+  （见 `docs/mesen-alignment.md` §2.5）。取指变成真实取指之后 `4-scanline_timing` 转绿了：
+  先前的重建让首个 sprite 阶段取指之前的低电平段长了一个 dot。
 - **MMC5 的 ExRAM 已接通，扩展属性与分屏没有**：`$5105` 的命名表映射通过
   `nametable_read`/`nametable_write` 抵达渲染器，因此 ExRAM 命名表与 fill 模式可用。
   扩展属性模式（`$5104` = 3）需要单独解析它自己的字节布局；竖向分屏按决定不做（§15.6）。

@@ -938,10 +938,12 @@ clone needs `npm run build:wasm` before building the front end.
   the ones the per-dot pipeline really read rather than a reconstruction. The counter's filter is
   Mesen's `_cyclesDown` rule: a rise counts only after three CPU cycles of low, and *every*
   rise ends the run whether or not it counted. That is four of blargg's six MMC3 tests.
-  What is still approximate: the "alternate" NEC IRQ revision that needs mapper-4 submapper 4
-  (`6-MMC3_alt`) and the fine detail of which sprite fetch raises A12 with 8x16 sprites.
-  `4-scanline_timing` went green once the fetches became real: the reconstruction made the
-  run before the first sprite-phase fetch one dot too long.
+  The sprite phase drives it from the fetch it really makes, 8x16 sprites included: their
+  pattern table comes from bit 0 of the tile, so the rise lands where the chip's does. What is
+  still approximate is the "alternate" NEC IRQ revision, which needs a mapper-4 submapper that
+  a plain iNES header does not carry (`6-MMC3_alt`; see §2.5 of `docs/mesen-alignment.md`).
+  `4-scanline_timing` went green once the fetches became real: the reconstruction made the run
+  before the first sprite-phase fetch one dot too long.
 - **MMC5's ExRAM is wired; extended attributes and the split are not**: `$5105` nametable
   mapping reaches the renderer through `nametable_read`/`nametable_write`, so ExRAM
   nametables and fill mode work. Extended-attribute mode (`$5104` = 3) would need its own
