@@ -694,7 +694,11 @@ impl NesBus {
                 }
             }
             _ => {
-                self.apu.write_register(addr, value);
+                // The APU's clock phase matters to a `$4017` restart, and the
+                // machine's cycle parity is how the once-per-cycle APU here
+                // sees it.
+                let odd_apu_cycle = self.cpu_cycles & 1 == 1;
+                self.apu.write_register_at(addr, value, odd_apu_cycle);
             }
         }
     }

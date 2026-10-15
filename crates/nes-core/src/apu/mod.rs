@@ -74,14 +74,31 @@ pub struct FrameCounter {
     pub cycle: u32,
     /// Current step in the sequence (0-4)
     pub step: u8,
+    /// Cycles the counter is held for after a `$4017` restart.
+    ///
+    /// The write's effect on the *sequence* is late: the mode and the IRQ
+    /// inhibit take effect at once, but the counter passes its next boundary
+    /// three cycles later — four when the write lands on the APU's other clock
+    /// phase. That jitter is what blargg's `4-jitter` measures, and it moves
+    /// every later boundary with it, which is what `5-len_timing` measures.
+    hold: u8,
 }
 
-crate::state::state_fields!(FrameCounter { cycle, step });
+crate::state::state_fields!(FrameCounter { cycle, step, hold });
 
 impl FrameCounter {
     /// Create a new frame counter
     pub fn new() -> Self {
-        Self { cycle: 0, step: 0 }
+        Self {
+            cycle: 0,
+            step: 0,
+            hold: 0,
+        }
+    }
+
+    /// Hold the counter for `cycles` before it advances again.
+    pub fn hold(&mut self, cycles: u8) {
+        self.hold = cycles;
     }
 
     /// Reset the frame counter
@@ -93,6 +110,10 @@ impl FrameCounter {
     /// Tick the frame counter by one CPU cycle
     /// Returns true if a step boundary was crossed
     pub fn tick(&mut self, mode: FrameCounterMode) -> bool {
+        if self.hold > 0 {
+            self.hold -= 1;
+            return false;
+        }
         self.cycle += 1;
 
         let step_boundaries = match mode {
@@ -139,6 +160,12 @@ pub struct Apu {
     pub frame_counter_mode: FrameCounterMode,
     /// Frame counter IRQ flag
     pub frame_counter_irq: bool,
+    /// Cycles the frame IRQ flag still has to be set for.
+    ///
+    /// The flag is not set once but three cycles in a row, starting 29831
+    /// clocks after a `$4017` restart — blargg's `6-irq_flag_timing` reads it
+    /// three times in a row and expects it to come back after each read.
+    frame_counter_irq_window: u8,
     /// Frame counter IRQ inhibit flag
     pub frame_counter_irq_inhibit: bool,
 
@@ -162,6 +189,7 @@ pub struct Apu {
 crate::state::state_fields!(Apu {
     frame_counter,
     frame_counter_mode,
+    frame_counter_irq_window,
     frame_counter_irq,
     frame_counter_irq_inhibit,
     pulse1,
@@ -177,6 +205,7 @@ impl Apu {
         let mut apu = Self {
             frame_counter: FrameCounter::new(),
             frame_counter_mode: FrameCounterMode::FourStep,
+            frame_counter_irq_window: 0,
             frame_counter_irq: false,
             frame_counter_irq_inhibit: false,
             pulse1: PulseChannel::new(true, 0x4000),
@@ -269,6 +298,13 @@ impl Apu {
     /// * `addr` - Register address ($4000-$4017)
     /// * `value` - Value to write
     pub fn write_register(&mut self, addr: u16, value: u8) {
+        self.write_register_at(addr, value, false)
+    }
+
+    /// Write a register, telling the frame counter which APU clock phase the
+    /// write landed on: a `$4017` restart is three cycles late, or four when it
+    /// lands on the odd one.
+    pub fn write_register_at(&mut self, addr: u16, value: u8, odd_apu_cycle: bool) {
         match addr {
             0x4000..=0x4003 => self.pulse1.write_register(addr, value),
             0x4004..=0x4007 => self.pulse2.write_register(addr, value),
@@ -295,11 +331,13 @@ impl Apu {
                 };
 
                 self.frame_counter.reset();
+                self.frame_counter.hold(if odd_apu_cycle { 4 } else { 3 });
                 self.frame_counter_mode = new_mode;
                 self.frame_counter_irq_inhibit = (value & 0x40) != 0;
 
                 if self.frame_counter_irq_inhibit {
                     self.frame_counter_irq = false;
+                    self.frame_counter_irq_window = 0;
                 }
 
                 // Selecting 5-step mode immediately clocks the quarter and
@@ -330,6 +368,15 @@ impl Apu {
         self.noise.tick();
         self.dmc.clock_timer();
 
+        // The window runs first, so the cycle the sequencer opens it on is the
+        // first of the three the flag is set for.
+        if self.frame_counter_irq_window > 0 {
+            self.frame_counter_irq_window -= 1;
+            if !self.frame_counter_irq_inhibit {
+                self.frame_counter_irq = true;
+            }
+        }
+
         if self.frame_counter.tick(self.frame_counter_mode) {
             self.clock_frame_sequencer();
         }
@@ -358,12 +405,15 @@ impl Apu {
             }
             // 22371 (both modes): quarter frame
             3 => self.clock_quarter_frame(),
-            // 29828 (4-step only): frame IRQ
+            // 29828 (4-step only): frame IRQ. The flag goes up here and stays
+            // up for two more cycles, which is the "three times in a row" the
+            // tests read back.
             4 => {
                 if self.frame_counter_mode == FrameCounterMode::FourStep
                     && !self.frame_counter_irq_inhibit
                 {
                     self.frame_counter_irq = true;
+                    self.frame_counter_irq_window = 2;
                 }
             }
             // 29829 (4-step) / 37281 (5-step): quarter + half frame

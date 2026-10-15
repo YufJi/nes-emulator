@@ -30,6 +30,62 @@ fn test_frame_counter_new() {
     assert_eq!(counter.step, 0);
 }
 
+/// A `$4017` restart does not take effect on its own cycle: the mode and the
+/// IRQ inhibit do, but the counter passes its next boundary three cycles later
+/// — four when the write lands on the other APU clock phase. That jitter is
+/// what blargg's `4-jitter` measures.
+#[test]
+fn test_frame_counter_restart_is_held_by_the_apu_phase() {
+    for (odd, expected_hold) in [(false, 3u8), (true, 4u8)] {
+        let mut apu = Apu::new();
+        apu.write_register_at(0x4017, 0x00, odd);
+
+        // The counter does not move for the hold, then ticks once per cycle.
+        for cycle in 1..=expected_hold as u32 {
+            apu.tick();
+            assert_eq!(
+                apu.frame_counter.cycle, 0,
+                "cycle {cycle} of the hold must not advance the counter"
+            );
+        }
+        apu.tick();
+        assert_eq!(apu.frame_counter.cycle, 1, "and then it runs again");
+    }
+}
+
+/// The frame IRQ flag is not set once: it goes up for three cycles in a row,
+/// starting 29831 clocks after a `$4017` restart. `6-irq_flag_timing` reads the
+/// flag three times in a row and expects it to come back after each read.
+#[test]
+fn test_frame_irq_flag_is_set_three_cycles_in_a_row() {
+    let mut apu = Apu::new();
+    apu.write_register_at(0x4017, 0x00, false);
+
+    // Walk to the IRQ step (the sequence's 29828th cycle, held three cycles).
+    let mut set_cycles = Vec::new();
+    for cycle in 1..=40_000u32 {
+        apu.tick();
+        let flag = apu.read_register(0x4015) & 0x40 != 0;
+        if flag {
+            set_cycles.push(cycle);
+            // The read clears the flag, so a following cycle can set it again —
+            // which is exactly what the test checks for.
+        }
+    }
+
+    let first = set_cycles.first().copied().expect("the flag is set at all");
+    assert_eq!(
+        first, 29831,
+        "the flag first goes up 29831 clocks after the write"
+    );
+    assert_eq!(
+        set_cycles.len(),
+        3,
+        "and it is set three times in a row: {set_cycles:?}"
+    );
+    assert_eq!(set_cycles, vec![29831, 29832, 29833]);
+}
+
 #[test]
 fn test_frame_counter_reset() {
     let mut counter = FrameCounter::new();

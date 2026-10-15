@@ -121,19 +121,12 @@ fn blargg_apu() {
     common::check_blargg_directory(
         "blargg/apu_test/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // Frame-counter and DMC timing (jitter, IRQ flag timing, DMC rates) are
-        // approximations, and `5-len_timing` moved into this list when the
-        // `$4015` read started landing on its own cycle, as Mesen's does: blargg
-        // synchronises through that read, and the frame-counter phase it
-        // measures is a cycle or two out anyway (§7 of `docs/mesen-alignment.md` predicted
-        // exactly this). The fix is the counter's phase, not the read.
-        &[
-            "4-jitter.nes",
-            "5-len_timing.nes",
-            "6-irq_flag_timing.nes",
-            "7-dmc_basics.nes",
-            "8-dmc_rates.nes",
-        ],
+        // The frame counter's phase is now Mesen's — a `$4017` restart is three
+        // cycles late (four on the other APU clock phase) and the IRQ flag goes
+        // up for three cycles in a row — which is what `4-jitter`,
+        // `5-len_timing` and `6-irq_flag_timing` measure. What is left is the
+        // DMC itself.
+        &["7-dmc_basics.nes", "8-dmc_rates.nes"],
     );
 }
 
