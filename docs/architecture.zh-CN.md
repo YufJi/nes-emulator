@@ -791,12 +791,13 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
-| `apu_test` | 6/8（帧计数器相位已对齐 Mesen，只剩两个 DMC 项） |
-| AccuracyCoin | 共跑 155 项、85 通过、0 跳过、43 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
+| `apu_test` | 8/8 |
+| AccuracyCoin | 共跑 143 项、94 通过、0 跳过、34 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
 `ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"；`cpu_interrupts_v2` 那三项每一项都只差一到
-两条指令；`apu_test` 的两项则是 DMC 的一字节缓冲与 rate 0 的样本窗口。
+两条指令。（`apu_test` 原先也在这张单子上，直到 DMC 改成 Mesen 的通道：长度计数在取数时移动、
+取到的字节留在缓冲里等输出单元的字节边界、定时器周期取表里的值。）
 
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。
@@ -956,11 +957,10 @@ flowchart LR
 2. **重采样质量**（改动局限在音频链路，收益直观）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的 11 项——`cpu_interrupts_v2` 的 4 项、
-   `apu_test` 的 4 项、`ppu_vbl_nmi` 的最后 1 项、`mmc3_test_2` 的 2 项——外加 MMC5 的扩展
-   属性、sprite 0 命中时序、§8 里说明延后的 5 个 Mapper、PAL 的 dot 比例。寄存器写入与
-   `$2002`/`$2007` 读现在已经落在各自 cycle 的 dot 上；剩下的多半是同一件事再往下一层：
-   中断向量过程自身的 cycle、帧计数器相位、DMA，以及"整行渲染改成逐 dot 渲染"。
+5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`cpu_interrupts_v2` 的 3 项、
+   `ppu_vbl_nmi` 的最后 1 项、`mmc3_test_2` 的 1 项——外加 MMC5 的扩展属性、§8 里说明延后的
+   5 个 Mapper、PAL 的 dot 比例。寄存器写入、`$2002`/`$2007` 读、DMA 与 DMC 现在都落在各自
+   cycle 的 dot 上；剩下的多半是同一件事再往下一层：中断向量过程自身的 cycle 与帧计数器相位。
 
 精度工作另有一份专门文档——与 Mesen2 NES 内核的对齐现状、尚存的差距、每一步的实测数据，以及
 被撤回的实验：[`mesen-alignment.zh-CN.md`](./mesen-alignment.zh-CN.md)。下次动手时从它开始；

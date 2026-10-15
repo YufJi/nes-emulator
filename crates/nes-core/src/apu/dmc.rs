@@ -94,8 +94,13 @@ pub struct DmcChannel {
     sample_buffer: u8,
     /// Shift register (holds current byte being processed)
     shift_register: u8,
-    /// Bits remaining in shift register (0-8)
+    /// Bits remaining in shift register (0-8), counted down to the byte
+    /// boundary the output unit reloads on.
     bits_remaining: u8,
+    /// Whether the register is holding its level rather than playing a byte
+    /// (Mesen's `_silenceFlag`). The output unit is free-running: a byte that
+    /// arrives while it is silent starts at the next boundary, not on the spot.
+    silence_flag: bool,
     /// Raw $4012 register value (for save states)
     reg_4012: u8,
     /// Raw $4013 register value (for save states)
@@ -130,6 +135,7 @@ impl crate::state::StateField for DmcChannel {
         self.sample_buffer.write(w);
         self.shift_register.write(w);
         self.bits_remaining.write(w);
+        self.silence_flag.write(w);
         self.reg_4012.write(w);
         self.reg_4013.write(w);
         self.last_fetched_byte.write(w);
@@ -152,6 +158,7 @@ impl crate::state::StateField for DmcChannel {
         self.sample_buffer.read(r);
         self.shift_register.read(r);
         self.bits_remaining.read(r);
+        self.silence_flag.read(r);
         self.reg_4012.read(r);
         self.reg_4013.read(r);
         self.last_fetched_byte.read(r);
@@ -177,7 +184,8 @@ impl DmcChannel {
             bytes_remaining: 0,
             sample_buffer: 0,
             shift_register: 0,
-            bits_remaining: 0,
+            bits_remaining: 8,
+            silence_flag: true,
             reg_4012: 0,
             reg_4013: 0,
             last_fetched_byte: 0,
@@ -210,7 +218,8 @@ impl DmcChannel {
     pub fn clock_timer(&mut self) {
         if self.timer_counter > 0 {
             self.timer_counter -= 1;
-        } else {
+        }
+        if self.timer_counter == 0 {
             self.timer_counter = self.timer_period;
             self.clock_output_unit();
         }
@@ -218,15 +227,16 @@ impl DmcChannel {
 
     /// Clock the output unit (called when timer expires)
     ///
-    /// The output unit shifts out one bit from the shift register and
-    /// adjusts the output level accordingly.
+    /// One bit of the byte being played leaves the shift register and moves the
+    /// DAC. When the register runs out of bits the byte the reader put in the
+    /// buffer takes its place, and the reader is fed again from there — Mesen's
+    /// `Run`: a transfer starts at the byte boundary, and the byte it brings
+    /// back waits in the buffer until the register runs dry. With nothing
+    /// buffered the DAC holds its level (Mesen's silence flag) rather than
+    /// decaying over a register full of zeroes.
     fn clock_output_unit(&mut self) {
-        // Only process if we have a sample
-        if self.has_sample {
-            // Check the lowest bit of the shift register
+        if !self.silence_flag {
             let bit = self.shift_register & 1;
-
-            // Update output level based on the bit
             if bit == 0 {
                 // Decrement by 2, clamped at 0
                 if self.output_level >= 2 {
@@ -242,30 +252,23 @@ impl DmcChannel {
                     self.output_level = 126;
                 }
             }
-
-            // Shift the register right
             self.shift_register >>= 1;
         }
 
-        // Decrement bits remaining counter
-        if self.bits_remaining > 0 {
-            self.bits_remaining -= 1;
-        }
-
-        // The memory reader is clocked one output clock ahead of the shifter:
-        // it counts the byte as played and fetches the next one while the
-        // current byte's last bit is still on its way out. That is what makes a
-        // 17-byte sample 135 periods long rather than 128 or 136, which is the
-        // number `8-dmc_rates` measures.
+        self.bits_remaining = self.bits_remaining.saturating_sub(1);
         if self.bits_remaining == 0 {
-            if self.bytes_remaining > 0 {
-                self.bytes_remaining -= 1;
-            }
-            self.end_of_sample();
+            // The byte is over. The register reloads from the buffer; with
+            // nothing waiting it holds its level and the reader is asked for a
+            // byte — a transfer starts at the byte boundary, and what it brings
+            // back waits in the buffer until the boundary after it.
+            self.bits_remaining = 8;
             if self.has_sample {
                 self.shift_register = self.sample_buffer;
-                self.bits_remaining = 8;
                 self.has_sample = false;
+                self.silence_flag = false;
+                self.fetch_next_sample();
+            } else {
+                self.silence_flag = true;
             }
         }
 
@@ -277,28 +280,13 @@ impl DmcChannel {
         }
     }
 
-    /// A byte has finished playing: fetch the next one, loop, or end.
-    fn end_of_sample(&mut self) {
-        if self.bytes_remaining == 0 {
-            // The last byte has played out.
-            if self.play_mode == PlayMode::Loop {
-                self.sample_address = self.sample_start_address;
-                self.bytes_remaining = self.sample_length;
-                self.fetch_next_sample();
-            } else if self.play_mode == PlayMode::Irq {
-                self.irq_generated = true;
-            }
-            return;
-        }
-        if !self.has_sample {
-            self.fetch_next_sample();
-        }
-    }
-
     /// Fetch the next sample byte via DMA
     ///
     /// This reads a byte from CPU memory and loads it into the sample buffer.
     fn fetch_next_sample(&mut self) {
+        if self.bytes_remaining == 0 || self.dma_request.is_some() {
+            return;
+        }
         if let Some(ref mut callback) = self.dma_callback {
             // Read from current sample address
             let byte = callback(self.sample_address);
@@ -308,24 +296,20 @@ impl DmcChannel {
 
         // No callback: ask the bus for the byte. It replies through
         // `supply_dma_byte` before the next timer clock.
-        if self.dma_request.is_none() {
-            self.dma_request = Some(self.sample_address);
-        }
+        self.dma_request = Some(self.sample_address);
     }
 
     /// Load a fetched byte into the sample buffer and advance the address.
+    ///
+    /// This is where the length counter moves — Mesen's `SetDmcReadBuffer`,
+    /// called when the byte is *read out of memory* rather than when it
+    /// finishes playing — so `$4015`'s bit 4 turns off while the last byte is
+    /// still on its way out of the register, and the IRQ flag goes up at that
+    /// same fetch.
     fn load_sample_byte(&mut self, byte: u8) {
         self.sample_buffer = byte;
         self.last_fetched_byte = byte;
         self.has_sample = true;
-
-        // A byte fetched while the register is dry starts playing at once;
-        // otherwise it waits in the buffer for the register to run out.
-        if self.bits_remaining == 0 {
-            self.shift_register = byte;
-            self.bits_remaining = 8;
-            self.has_sample = false;
-        }
 
         self.sample_address = self.sample_address.wrapping_add(1);
 
@@ -333,6 +317,25 @@ impl DmcChannel {
         if self.sample_address == 0x0000 {
             self.sample_address = 0x8000;
         }
+
+        if self.bytes_remaining > 0 {
+            self.bytes_remaining -= 1;
+        }
+
+        if self.bytes_remaining == 0 {
+            match self.play_mode {
+                // A looped sample never ends: the next pass starts here.
+                PlayMode::Loop => {
+                    self.sample_address = self.sample_start_address;
+                    self.bytes_remaining = self.sample_length;
+                }
+                PlayMode::Irq => self.irq_generated = true,
+                PlayMode::Normal => {}
+            }
+        }
+
+        // The byte waits in the buffer: the output unit takes it from there at
+        // the next byte boundary (Mesen's `Run` does the move, not the fetch).
     }
 
     /// Address of the byte the channel is waiting for, if any.
@@ -373,7 +376,8 @@ impl DmcChannel {
         self.bytes_remaining = 0;
         self.sample_buffer = 0;
         self.shift_register = 0;
-        self.bits_remaining = 0;
+        self.bits_remaining = 8;
+        self.silence_flag = true;
         self.reg_4012 = 0;
         self.reg_4013 = 0;
         self.last_fetched_byte = 0;
@@ -472,12 +476,16 @@ impl DmcChannel {
             // Disable: clear bytes remaining
             self.bytes_remaining = 0;
         } else {
-            // Enable: restart sample if bytes remaining is 0
+            // Enable: the sample restarts when the counter is empty, and the
+            // first byte is asked for right away — Mesen's `SetEnabled` and the
+            // transfer delay that follows it. A byte already in the buffer is
+            // not replaced (`StartDmcTransfer` refuses), which is what keeps a
+            // restart from queueing two bytes behind a sample that is still
+            // playing.
             if self.bytes_remaining == 0 {
                 self.sample_address = self.sample_start_address;
                 self.bytes_remaining = self.sample_length;
 
-                // If sample buffer is empty, trigger immediate DMA fetch
                 if !self.has_sample && self.bytes_remaining > 0 {
                     self.fetch_next_sample();
                 }
@@ -674,9 +682,11 @@ mod tests {
     fn test_output_level_increase() {
         let mut dmc = DmcChannel::new();
 
-        // Set up for testing output changes
+        // Set up for testing output changes: the register is playing a byte,
+        // which is what moves the level (a silent register holds it).
         dmc.output_level = 64;
         dmc.shift_register = 0xFF; // All 1s
+        dmc.silence_flag = false;
         dmc.has_sample = true;
         dmc.bits_remaining = 8;
 
@@ -689,9 +699,11 @@ mod tests {
     fn test_output_level_decrease() {
         let mut dmc = DmcChannel::new();
 
-        // Set up for testing output changes
+        // Set up for testing output changes: the register is playing a byte,
+        // which is what moves the level (a silent register holds it).
         dmc.output_level = 64;
         dmc.shift_register = 0x00; // All 0s
+        dmc.silence_flag = false;
         dmc.has_sample = true;
         dmc.bits_remaining = 8;
 
@@ -707,6 +719,7 @@ mod tests {
         // Set output at maximum
         dmc.output_level = 126;
         dmc.shift_register = 0xFF; // All 1s
+        dmc.silence_flag = false;
         dmc.has_sample = true;
         dmc.bits_remaining = 8;
 
@@ -722,6 +735,7 @@ mod tests {
         // Set output at minimum
         dmc.output_level = 0;
         dmc.shift_register = 0x00; // All 0s
+        dmc.silence_flag = false;
         dmc.has_sample = true;
         dmc.bits_remaining = 8;
 
@@ -796,15 +810,23 @@ mod tests {
         // Fetch sample
         dmc.fetch_next_sample();
 
-        // The fetched byte is what the channel will play: with the shift
-        // register dry it starts right away, otherwise it waits in the buffer.
+        // The fetched byte is what the channel will play, and it waits in the
+        // buffer: the output unit takes it from there at the next byte
+        // boundary, which is what lets `StartDmcTransfer` refuse to fetch while
+        // a byte is already waiting (Mesen's `_bufferEmpty`).
         assert_eq!(dmc.sample_buffer, 0xAB);
         assert_eq!(dmc.last_fetched_byte, 0xAB);
-        assert_eq!(
-            dmc.shift_register, 0xAB,
-            "a byte fetched while the register is dry plays immediately"
-        );
-        assert!(!dmc.has_sample, "and it is no longer waiting in the buffer");
+        assert!(dmc.has_sample, "the byte waits in the buffer");
+        assert_eq!(dmc.shift_register, 0, "and the register is untouched");
+        assert_eq!(dmc.bytes_remaining, 0, "the fetch is what moves the count");
+
+        // The output unit is what moves it into the register, at the byte
+        // boundary.
+        dmc.bits_remaining = 1;
+        dmc.clock_output_unit();
+        assert_eq!(dmc.shift_register, 0xAB);
+        assert_eq!(dmc.bits_remaining, 8);
+        assert!(!dmc.has_sample);
     }
 
     #[test]
@@ -850,6 +872,36 @@ mod tests {
         assert_eq!(dmc.sample_address, 0x8000);
     }
 
+    /// The status bit follows the *fetches*, not the playback: blargg's
+    /// `7-dmc_basics` check 19 reads `$4015` right after starting a one-byte
+    /// sample and expects it stopped, and `8-dmc_rates` reads it where a
+    /// 17-byte sample's own period puts the transition.
+    #[test]
+    fn test_the_status_bit_follows_the_fetches_not_the_playback() {
+        let mut dmc = DmcChannel::new();
+        dmc.set_dma_callback(|_| 0x00);
+        dmc.write_register(0x4010, 0x0F); // fastest rate, no loop
+        dmc.write_register(0x4013, 1); // 17 bytes
+        dmc.timer_period = 10; // one output clock every 10 cycles
+        dmc.timer_counter = 10;
+        dmc.write_register(0x4015, 0x10); // start
+
+        assert!(dmc.is_active(), "16 bytes are still to be fetched");
+
+        // Sixteen byte boundaries: the last one fetches the 17th byte, and the
+        // sample is over from there — while that byte is still playing.
+        for _ in 0..16 {
+            for _ in 0..8 * 10 {
+                dmc.clock_timer();
+            }
+        }
+        assert!(!dmc.is_active(), "the 17th fetch is what ends the sample");
+        assert!(
+            dmc.bits_remaining > 0,
+            "and the last byte is still on its way out of the register"
+        );
+    }
+
     #[test]
     fn test_timer_clocking() {
         let mut dmc = DmcChannel::new();
@@ -858,19 +910,23 @@ mod tests {
         dmc.timer_period = 10;
         dmc.timer_counter = 10;
 
-        // Set up output unit
+        // Set up output unit: a byte is playing, so the clocks move the level.
         dmc.output_level = 64;
         dmc.shift_register = 0xFF;
+        dmc.silence_flag = false;
         dmc.has_sample = true;
         dmc.bits_remaining = 8;
 
-        // Clock timer 10 times (no output unit clock yet, counter goes 10->0)
-        for _ in 0..10 {
+        // A period is `period` CPU cycles, not `period + 1`: blargg's
+        // `delay_dmc` counts 54*8 per byte at rate $F, and `8-dmc_rates` reads
+        // the status bit where a 17-byte sample's own period puts it. The
+        // counter runs 10 -> 0 and the transfer fires on the tenth clock.
+        for _ in 0..9 {
             dmc.clock_timer();
         }
         assert_eq!(dmc.output_level, 64); // No change yet
 
-        // 11th clock should trigger output unit (counter hits 0, reloads, clocks output)
+        // The tenth clock triggers the output unit and reloads the counter.
         dmc.clock_timer();
         assert_eq!(dmc.output_level, 66); // Increased by 2
     }

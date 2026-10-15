@@ -37,11 +37,17 @@ fn run_dmc(dmc: &mut DmcChannel, cycles: u32) {
     }
 }
 
-/// `$4015`'s DMC-active bit follows the sample, and the sample lasts as long as
-/// its bytes say: 17 bytes at rate 0 is 135 periods, not 128 or 136. That is
-/// the number `8-dmc_rates` measures.
+/// `$4015`'s DMC-active bit follows the *fetches*: a 17-byte sample reads as
+/// playing until its 17th byte has been fetched, which is 16 of the rate's byte
+/// periods in — eight bit periods before that byte stops playing.
+///
+/// `8-dmc_rates` reads the bit at 135 periods (and 90 cycles later), and that
+/// is this number plus the seven bit periods its `sync_dmc_fast` leaves of
+/// another byte on the register: the sync's byte is still playing when the test
+/// writes the new rate, so the new sample's first fetch waits for the sync
+/// byte's own boundary.
 #[test]
-fn test_dmc_plays_17_bytes_for_135_periods() {
+fn test_dmc_status_follows_the_fetches_not_the_playback() {
     let mut dmc = dmc_with_samples();
     dmc.write_register(0x4013, 1); // length = 17 bytes
     dmc.write_register(0x4010, 0x00); // rate 0: 428 cycles per output clock
@@ -60,8 +66,8 @@ fn test_dmc_plays_17_bytes_for_135_periods() {
 
     let periods = last_active as f64 / 428.0;
     assert!(
-        (134.0..136.0).contains(&periods),
-        "a 17-byte sample should play for 135 periods, got {periods}"
+        (127.0..129.0).contains(&periods),
+        "17 bytes are 16 byte periods of fetches, got {periods}"
     );
 }
 
@@ -70,19 +76,24 @@ fn test_dmc_plays_17_bytes_for_135_periods() {
 #[test]
 fn test_reading_4015_does_not_clear_the_dmc_irq() {
     let mut apu = Apu::new();
+    apu.dmc.set_dma_callback(|_| 0x00); // the bus answers the fetch
     apu.dmc.write_register(0x4010, 0x8F); // rate 15, IRQ enabled
     apu.dmc.write_register(0x4013, 0);
     apu.dmc.write_register(0x4015, 0x10);
 
-    // A one-byte sample ends quickly and raises the DMC's flag.
-    for _ in 0..2000 {
-        apu.tick();
-    }
-    assert_eq!(apu.read_register(0x4015) & 0x80, 0x80, "the flag is raised");
+    // The one byte is fetched right away, and the flag goes up with it — the
+    // fetch is what ends the sample, so this is already true before the byte
+    // has finished playing.
+    apu.tick();
     assert_eq!(
         apu.read_register(0x4015) & 0x80,
         0x80,
-        "and a read does not clear it"
+        "the last fetch raises the flag"
+    );
+    assert_eq!(
+        apu.read_register(0x4015) & 0x80,
+        0x80,
+        "and reading it does not clear it"
     );
 
     apu.write_register(0x4015, 0x10);

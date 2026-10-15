@@ -869,13 +869,15 @@ Baseline as of 2026-10-15, measured on this checkout:
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper) |
-| `apu_test` | 6/8 (the frame counter's phase is Mesen's now; the two DMC cases are left) |
-| AccuracyCoin | 155 ran, 85 passed, 0 skipped, 43 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
+| `apu_test` | 8/8 |
+| AccuracyCoin | 143 ran, 94 passed, 0 skipped, 34 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
 submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on;
-`cpu_interrupts_v2`'s three are down to one or two instructions each; and `apu_test`'s two are
-the DMC's one-byte buffer and its rate-0 sample window.
+`cpu_interrupts_v2`'s three are down to one or two instructions each. (`apu_test` was one of
+these until the DMC became Mesen's channel: the length counter moves at the fetch, the fetched
+byte waits in the buffer for the output unit's byte boundary, and the timer's period is the
+table's own value.)
 
 The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
 asserted in both directions: a failure outside it is a regression, and an entry that starts
@@ -1080,12 +1082,11 @@ backlog, so they are written down here to stop them being re-litigated:
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
 5. **The accuracy backlog the test ROMs now name**: the remaining cases in §13.1 —
-   `cpu_interrupts_v2`'s three, `apu_test`'s two DMC cases, `ppu_vbl_nmi`'s last one,
-   `mmc3_test_2`'s last one — plus MMC5's extended attributes, the five mappers §8 defers, and
-   the PAL dot ratio. The register writes and the `$2002`/`$2007` reads are on their cycles
-   and dots now; what is left mostly comes down to the same thing one level down: the
-   interrupt sequence's own cycle, the frame counter's phase, DMA, and a renderer that draws
-   dot by dot rather than a scanline at a time.
+   `cpu_interrupts_v2`'s three, `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s last one — plus MMC5's
+   extended attributes, the five mappers §8 defers, and the PAL dot ratio. The register writes,
+   the `$2002`/`$2007` reads, the DMA and the DMC are on their cycles and dots now; what is left
+   mostly comes down to the same thing one level down: the interrupt sequence's own cycle and
+   the frame counter's phase.
 
 The accuracy work has its own document — the alignment with Mesen2's NES core, the gaps that
 are left, the measurements each step produced and the experiments that were reverted:

@@ -125,15 +125,16 @@ fn blargg_apu() {
         // `$4017` restart is three cycles late (four on the other APU clock
         // phase) and the IRQ flag goes up for three cycles in a row — which is
         // what `4-jitter`, `5-len_timing` and `6-irq_flag_timing` measure.
-        // What is left is the DMC's one-byte buffer (`7-dmc_basics`, whose last
-        // check wants a byte fetched into an empty buffer to be there before
-        // the next fetch begins) and its rate-0 sample window
-        // (`8-dmc_rates`).
-        &["7-dmc_basics.nes", "8-dmc_rates.nes"],
+        // The DMC's own two are green as well: the length counter moves at the
+        // fetch, the fetched byte waits in the buffer until the output unit
+        // takes it, and the timer's period is the table's value — which is what
+        // `7-dmc_basics` check 19 wants of the one-byte buffer and what puts
+        // `8-dmc_rates`'s status transition inside every rate's window.
+        &[],
     );
 }
 
-/// AccuracyCoin's baseline: the suite runs, and 43 of its tests fail.
+/// AccuracyCoin's baseline: the suite runs, and 34 of its tests fail.
 ///
 /// The failure count is a ratchet in both directions — a *higher* one is a
 /// regression, a *lower* one means the baseline needs updating — and it doubles
@@ -145,7 +146,7 @@ fn blargg_apu() {
 #[test]
 fn accuracy_coin_matches_its_baseline() {
     /// Tests AccuracyCoin reports as failing on this checkout.
-    const BASELINE_FAILURES: usize = 43;
+    const BASELINE_FAILURES: usize = 34;
     /// The ROM runs its suite one test per frame; this is the floor that says
     /// it really got going (the counter itself is reset whenever the results
     /// screen redraws, so its final value is timing-dependent).

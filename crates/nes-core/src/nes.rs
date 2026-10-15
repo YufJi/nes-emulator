@@ -67,7 +67,12 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// the pipeline's shift registers and sprite fetch latches.
 /// 10: DMA moved into the memory-read path, so the stall count gave way to the
 /// pending-transfer state the machine now carries between accesses.
-const STATE_VERSION: u8 = 10;
+/// 11: the DMC became Mesen's: the length counter moves at the fetch, the
+/// fetched byte waits in the buffer until the output unit takes it, and the
+/// timer's period is the table's value rather than one cycle more. The field
+/// set is the same, but the fields no longer mean what a version-10 state wrote
+/// into them.
+const STATE_VERSION: u8 = 11;
 
 /// How far into a CPU cycle the chip performs a bus access: after the cycle's
 /// first two PPU dots.

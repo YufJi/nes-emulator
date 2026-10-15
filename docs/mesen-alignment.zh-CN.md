@@ -93,19 +93,20 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   标志从写入后第 29831 个周期起**连续三个周期**置位——两个数字都取自 blargg 自己在
   `roms/blargg/apu_test/source/` 里写下的实测 cycle，而不是猜的。`4-jitter`、`5-len_timing`、
   `6-irq_flag_timing` 转绿。
-- **DMC**：ROM 找出的读写语义 bug 已修——`$4015` 的 bit 4 此前**从未置位**（`write_4015` 没设
-  enable 标志），且读 `$4015` 会错误地清掉 DMC 的 IRQ 标志；`7-dmc_basics` 只剩最后一项检查。
-  Mesen 自己的模型现已抄录在 §7（`Core/NES/APU/DeltaModulationChannel.cpp`），而它与剩下两项检查
-  想要的东西**互相矛盾**，这才是必须先解决的事：
-  * Mesen 的状态位是 `_bytesRemaining > 0`，长度计数在 `SetDmcReadBuffer` 里移动——也就是字节被
-    **从内存读出**时，而不是它播完时。按这个模型，17 字节样本的状态翻转落在约 128 个周期。
-  * `8-dmc_rates` 的窗口要的是约 135 个周期（rate 0 下 57715–57805 周期），那是**最后一个字节播完**
-    的位置；本内核按播放计数的版本落在 135.3 个周期，晚了 110 个周期。
-  动手实现 Mesen 版本之前，先弄清硬件到底是哪一种——ROM 与源码在这里不一致，而
-  `7-dmc_basics` 第 19 项读的正是同两位、且两种模型给出的答案相反。
-  这两组数字里混进过第三个变量，现已排除：DMC 每个取到的字节曾在总线上让 CPU 停**两次**四周期
-  （见 §7 最后一行），于是一个字节花 440 个周期而不是 432，所有样本都被整体拉长。修掉之后，
-  这里该比的才只剩通道自己的计数落点——Mesen 那个"按取数计数"的模型值得重新试一遍。
+- ~~**DMC**~~ 已完成：现在是 Mesen 的形状（`Core/NES/APU/DeltaModulationChannel.cpp`），
+  `7-dmc_basics` 与 `8-dmc_rates` 都转绿（apu_test 6/8 → **8/8**）。原先"两项检查互相矛盾"
+  的判断是错的，矛盾出在总线侧的一个缺陷上（每个取到的字节让 CPU 停两次四周期，见 §7），
+  修掉之后三个要害都对上了：
+  * 长度计数在 `SetDmcReadBuffer` 里移动，也就是字节被**从内存读出**时，状态位是
+    `_bytesRemaining > 0`——所以状态在最后一个字节还在往外送的时候就翻，IRQ 标志也在那一次
+    取数时置位（`7-dmc_basics` 第 19 项正是要这个）。
+  * 取到的字节**留在缓冲里**，由输出单元在下一个字节边界取走（`Run` 里的搬移），而读取器就在
+    那个边界被喂——所以任何时刻缓冲里只有一个字节，`$4015` 的第二次写不会排在正在播放的样本
+    后面再压一个字节。
+  * 定时器的周期就是表里的值，而不是它加一。
+  * `8-dmc_rates` 的 135 个周期由上面三条加 ROM 自己的同步给出：`sync_dmc_fast` 结束时寄存器
+    上还留着它那个一字节样本，新样本的第一次取数要等这个字节的边界，于是"7 个 bit"（换成新速率
+    后是 7P）正好补上 128P 与 135P 之间的差。
 - ~~**DMC 的 PAL 周期表**~~ 已完成：`DmcChannel::set_region` 在 PAL 上选用 Mesen 的
   `_dmcPeriodLookupTablePal`（`398, 354, ... 50`），卡带载入时由主机把制式传下去。
 - 重采样是采样保持抽取；Mesen 用带限（blip）重采样。
@@ -133,9 +134,9 @@ CPU 侧最大的差距，DMC 的工作依赖它。
    sprite 的**求值**仍是逐行。
 2. ~~**DMA 移进 `MemoryRead`**（§2.3）~~ —— 已完成，但没有 ROM 移动：`4-irq_and_dma` 的轨迹
    逐字节未变，与 §7 的 L4a 结论一致。它买到的是 DMC 需要的那套形状。
-3. **APU 帧计数器相位，然后 DMC**（§2.4）。帧计数器已完成——`4-jitter`、`5-len_timing`、
-   `6-irq_flag_timing` 转绿。DMC 只剩两项检查（`7-dmc_basics` 的一字节缓冲、
-   `8-dmc_rates` 的 rate 0 窗口）。
+3. ~~**APU 帧计数器相位，然后 DMC**（§2.4）~~ —— 都已完成：帧计数器让 `4-jitter`、
+   `5-len_timing`、`6-irq_flag_timing` 转绿；DMC 改成 Mesen 的形状（计数在取数时移动、字节留在
+   缓冲、静音保持电平、周期取表值）后 `7-dmc_basics` 与 `8-dmc_rates` 也转绿，apu_test 8/8。
 4. ~~**§2.2 的寄存器细节**~~ —— 已完成：open bus 衰减（`ppu_open_bus` 转绿）、渲染期 `$2007` 的行为、
    调色板读的灰阶掩蔽、PAL 的强调位互换。OAM 衰减查明是 Mesen 默认关闭的设置，因此"不做"正是它的
    默认。唯一没对齐的是那九位颜色最终解出的 RGB（Mesen 的 512 项表，归它的视频滤镜所有）。
@@ -229,6 +230,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | PPU 寄存器细节（§2.2） | 直接读 Mesen 源码（`NesPpu.cpp`、`BaseNesPpu.cpp`）：绘制行上 `$2007` 同时推进粗 X 与 Y、六个 dot 内的第二次 `$2007` 被忽略、调色板读带灰阶掩蔽、PAL/Dendy 互换强调位；OAM 衰减查明默认关闭 | ROM 无移动（`blargg_ppu_tests` 覆盖 `$2007` 路径）；三个单元测试钉住行为 |
 | Mesen 的 DMC 源码 | 读了 `Core/NES/APU/DeltaModulationChannel.cpp`（manifest 给出路径后取回）：状态位 = `_bytesRemaining > 0`；计数与 IRQ 在 `SetDmcReadBuffer` 里移动，即取数时；寄存器在 `_bitsRemaining` 归零时接收缓冲字节，静音标志保持 DAC 电平；`SetEnabled` 按奇偶把传输延迟 2/3 个周期；PAL 有独立的周期表 | 按 Mesen 形状的实现试过并**撤回**：它把 `8-dmc_rates` 放到约 128 个周期，而该 ROM 的窗口要的是约 135，`7-dmc_basics` 退回第 2 项。树里保留按播放计数的版本（135.3 个周期） |
 | DMC 一次换两次取数 | 通道的请求锁存会一直保持到字节被送进去，而总线每个 APU 周期都从它那里重新武装待办——于是传输自己的四个周期又武装出第二次。每个字节两次四周期传输，CPU 对 `$4000` 的读永远看不到那个字节。现在总线**取走**请求（`Apu::take_dmc_dma_request`），也就是 Mesen 的一次性 halt 锁存 | **AccuracyCoin 重新能启动**：155 项测试、85 通过、43 失败（上表那些行记的是 46）；其余套件全无移动；帧耗时 1.72 → 1.70 ms；新增两个单元测试（锁存本身，以及一个按 AccuracyCoin 启动同步那样轮询 `$4000` 的手写 ROM） |
+| DMC 改成 Mesen 的形状 | 长度计数在**取数**时移动（而不是播放结束时），取到的字节**留在缓冲里**等输出单元在字节边界取走（于是一个时刻只有一个字节，`$4015` 再写一次也压不进去第二个），寄存器安静时保持 DAC 电平而不是在零上衰减，定时器周期就是表里的值而不是加一 | **`7-dmc_basics`、`8-dmc_rates` 转绿**（apu_test 6/8 → **8/8**）；AccuracyCoin 43 → **34 项失败**（共跑 143、94 通过）；其余套件无移动；帧耗时 1.70 → 1.74 ms；存档版本 10 → 11 |
 
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
@@ -293,8 +295,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
    ROM 失败（§7）。
 2. ~~**APU 帧计数器的相位**（§2.4）~~ —— 已完成：数值取自 blargg 源码里写下的实测 cycle
    （§7），`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿。
-3. **DMC**（§2.4）：先解释"Mesen 按取数计数（≈128 个周期）vs `8-dmc_rates` 的窗口（≈135）"这约
-   七个周期的分歧，再动计数/IRQ 的落点；`7-dmc_basics` 还差最后一项检查。
+3. ~~**DMC**（§2.4）~~ —— 已拍板并落地：那"约 7 个周期"不是模型分歧，而是总线侧双重收费造成的
+   假象（§7）；改成 Mesen 的形状后两项检查都过。
 
 ---
 
@@ -311,9 +313,9 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 **当前基线**（本轮最后一次实测，`cargo test -p nes-core --test rom_tests -- --nocapture`）：
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
-`sprite_overflow_tests` 5/5、`apu_test` **6/8**、`cpu_interrupts_v2` 2/5、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` 9/10、AccuracyCoin **43 项失败**（共跑 155 项、85 通过、0 跳过）。单元测试 587
-全绿；帧耗时约 1.70 ms（release、nestest 600 帧、中位数）。工作分支 `codex/mesen-alignment`。
+`sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` 2/5、`mmc3_test_2` **5/6**、
+`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过）。单元测试 588
+全绿；帧耗时约 1.74 ms（release、nestest 600 帧、中位数）。工作分支 `codex/mesen-alignment`。
 
 | # | 事项 | 状态 | 证据（提交 / 实测） | 下一步 |
 | --- | --- | --- | --- | --- |
@@ -321,7 +323,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P1 | 逐 dot PPU 渲染器（背景 + sprite），A12 变成真实取指 | 完成 | `5dc9e32`、`30b7267`：`4-scanline_timing` 转绿；`RenderTiming`、`ppu.render_v`、整行渲染器删除 | sprite 的**求值**仍是逐行（§2.1），需要时再做 |
 | P2 | DMA 移进 `MemoryRead`（`process_pending_dma`） | 完成 | `8ec693d`：`4-irq_and_dma` 轨迹逐字节未变 | 无（DMC 依赖它，已就位）——但 DMC 的双重取数也是从这里进来的，见 §7 最后一行 |
 | P3a | APU 帧计数器相位（`$4017` 迟 3/4 周期、IRQ 标志连续三周期） | 完成 | `a1fbaa3`：`4-jitter`、`5-len_timing`、`6-irq_flag_timing` 转绿 | 无 |
-| P3b | DMC | 进行中（已修掉一个真实 bug） | `f9984d4`（两个语义 bug 修好、两级缓冲）+ 两次撤回；双重收费已修（§7 最后一行），AccuracyCoin 重新能启动；`7-dmc_basics` 走到第 19 项、`8-dmc_rates` 仍在基线 | 那约 7 个周期的分歧已诊断为双重收费（每字节 440 vs 432 周期），因此现在可以重试 Mesen 的"按取数计数"模型（§2.4/§7） |
+| P3b | DMC | 完成 | `f9984d4`（两个语义 bug）、一次性取数锁存（§7）、以及 Mesen 的通道形状：计数在取数时移动、字节留在缓冲、静音标志、周期就是表里的值。**`7-dmc_basics`、`8-dmc_rates` 转绿**（apu_test 8/8）；AccuracyCoin 43 → 34 | ROM 侧没有欠账；相邻项是混音重采样（P7）与 DMC IRQ 对 CPU IRQ 线的影响 |
 | P4 | §2.2 寄存器细节：open bus 衰减、渲染期 `$2007`、灰阶掩蔽、PAL 强调位 | 完成 | `af2f375`、`8247f10`：`ppu_open_bus` 转绿；3 个单元测试 | 九位颜色解出的 RGB（Mesen 的 512 项表在它的视频滤镜里） |
 | P5 | PAL 16/5 + 分数 dot 累加器 + 按制式推导音频时钟 | 完成（比例部分） | `dbdf7cc`：PAL 一帧 33,247.5 个 CPU 周期 | PAL 专属 PPU/APU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）——需要 PAL ROM 才能验收 |
 | P6 | Mapper：NES 2.0 头部、总线冲突 | 部分完成 | `4e1c7a6`：冲突覆盖 2/3/7/11/66/71；5 个头部 + 2 个冲突用例 | 按 submapper 分派板级行为（Mesen 靠按 CRC 的 game database，不是头部字段）；之后是 64/158/185/115 |
