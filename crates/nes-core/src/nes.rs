@@ -241,6 +241,14 @@ struct NesBus {
     cpu_cycles: u64,
     /// CPU cycles the next OAM/DMC DMA transfer still has to steal
     dma_stall_cycles: u16,
+    /// Every dot's PPU bus address, for a test that has to see the fetch
+    /// sequence at the resolution it happens at.
+    ///
+    /// `cycle_trace`'s A12 tool samples once per instruction, which is too
+    /// coarse for a scanline counter's nine-dot filter; this is the same view
+    /// the chip has, and outside a test build it does not exist.
+    #[cfg(test)]
+    ppu_bus_log: Vec<(u16, u16, u16)>,
     /// The address the PPU is driving for the cartridge: Mesen's
     /// `_ppuBusAddress`, set by `SetBusAddress` on every access and *held*
     /// between them.
@@ -333,6 +341,8 @@ impl NesBus {
             dma_stall_cycles: 0,
             skip_odd_frame_dot: false,
             bus_address: 0,
+            #[cfg(test)]
+            ppu_bus_log: Vec::new(),
             frame_buffer: FrameBuffer::new(),
             bg_renderer: BackgroundRenderer::new(),
             sprite_evaluator: SpriteEvaluator::new(),
@@ -1138,6 +1148,19 @@ impl NesBus {
         self.end_cpu_cycle();
     }
 
+    /// Every dot's `(scanline, dot, bus address)` since the last
+    /// [`NesBus::clear_ppu_bus_log`]. Test-only.
+    #[cfg(test)]
+    pub(crate) fn ppu_bus_log(&self) -> &[(u16, u16, u16)] {
+        &self.ppu_bus_log
+    }
+
+    /// Test-only companion to [`NesBus::ppu_bus_log`].
+    #[cfg(test)]
+    pub(crate) fn clear_ppu_bus_log(&mut self) {
+        self.ppu_bus_log.clear();
+    }
+
     /// The tail of a CPU cycle: the APU tick and the cycle counter.
     ///
     /// The interrupt lines are *not* sampled here any more. They belong to the
@@ -1252,6 +1275,9 @@ impl NesBus {
         self.ppu_step();
         self.drive_ppu_bus();
         self.feed_ppu_bus();
+        #[cfg(test)]
+        self.ppu_bus_log
+            .push((self.ppu.scanline, self.ppu.cycle, self.bus_address));
     }
 }
 
@@ -2249,6 +2275,72 @@ mod tests {
             "the NMI was taken at the end of the instruction"
         );
         assert!(!nes.cpu.nmi_asserted(), "and the latch is spent");
+    }
+
+    /// How many times a scanline counter clocks in a frame, and where.
+    ///
+    /// The MMC3 suite measures two things about the same dot stream: `2-details`
+    /// wants exactly 241 clockings per frame, and `4-scanline_timing` wants the
+    /// last visible line's rise where the hardware puts it. This applies
+    /// Mesen's rule to a real ROM's frame dot by dot - a rise counts when the
+    /// address has been low for at least nine dots (three CPU cycles), and
+    /// *every* rise ends the run - and prints where they land. The ROM turns
+    /// rendering on for a window inside the frame, so the frames it measures
+    /// are the ones with clockings in them.
+    ///
+    /// Skips when the ROM is not on the checkout.
+    #[test]
+    fn test_a12_clockings_per_frame() {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.pop();
+        path.push("roms/blargg/mmc3_test_2/rom_singles/4-scanline_timing.nes");
+        let Ok(data) = std::fs::read(&path) else {
+            println!("skipped: no {}", path.display());
+            return;
+        };
+
+        let mut nes = Nes::new();
+        nes.load_rom(&data).expect("load the ROM");
+
+        let mut busiest: Vec<(u16, u16)> = Vec::new();
+        let mut busiest_frame = 0u64;
+        for _ in 0..64 {
+            nes.bus.clear_ppu_bus_log();
+            nes.frame();
+            let log = nes.bus.ppu_bus_log().to_vec();
+
+            let mut clockings: Vec<(u16, u16)> = Vec::new();
+            let mut low_run = 0u32;
+            for &(scanline, dot, addr) in &log {
+                if addr & 0x1000 == 0 {
+                    low_run += 1;
+                    continue;
+                }
+                if low_run >= 9 {
+                    clockings.push((scanline, dot));
+                }
+                low_run = 0;
+            }
+
+            if clockings.len() > busiest.len() {
+                busiest_frame = nes.frame_number() - 1;
+                busiest = clockings;
+            }
+        }
+
+        println!(
+            "busiest frame {busiest_frame}: {} clockings, first {:?}, last {:?}",
+            busiest.len(),
+            &busiest[..busiest.len().min(6)],
+            busiest.last()
+        );
+        // The number this prints is what is being worked on: with `$2000 = $10`
+        // the core clocks twice a line (481 in the busiest frame) where the
+        // reference clocks once (241). The two families of positions it prints
+        // are the boundary run and the first pattern fetch after the sprite
+        // phase's long low run, which is where the extra one comes from.
+        assert!(!busiest.is_empty(), "a rendered frame should clock at all");
     }
 
     /// The NMI latch is the CPU's, and only a fresh rising edge of the line
