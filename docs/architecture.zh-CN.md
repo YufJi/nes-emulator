@@ -735,14 +735,14 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 572 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 598 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
-| `tests/ppu.rs` | 82 | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI、卡带命名表 |
-| `tests/apu.rs` | 64 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
+| `tests/ppu.rs` | 55 | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI、卡带命名表 |
+| `tests/apu.rs` | 68 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 68 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
 | `tests/rom_tests.rs` | 14 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
-| `crates/nes-uniffi` 单元测试 | 8 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
+| `crates/nes-uniffi` 单元测试 | 7 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
 
 ### 13.1 测试 ROM：精度基线
@@ -782,7 +782,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 2/5（`3`/`5` 只差一两个 cycle；`4` 的偏移与帧计数器相位一致） |
+| `cpu_interrupts_v2` | 5/5 |
 | `ppu_vbl_nmi` | 9/10（只剩奇数帧跳点：它需要"时钟在哪一个 dot 被跳过"） |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
@@ -795,9 +795,10 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | AccuracyCoin | 共跑 143 项、94 通过、0 跳过、34 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
-`ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"；`cpu_interrupts_v2` 那三项每一项都只差一到
-两条指令。（`apu_test` 原先也在这张单子上，直到 DMC 改成 Mesen 的通道：长度计数在取数时移动、
-取到的字节留在缓冲里等输出单元的字节边界、定时器周期取表里的值。）
+`ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"。（`cpu_interrupts_v2` 原先也在这张单子上，
+直到 APU 挪到 CPU 周期的开头：最后三张表读的都是那一个 cycle。`apu_test` 同样如此，直到 DMC
+改成 Mesen 的通道：长度计数在取数时移动、取到的字节留在缓冲里等输出单元的字节边界、定时器周期
+取表里的值。）
 
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。
@@ -879,11 +880,14 @@ flowchart LR
   （两次丢弃读、三次压栈、两次取向量）就是普通的访问，由 CPU 像其它指令一样亲自驱动；向量在压
   状态字节那一刻选定，因此在此之前到达的 NMI 会接管它，而已经压入的帧仍属 IRQ（B 位为 0）。
   对 `$2000-$401F` 的写入落在它自己的 cycle 上（store 是最后一个 cycle，读改写的丢弃写提前一个
-  cycle），并且落在该 cycle 内的 `ACCESS_DOTS` 处——PPU 的逐 dot 视图与同一 cycle 末尾的 APU
-  tick 都能看到它。带副作用的读同样如此，`$4015` 现在也由 CPU 亲自读：blargg 的 `apu_test` 用它
-  做同步，这次摆放是"把误差挪了个地方"而不是消除它（见计划的 §4.3），因此在帧计数器自身的相位
-  正确之前，`5-len_timing` 回到了失败清单里。`cpu_interrupts_v2` 剩下的每项还差一两个 cycle，
-  而 `4-irq_and_dma` 依旧跟着帧计数器的相位走。
+  cycle），并且落在该 cycle 内的 `ACCESS_DOTS` 处——PPU 的逐 dot 视图能看到它。而 **APU 是在
+  cycle 开头打点的**，早于那次访问（Mesen 的 `ProcessCpuClock`，由 `StartCpuCycle`
+  调用），所以 `$4017` 重启要被**下一个** cycle 的 tick 看到：帧 IRQ 标志落在写入 cycle 之后第
+  29831 个周期，而中断线的每一次采样都比"tick 排在访问之后"的情况晚一个周期。就是这一个周期被
+  `cpu_interrupts_v2` 最后三张表读了去——该套件五个 ROM 现在全部通过（`3-nmi_and_irq`、
+  `4-irq_and_dma`、`5-branch_delays_irq` 都在内），而把标志钉在 `$4017` 写入上的三个套件保持
+  全绿，因为标志是跟着 APU 一起挪的。带副作用的读同样如此，`$4015` 现在也由 CPU 亲自读：
+  blargg 的 `apu_test` 用它做同步。
 - **重采样**：内核把混音器在 CPU 速率上的输出重采样到宿主速率时用的是带限滤波，即 blargg
   `blip_buf` 的形状（见 [`mesen-alignment.zh-CN.md`](./mesen-alignment.zh-CN.md) §2.4），
   因此 1.79 MHz 源上的混叠是被滤掉的，而不是折进可听频段。Mesen 自己的链路多一级（blip 跑
@@ -958,10 +962,10 @@ flowchart LR
 1. **存档加指纹**（低成本、解决跨设备同步的正确性问题）。
 3. **WASM 画面零拷贝**（前端性能，收益可测）。
 4. **原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。
-5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`cpu_interrupts_v2` 的 3 项、
-   `ppu_vbl_nmi` 的最后 1 项、`mmc3_test_2` 的 1 项——外加 MMC5 的扩展属性、§8 里说明延后的
-   5 个 Mapper、PAL 的 dot 比例。寄存器写入、`$2002`/`$2007` 读、DMA 与 DMC 现在都落在各自
-   cycle 的 dot 上；剩下的多半是同一件事再往下一层：中断向量过程自身的 cycle 与帧计数器相位。
+5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`ppu_vbl_nmi` 的最后 1 项、
+   `mmc3_test_2` 的 1 项——外加 MMC5 的扩展属性、§8 里说明延后的 5 个 Mapper、PAL 的 dot
+   比例。寄存器写入、`$2002`/`$2007` 读、DMA 与 DMC 现在都落在各自 cycle 的 dot 上；剩下的
+   基本都在更下一层：奇数帧被跳掉的那个 dot、sprite 求值时的 OAM 读模式、以及仍缺的板卡。
 
 精度工作另有一份专门文档——与 Mesen2 NES 内核的对齐现状、尚存的差距、每一步的实测数据，以及
 被撤回的实验：[`mesen-alignment.zh-CN.md`](./mesen-alignment.zh-CN.md)。下次动手时从它开始；

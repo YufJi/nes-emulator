@@ -1311,22 +1311,31 @@ impl NesBus {
         self.ppu.frame != frame_before
     }
 
-    /// The tail of a CPU cycle: the APU tick and the cycle counter.
+    /// The tail of a CPU cycle: the cycle counter.
     ///
-    /// The interrupt lines are *not* sampled here any more. They belong to the
-    /// CPU (`Cpu::end_cycle`), which is where Mesen keeps them, and the CPU is
-    /// in the loop for every cycle it drives.
+    /// Neither the APU nor the interrupt lines are here any more. The APU runs
+    /// at the *start* of the cycle, with the other chips (Mesen's
+    /// `ProcessCpuClock`, called from `StartCpuCycle`), and the lines are
+    /// sampled at the end of it by the CPU (`Cpu::end_cycle`, Mesen's
+    /// `EndCpuCycle`).
     fn finish_cpu_cycle(&mut self) {
-        self.tick_apu_cycle();
         self.cpu_cycles += 1;
     }
 
     /// The first part of a CPU cycle: the PPU dots up to the point in it where
-    /// the chip performs its bus access.
+    /// the chip performs its bus access, then the APU's clock for the cycle.
     ///
     /// A whole dot ratio (both regions today) simply steps [`ACCESS_DOTS`]
     /// dots; a ratio that is not whole runs the PPU to the master-clock instant
-    /// the access belongs at. This is Mesen's `StartCpuCycle`.
+    /// the access belongs at. This is Mesen's `StartCpuCycle`, and the APU tick
+    /// sits at the end of it because that is where Mesen's `ProcessCpuClock` is
+    /// (the cartridges' per-cycle hooks belong there too and are still missing,
+    /// `docs/mesen-alignment.md` §2.5): the chip clocks the APU *before* the
+    /// cycle's own access, so a `$4017` write is seen by the *next* cycle's tick
+    /// and the frame counter's steps land one cycle later relative to the access
+    /// than they would if the tick trailed it. blargg's `cpu_interrupts_v2`
+    /// measures that cycle — with the tick behind the access, all three of its
+    /// remaining tables failed.
     fn begin_cpu_cycle(&mut self) {
         if self.has_whole_dot_ratio() {
             for _ in 0..ACCESS_DOTS {
@@ -1336,11 +1345,12 @@ impl NesBus {
             let mut clock = self.ppu_clock_at(self.cpu_cycles);
             self.run_ppu_to(&mut clock, self.access_clock(self.cpu_cycles));
         }
+        self.tick_apu_cycle();
     }
 
     /// The rest of the cycle: the remaining dots, then the bookkeeping the chip
-    /// does at the end of one — the APU tick, the interrupt-line samples and the
-    /// cycle counter. Mesen's `EndCpuCycle`.
+    /// does at the end of one. Mesen's `EndCpuCycle`, which runs the PPU's dots
+    /// and leaves the interrupt-line samples to the CPU.
     ///
     /// Every cycle the machine advances goes through here, the cycles an
     /// interrupt sequence takes and the ones DMA steals included.
@@ -2527,6 +2537,41 @@ mod tests {
             2,
             "the same frame, one dot longer, without the rendering bit"
         );
+    }
+
+    /// The APU clocks at the *start* of a CPU cycle, before that cycle's own
+    /// access (Mesen's `ProcessCpuClock`, called from `StartCpuCycle`), not at
+    /// the end of one.
+    ///
+    /// The difference is one cycle, and it is the cycle blargg's
+    /// `cpu_interrupts_v2` reads off the interrupt landing spots of
+    /// `5-branch_delays_irq`: a `$4017` restart is first seen by the *next*
+    /// cycle's tick, so the frame IRQ flag comes up 29831 cycles after the
+    /// write cycle. Clock the APU after the access instead and it comes up
+    /// 29830 — every sample of the interrupt line is then one cycle early, and
+    /// all three of that suite's remaining tables fail.
+    #[test]
+    fn test_the_apu_clocks_before_the_cycles_access() {
+        let mut bus = NesBus::new();
+
+        // One write cycle, the APU's tick for it already behind it.
+        bus.write_cycle(0x4017, 0x00);
+        assert!(
+            !bus.apu.frame_counter_irq,
+            "a restart cannot raise the flag in its own cycle"
+        );
+
+        // The write's first tick is the next cycle's, so the flag is one tick
+        // later than the hold plus the sequencer's 29828th step on their own.
+        for cycle in 1..=29830u32 {
+            bus.advance_one_cpu_cycle();
+            assert!(
+                !bus.apu.frame_counter_irq,
+                "the flag must not be up {cycle} cycles after the write"
+            );
+        }
+        bus.advance_one_cpu_cycle();
+        assert!(bus.apu.frame_counter_irq, "and it is up on the 29831st");
     }
 
     /// A read-modify-write's two writes are two cycles: the discarded write of

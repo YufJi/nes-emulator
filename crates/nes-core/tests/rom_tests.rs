@@ -39,19 +39,17 @@ fn blargg_branch_timing() {
 
 #[test]
 fn blargg_cpu_interrupts() {
+    // All five are green. The last three were one or two cycles each, and what
+    // moved them was where the APU sits inside the CPU cycle: it clocks at the
+    // *start* of one (Mesen's `ProcessCpuClock`), before the cycle's own access,
+    // so a `$4017` restart's steps — the frame IRQ among them — land one cycle
+    // after the access sees them rather than one before. The tables in
+    // `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` are all read
+    // off that one cycle.
     common::check_blargg_directory(
         "blargg/cpu_interrupts_v2/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // The CPU now drives its own cycles the way Mesen's does, which took
-        // `2-nmi_and_brk` green: BRK's vector is chosen at the status push, so
-        // an NMI asserted before it takes the vector over. What is left of the
-        // other three is one or two cycles each, and `4-irq_and_dma`'s offset
-        // still tracks the frame counter's phase (§4.3).
-        &[
-            "3-nmi_and_irq.nes",
-            "4-irq_and_dma.nes",
-            "5-branch_delays_irq.nes",
-        ],
+        &[],
     );
 }
 

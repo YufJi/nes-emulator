@@ -25,7 +25,8 @@
 | 时钟 | 单一主时钟；NTSC 用 `cpuDivider` 12 / `ppuDivider` 4 推导两颗芯片 | `Region::cpu_divider()`/`ppu_divider()`（12/4，即真实晶振），单一主时钟，`NesBus::run_ppu_to` 推进到目标 | `test_clock_dividers_agree_with_the_frame_geometry`、`test_the_master_clock_path_places_the_same_dots` |
 | CPU 执行 | `MemoryRead`/`MemoryWrite` **本身就是周期**（围绕访问做 `StartCpuCycle`/`EndCpuCycle`） | `Bus::read_cycle`/`write_cycle` 即周期；`NesBus::begin_cpu_cycle`/`end_cpu_cycle` 围绕访问推进 PPU/APU | `instr_timing` 2/2、`branch_timing` 3/3、`test_every_opcode_executes` |
 | 操作数取指与丢弃读 | `FetchOperand` 把 dummy 逐条写出（零页索引、绝对/间接索引、隐含与累加器的那次读） | `Cpu::fetch_operand` 加上 `AddressingMode::AbsoluteXWrite`/`AbsoluteYWrite`/`IndirectYWrite`、`RTS` 两次、`RTI`/`PLA`/`PLP` 各一次 | 同上 |
-| 中断时序 | 每周期采样；判决读上一周期的采样（`_prevRunIrq`/`_prevNeedNmi`） | `Cpu::end_cycle` 保持同样的滞后；`execute_instruction` 在指令结束后判决 | `cpu_interrupts_v2/2-nmi_and_brk` 转绿、`ppu_vbl_nmi` 9/10 |
+| 中断时序 | 每周期采样；判决读上一周期的采样（`_prevRunIrq`/`_prevNeedNmi`） | `Cpu::end_cycle` 保持同样的滞后；`execute_instruction` 在指令结束后判决 | `cpu_interrupts_v2` 5/5、`ppu_vbl_nmi` 9/10 |
+| 芯片落在周期里的位置 | `StartCpuCycle` 先跑到访问点的 PPU dot，再跑 `ProcessCpuClock`（APU 与卡带）；`EndCpuCycle` 跑剩下的 dot，由 CPU 采样中断线 | `NesBus::begin_cpu_cycle` 跑完 dot 后、在访问之前给 APU 打点；`end_cpu_cycle` 跑剩下的 dot | `test_the_apu_clocks_before_the_cycles_access`，以及 `cpu_interrupts_v2` 5/5——它最后三张表读的就是这一个周期 |
 | 向量选择 | 在压状态字节那一刻选定；此前到达的 NMI 接管（`IRQ()`、`BRK()`） | `Cpu::take_interrupt`/`Cpu::brk` 相同，含 BRK 的 `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`、`test_nmi_takes_brks_vector_over` |
 | A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
 | 逐 dot 渲染 | `ProcessScanlineImpl`：`cycle % 8 == 1/3/5/7` 取指，每 dot `ShiftTileRegisters` 与 `DrawPixel`，用同一个 `_videoRamAddr` | `PixelPipeline`：同样的取指/装载/移位/绘制节奏，滚动取 `v`/`t`/`x`；sprite 阶段的取指、逐 dot sprite 像素与 sprite 0 命中都在这里 | `4-scanline_timing`、`sprite_hit` 11/11，且 `nestest` 的帧与整行渲染器逐字节相同 |
@@ -97,6 +98,12 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   标志从写入后第 29831 个周期起**连续三个周期**置位——两个数字都取自 blargg 自己在
   `roms/blargg/apu_test/source/` 里写下的实测 cycle，而不是猜的。`4-jitter`、`5-len_timing`、
   `6-irq_flag_timing` 转绿。
+- ~~**APU 落在 CPU 周期的哪一端**~~ 已完成：芯片在 CPU 周期的**开头**给 APU 打点，早于该周期
+  自身的访问（Mesen 的 `ProcessCpuClock`，由 `StartCpuCycle` 调用），而本内核原先在周期的**末
+  尾**打点。就是这一个周期卡着 `cpu_interrupts_v2`：`$4017` 重启要被**下一个**周期的 tick 看
+  到，于是帧 IRQ 标志落在写入**周期**之后第 29831 个周期（而不是 29830），中断线的每一次采样
+  都因此晚一个周期。该套件剩下的三张表全部是从各自的中断落点上读出这个周期的，把 APU 挪到周期
+  开头之后三张一起转绿（§7）。
 - ~~**DMC**~~ 已完成：现在是 Mesen 的形状（`Core/NES/APU/DeltaModulationChannel.cpp`），
   `7-dmc_basics` 与 `8-dmc_rates` 都转绿（apu_test 6/8 → **8/8**）。原先"两项检查互相矛盾"
   的判断是错的，矛盾出在总线侧的一个缺陷上（每个取到的字节让 CPU 停两次四周期，见 §7），
@@ -146,6 +153,8 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 3. ~~**APU 帧计数器相位，然后 DMC**（§2.4）~~ —— 都已完成：帧计数器让 `4-jitter`、
    `5-len_timing`、`6-irq_flag_timing` 转绿；DMC 改成 Mesen 的形状（计数在取数时移动、字节留在
    缓冲、静音保持电平、周期取表值）后 `7-dmc_basics` 与 `8-dmc_rates` 也转绿，apu_test 8/8。
+   这一项的第三块是 APU 落在周期里的**哪一端**（§2.4）：挪到开头而不是末尾，才是
+   `cpu_interrupts_v2` 最后三项转绿的那个周期。
 4. ~~**§2.2 的寄存器细节**~~ —— 已完成：open bus 衰减（`ppu_open_bus` 转绿）、渲染期 `$2007` 的行为、
    调色板读的灰阶掩蔽、PAL 的强调位互换。OAM 衰减查明是 Mesen 默认关闭的设置，因此"不做"正是它的
    默认。那九位颜色解出的 RGB 也已对齐——Mesen 的 512 项表、84% 截断与黑列例外（§2.2/§7）。
@@ -242,6 +251,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | DMC 一次换两次取数 | 通道的请求锁存会一直保持到字节被送进去，而总线每个 APU 周期都从它那里重新武装待办——于是传输自己的四个周期又武装出第二次。每个字节两次四周期传输，CPU 对 `$4000` 的读永远看不到那个字节。现在总线**取走**请求（`Apu::take_dmc_dma_request`），也就是 Mesen 的一次性 halt 锁存 | **AccuracyCoin 重新能启动**：155 项测试、85 通过、43 失败（上表那些行记的是 46）；其余套件全无移动；帧耗时 1.72 → 1.70 ms；新增两个单元测试（锁存本身，以及一个按 AccuracyCoin 启动同步那样轮询 `$4000` 的手写 ROM） |
 | DMC 改成 Mesen 的形状 | 长度计数在**取数**时移动（而不是播放结束时），取到的字节**留在缓冲里**等输出单元在字节边界取走（于是一个时刻只有一个字节，`$4015` 再写一次也压不进去第二个），寄存器安静时保持 DAC 电平而不是在零上衰减，定时器周期就是表里的值而不是加一 | **`7-dmc_basics`、`8-dmc_rates` 转绿**（apu_test 6/8 → **8/8**）；AccuracyCoin 43 → **34 项失败**（共跑 143、94 通过）；其余套件无移动；帧耗时 1.70 → 1.74 ms；存档版本 10 → 11 |
 | 带限重采样（§2.4） | 音频链路换成 blip 的形状：电平变化算阶跃，32 相位 × 16 抽头并在相位间线性插值，输出用积分器累加、再用一阶高通保持交流耦合（Mesen 的 `NesSoundMixer` + `blip_buf`）；直接重采样到宿主速率，没有 Mesen 那个 96 kHz 中间级 | ROM 基线零移动（没有 ROM 听声音）；单元测试 592 → 597，含这一项的要害——30 kHz 输入折成的 18 kHz 在采样保持下是满强度，带限之后至少低 20 dB；帧耗时 1.69 → 1.82 ms；存档版本 11 → 12 |
+| APU 挪到 CPU 周期的开头 | 芯片在该周期自身的访问**之前**给 APU 打点（Mesen 的 `ProcessCpuClock`，由 `StartCpuCycle` 调用），而不是在它之后。先按 ROM 量：tick 落在访问之后时，`5-branch_delays_irq` 第 0 行中断的是 `begin` 末尾那条 `RTS`，比标志置位晚两个周期，而 readme 要的是它后面那条 `NOP`、即晚四个周期——那张表里对不上的四行差的是同一个周期 | **`cpu_interrupts_v2` 2/5 → 5/5**：`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` 全部通过。其余零移动——`apu_test` 8/8、`ppu_vbl_nmi` 9/10、`mmc3_test_2` 5/6、AccuracyCoin 的 34 项失败都不变，而把标志钉在 `$4017` 写入上的三个套件保持全绿，因为标志是**跟着 APU 一起**挪的。单元测试 597 → 598（新增一条钉住 APU 在周期里的位置）；帧耗时 1.82 → 1.86 ms（五次中位，抖动 ±0.06） |
 
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
@@ -307,18 +317,20 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
   但 `1-cli_latency` 的第 4 项（"exactly one instruction after CLI should execute before IRQ is
   taken"）与 `4-scanline_timing` 的第 3 项变红。已撤回：这两项把普通 IRQ 的判决钉在倒数第二个
   周期上，那也是 Mesen 的规则。
+  （这也是三张表最终要的答案：它们要挪的是 **APU**，不是判决。）
 - **`cpu_interrupts_v2`：把 `$4017` 写入的奇偶对调**。实测：`5-branch_delays_irq` 逐字节不变
   （所以它的缺陷不是写入的 hold），`3-nmi_and_irq` 的输出有变化，AccuracyCoin 从 34 掉到 36。
   已撤回。
 
-  **剩下的是什么**。三个失败项其实是同一个 ±1 周期的问题：帧计数器的标志、IRQ 的判决、以及指令流
-  三者的相对位置。有三组测试在约束它，而我们试过的任何一个"挪一个周期"的旋钮都满足不了全部三组：
-  `4-jitter`、`5-len_timing`、`6-irq_flag_timing` 把标志钉在 `$4017` 写入上；`1-cli_latency` 与
-  `4-scanline_timing` 把判决钉在倒数第二个周期上；而三张 `cpu_interrupts_v2` 的表要的是这两者
-  相对代码各挪一个周期（`4-irq_and_dma` 自己的表也是 readme 的整体错开一行：我们开头是
-  `0 +0 / 0 +1 / 1 +2`，readme 是 `0 +0 / 1 +1 / 1 +2`）。下一次该做的是**量链条**——把
-  `5-branch_delays_irq` 里 `begin` 的那些延时按指令逐条算出来，和 readme 的表反推出的周期对
-  （它的 `test_jmp` 第 0 行要求标志落在 RTS 的最后一个周期，即写入后 29831）——而不是继续挪旋钮。
+  **最后是怎么结的**。三个失败项就是同一个 ±1 周期的问题，而答案既不在标志、也不在判决、更不在
+  写入的奇偶，而在 **APU** 落在 CPU 周期的哪一端：中断线的每一次采样都早了一个周期，因为 APU 的
+  tick 排在周期自身的访问之后，而不是之前。先量链条正是找到它的原因——逐周期 trace 显示，
+  `5-branch_delays_irq` 里 `begin` 的那个标志落在 `RTS` 的**第 5 个**周期（写入后 29830），而
+  readme 第 0 行要的是第 6 个（写入后 29831，也就是 RTS 的最后一个周期）。把 APU 挪到周期开头
+  （Mesen 的 `ProcessCpuClock`）是一处改动，没有任何旋钮：三张表一起转绿，而把标志钉在
+  `$4017` 写入上的那三个套件（`4-jitter`、`5-len_timing`、`6-irq_flag_timing`）保持全绿，因为
+  标志是**跟着** APU 一起挪的。下一次再追 ±1 周期的教训：当三组测试互不相容时，去找那颗不在
+  Mesen 位置的芯片，而不是找一个可以加的数。
 
 ## 8. 仍需拍板的决策
 
@@ -348,9 +360,10 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 **当前基线**（本轮最后一次实测，`cargo test -p nes-core --test rom_tests -- --nocapture`）：
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
-`sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` 2/5、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过）。单元测试 597
-全绿；帧耗时约 1.82 ms（release、nestest 600 帧、中位数）。工作分支 `codex/mesen-alignment`。
+`sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
+`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过——与 APU 挪位之前
+一模一样的 34 项）。单元测试 598 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+抖动 ±0.06）。工作分支 `codex/mesen-alignment`。
 
 | # | 事项 | 状态 | 证据（提交 / 实测） | 下一步 |
 | --- | --- | --- | --- | --- |
@@ -363,7 +376,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P5 | PAL 16/5 + 分数 dot 累加器 + 按制式推导音频时钟 | 完成（比例部分） | `dbdf7cc`：PAL 一帧 33,247.5 个 CPU 周期 | PAL 专属 PPU/APU 规则（`_nmiScanline`、`_vblankEnd`、PAL 的 OAM 刷新）——需要 PAL ROM 才能验收 |
 | P6 | Mapper：NES 2.0 头部、总线冲突 | 部分完成 | `4e1c7a6`：冲突覆盖 2/3/7/11/66/71；5 个头部 + 2 个冲突用例 | 按 submapper 分派板级行为（Mesen 靠按 CRC 的 game database，不是头部字段）；之后是 64/158/185/115 |
 | P7 | 音频重采样 | 完成 | `e33ebeb`，见 §7 的行：带限重采样器；四个单元测试盯滤波器本身（阶跃幅度、交流耦合、带内幅度、带外折返）加一个整机静音测试 | 本地 ROM 侧没有欠账；与 Mesen 两级链路剩下的差异只能靠参考录音判断 |
-| P3c | `cpu_interrupts_v2` 剩下的三张表 | **进行中** | 两个"挪一个周期"的实验都已实测并撤回（标志晚一周期；IRQ 判决晚一周期）：后者把 `5-branch_delays_irq` 前三张表逐行重现，代价是 `1-cli_latency` 与 `4-scanline_timing` 变红。两个实验都在 §7。 | 先把 `5-branch_delays_irq` 里 `begin` 的链条按指令量出来，和它 readme 的表反推出的周期对（第 0 行要求标志落在 RTS 的最后一个周期＝写入后 29831），再去动旋钮 |
+| P3c | `cpu_interrupts_v2` 剩下的三张表 | **完成** | 链条按周期量了一遍（§7），缺的那一个周期是 APU 在周期里的位置：芯片在 CPU 周期的**开头**给 APU 打点（Mesen 的 `ProcessCpuClock`），而不是末尾。**`cpu_interrupts_v2` 2/5 → 5/5**——`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` 全部通过，而把标志钉在 `$4017` 写入上的那些一条没动。见 §2.4；两个撤回的旋钮实验在 §7 里都得到了解释 | 无；相邻项是 sprite 的**求值**仍是逐行（P1） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 
 **取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：

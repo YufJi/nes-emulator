@@ -29,7 +29,8 @@ Two rules, in order:
 | Clock | One master clock; `cpuDivider` 12 / `ppuDivider` 4 on NTSC feed both chips | `Region::cpu_divider()`/`ppu_divider()` (12/4, the real crystal), one master clock, `NesBus::run_ppu_to` runs the PPU to a target | `test_clock_dividers_agree_with_the_frame_geometry`, `test_the_master_clock_path_places_the_same_dots` |
 | CPU execution | `MemoryRead`/`MemoryWrite` *are* the cycle (`StartCpuCycle`/`EndCpuCycle` around the access) | `Bus::read_cycle`/`write_cycle` are the cycle; `NesBus::begin_cpu_cycle`/`end_cpu_cycle` advance the PPU and APU around the access | `instr_timing` 2/2, `branch_timing` 3/3, `test_every_opcode_executes` |
 | Operand fetches and discarded reads | `FetchOperand` spells out the dummies (zero-page indexed, indexed absolute/indirect, the implied/accumulator read) | `Cpu::fetch_operand` plus `AddressingMode::AbsoluteXWrite`/`AbsoluteYWrite`/`IndirectYWrite`, `RTS`'s two dummies, `RTI`/`PLA`/`PLP`'s one each | the same suites |
-| Interrupt timing | Lines sampled every cycle; the decision reads the previous cycle's samples (`_prevRunIrq`/`_prevNeedNmi`) | `Cpu::end_cycle` keeps the same lag; `execute_instruction` decides after the instruction | `cpu_interrupts_v2/2-nmi_and_brk` green, `ppu_vbl_nmi` 9/10 |
+| Interrupt timing | Lines sampled every cycle; the decision reads the previous cycle's samples (`_prevRunIrq`/`_prevNeedNmi`) | `Cpu::end_cycle` keeps the same lag; `execute_instruction` decides after the instruction | `cpu_interrupts_v2` 5/5, `ppu_vbl_nmi` 9/10 |
+| Where the chips sit in the cycle | `StartCpuCycle` runs the PPU's dots up to the access and then `ProcessCpuClock` (the APU and the cartridges); `EndCpuCycle` runs the rest of the dots and the CPU samples the lines | `NesBus::begin_cpu_cycle` runs the dots, then the APU tick, before the access; `end_cpu_cycle` runs the remaining dots | `test_the_apu_clocks_before_the_cycles_access`, and `cpu_interrupts_v2` 5/5 — its last three tables read this one cycle |
 | Vector choice | The vector is chosen at the status push; an NMI asserted by then takes it over (`IRQ()`, `BRK()`) | `Cpu::take_interrupt`/`Cpu::brk` do the same, including BRK's `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`, `test_nmi_takes_brks_vector_over` |
 | A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
 | Per-dot rendering | `ProcessScanlineImpl`: `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ShiftTileRegisters` and `DrawPixel` every dot, off the single `_videoRamAddr` | `PixelPipeline`: the same fetch/load/shift/draw schedule off `v`/`t`/`x`, with the sprite phase's fetches and per-dot sprite pixels and sprite-0 hit | `4-scanline_timing`, `sprite_hit` 11/11, and byte-identical frames against the whole-line renderer on `nestest` |
@@ -111,6 +112,14 @@ randomised CPU/PPU alignment (this core has offset 0).
   starting 29831 clocks after the write — both taken from blargg's own measured cycles in
   `roms/blargg/apu_test/source/`, not from a guess. `4-jitter`, `5-len_timing` and
   `6-irq_flag_timing` are green.
+- ~~**Where the APU sits in the CPU cycle**~~ Done: the chip clocks the APU at the *start* of
+  a CPU cycle, before that cycle's own access (Mesen's `ProcessCpuClock`, called from
+  `StartCpuCycle`), where this core used to tick it at the *end*. That single cycle is what was
+  left of `cpu_interrupts_v2`: a `$4017` restart is first seen by the *next* cycle's tick, so
+  the frame IRQ flag comes up 29831 cycles after the write **cycle** rather than 29830, and
+  every sample of the interrupt line sees the APU one cycle later. All three of the suite's
+  remaining tables read that cycle off their interrupt landing spots, and all three are green
+  with the APU clocked at the front (§7).
 - ~~**DMC**~~ Done: the channel is Mesen's now
   (`Core/NES/APU/DeltaModulationChannel.cpp`), and `7-dmc_basics` and `8-dmc_rates` are both
   green (apu_test 6/8 → **8/8**). The earlier reading of the two roms as contradicting the
@@ -173,7 +182,9 @@ randomised CPU/PPU alignment (this core has offset 0).
 3. ~~**The APU frame counter's phase, then DMC** (§2.4)~~ — both done: the frame counter turned
    `4-jitter`, `5-len_timing` and `6-irq_flag_timing` green, and Mesen's DMC shape (counter at
    the fetch, byte held in the buffer, silence flag, the table's own period) turned
-   `7-dmc_basics` and `8-dmc_rates` green — apu_test 8/8.
+   `7-dmc_basics` and `8-dmc_rates` green — apu_test 8/8. The item's third piece was where the
+   APU sits *inside* the cycle (§2.4): clocking it at the start rather than the end is what
+   took `cpu_interrupts_v2`'s last three cases green.
 4. ~~**§2.2's register details**~~ — done: open-bus decay (`ppu_open_bus`), the rendering-time
    `$2007` behaviour, the grayscale mask on palette reads and the PAL emphasis swap. OAM decay
    turned out to be an off-by-default Mesen setting, so not modelling it *is* the default. The
@@ -284,6 +295,7 @@ several runs.
 | DMC fetch charged twice | The channel's request latch stayed set until the byte was supplied, and the bus re-armed its pending transfer from it on every cycle the APU ticked — so the transfer's own four cycles armed a second one. Two four-cycle transfers per byte, and no CPU read of `$4000` ever saw the byte on the bus. The bus now *takes* the request (`Apu::take_dmc_dma_request`), which is Mesen's one-shot halt latch | **AccuracyCoin boots again**: 155 tests ran, 85 passed, 43 failing (the rows above recorded 46); every other suite unchanged; frame cost 1.72 → 1.70 ms; two new unit tests (the latch, and a hand-built ROM that polls `$4000` the way AccuracyCoin's boot-time sync does) |
 | DMC is Mesen's | The length counter moves at the fetch rather than at the end of playback, a fetched byte waits in the buffer for the output unit's byte boundary (so the buffer holds one byte and a restart cannot queue a second), the register holds its level while silent instead of decaying over zeroes, and the timer's period is the table's value rather than one more | **`7-dmc_basics` and `8-dmc_rates` green** (apu_test 6/8 → **8/8**); AccuracyCoin 43 → **34 failing** (143 ran, 94 passed); nothing else moved; frame cost 1.70 → 1.74 ms; state version 10 → 11 |
 | Band-limited resampling (§2.4) | The audio path became blip's shape: a level change is a step, 32 phases × 16 taps with linear interpolation between them, an integrator for the output and a one-pole high-pass (Mesen's `NesSoundMixer` + `blip_buf`), at the host's rate directly rather than through Mesen's 96 kHz intermediate | ROM baseline unchanged (no ROM listens); unit tests 592 → 597, including the point of the exercise — a 30 kHz input, whose 18 kHz fold is at full strength under sample-and-hold, comes out ≥ 20 dB down; frame cost 1.69 → 1.82 ms; state version 11 → 12 |
+| The APU clocks at the start of the cycle | The chip runs the APU before the cycle's own access (Mesen's `ProcessCpuClock`, from `StartCpuCycle`) instead of after it. Measured from the ROM first: with the tick trailing the access, `5-branch_delays_irq`'s row 0 interrupted the `RTS` that ends `begin` two cycles *after* the flag went up, where the readme wants the `NOP` behind it, four cycles after — the same single cycle in each of the four rows of that table that differed | **`cpu_interrupts_v2` 2/5 → 5/5**: `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` all pass. Nothing else moved — `apu_test` 8/8, `ppu_vbl_nmi` 9/10, `mmc3_test_2` 5/6 and AccuracyCoin's 34 failing are unchanged, and the three suites that pin the flag against the `$4017` write stay green because the flag moved *with* the APU. Unit tests 597 → 598 (one of them pins the APU's place in the cycle); frame cost 1.82 → 1.86 ms (median of five runs, spread ±0.06) |
 
 **One stale number, corrected.** From `8ec693d` (DMA inside `MemoryRead`) until the row above,
 AccuracyCoin never ran: the ROM hung inside its own DMA-sync loop while booting, `$37` stayed
@@ -364,6 +376,9 @@ Their value is the evidence; do not retry them without reading this first.
   `5-len_timing` ("First length of mode 0 is too late") and `6-irq_flag_timing` ("Flag first set
   too late") all go red, and AccuracyCoin drops 34 → 36 failing. Reverted: those three pin the
   flag's cycle against the `$4017` write, so the missing cycle is not in the flag.
+  (It was not: the flag is late by one cycle because the *APU* was late by one cycle — the tick
+  sat behind the cycle's access. Moving the tick moves the flag with everything still attached
+  to it, which is why that experiment cost three suites and this one costs nothing.)
 - **`cpu_interrupts_v2`: the IRQ judged one cycle later (the sample from two cycles back
   instead of one).** Measured: `3-nmi_and_irq` passes, and `5-branch_delays_irq`'s `test_jmp`,
   `test_branch_not_taken` and `test_branch_taken_pagecross` tables match the readme
@@ -372,21 +387,23 @@ Their value is the evidence; do not retry them without reading this first.
   `05 01 00`). But `1-cli_latency` check 4 ("exactly one instruction after CLI should execute
   before IRQ is taken") and `4-scanline_timing` check 3 go red. Reverted: those two pin the
   ordinary IRQ judgement to the penultimate cycle, which is Mesen's rule too.
+  (Which is what the tables turned out to want as well: what they needed was for the *APU* to
+  move, not for the judgement to.)
 - **`cpu_interrupts_v2`: the `$4017` write's parity inverted.** Measured: `5-branch_delays_irq`
   is byte-identical (so its write's hold is not what is off), `3-nmi_and_irq`'s output changes,
   and AccuracyCoin drops 34 → 36. Reverted.
 
-  **What that leaves.** All three remaining failures are the same ±1-cycle question about where
-  the frame counter's flag, the IRQ judgement and the instruction stream sit relative to each
-  other. Three sets of tests constrain it, and no single one-cycle knob satisfied all three:
-  `4-jitter`, `5-len_timing` and `6-irq_flag_timing` pin the flag against the `$4017` write;
-  `1-cli_latency` and `4-scanline_timing` pin the judgement to the penultimate cycle; and the
-  three `cpu_interrupts_v2` tables want those two shifted by a cycle relative to the code
-  (`4-irq_and_dma`'s own table is the readme's shifted one row as well: ours opens
-  `0 +0 / 0 +1 / 1 +2`, the readme `0 +0 / 1 +1 / 1 +2`). The next attempt should measure the
-  *chain* — the instruction-by-instruction cost of the delays in `5-branch_delays_irq`'s
-  `begin` against the cycle the readme's table implies (its `test_jmp` row 0 wants the flag on
-  the RTS's last cycle, i.e. write + 29831) — instead of moving the knobs again.
+  **What settled it.** All three failures were one ±1-cycle question, and the answer was not in
+  the flag, the judgement or the write's parity but in where the *APU* sits inside the CPU
+  cycle: every sample of the interrupt line was one cycle early because the APU ticked after the
+  cycle's access instead of before it. Measuring the chain first is what found it — the
+  cycle-by-cycle trace of `5-branch_delays_irq`'s `begin` showed the flag going up on the
+  `RTS`'s *fifth* cycle (write + 29830) where the readme's row 0 wants it on the sixth (write +
+  29831, the RTS's last cycle) — and clocking the APU at the front (Mesen's `ProcessCpuClock`)
+  is one change with no knob in it: all three tables go green together, and the three suites
+  that pin the flag (`4-jitter`, `5-len_timing`, `6-irq_flag_timing`) stay green because they
+  moved *with* it. The lesson for the next ±1-cycle hunt: when three groups of tests disagree
+  about a cycle, look for a chip that is not where Mesen keeps it, not for a number to add.
 
 ## 8. Decisions still open
 
@@ -423,9 +440,9 @@ double-charged fetch hid here for several steps (§7).
 --nocapture`): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
 `blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
-2/5, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94 passed,
-0 skipped). Unit tests: 597. Frame cost: about 1.82 ms (release, 600 frames of nestest, median).
-Branch:
+**5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94
+passed, 0 skipped — the same 34 as before the APU move). Unit tests: 598. Frame cost: about
+1.86 ms (release, 600 frames of nestest, median of five; spread ±0.06). Branch:
 `codex/mesen-alignment`.
 
 | # | Item | Status | Evidence (commit / measurement) | Next step |
@@ -439,7 +456,7 @@ Branch:
 | P5 | PAL 16/5, fractional dot accumulator, region-correct audio clock | Done (the ratio) | `dbdf7cc`: a PAL frame is 33,247.5 CPU cycles | PAL's own PPU/APU rules (`_nmiScanline`, `_vblankEnd`, PAL's OAM refresh) — unverifiable without a PAL ROM |
 | P6 | Mappers: NES 2.0 header, bus conflicts | Partly done | `4e1c7a6`: conflicts for 2/3/7/11/66/71; five header and two conflict tests | Dispatching on the submapper (Mesen reads that from its CRC-keyed database, not the header); then boards 64/158/185/115 |
 | P7 | Audio resampling | Done | `e33ebeb`, the §7 row: the band-limited resampler; four unit tests on the filter itself (step level, AC coupling, in-band amplitude, the out-of-band fold) plus the machine-level silence test | Nothing for the local ROMs; a reference recording would be the only way to judge the remaining difference from Mesen's two-stage chain |
-| P3c | `cpu_interrupts_v2`'s three remaining tables | **In progress** | Two one-cycle experiments measured and withdrawn (the frame counter's flag one cycle later; the IRQ judged one cycle later). The second reproduces `5-branch_delays_irq`'s first three tables row for row, at the cost of `1-cli_latency` and `4-scanline_timing`. Both are written up in §7. | Measure the *chain* of `5-branch_delays_irq`'s `begin` against the cycle its readme table implies (its row 0 wants the flag on the RTS's last cycle, i.e. write + 29831) before moving any knob |
+| P3c | `cpu_interrupts_v2`'s three remaining tables | **Done** | The chain was measured cycle by cycle (§7) and the missing cycle was the APU's place in it: the chip clocks the APU at the *start* of a CPU cycle (Mesen's `ProcessCpuClock`), not at the end. **`cpu_interrupts_v2` 2/5 → 5/5** — `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` all pass, and everything that pinned the flag against the `$4017` write stayed green. §2.4; the two withdrawn knob experiments are explained in §7 | Nothing; the neighbouring item is the sprite *evaluation* being per line (P1) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
 **How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the

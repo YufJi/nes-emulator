@@ -809,14 +809,14 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 572 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 598 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
-| `tests/ppu.rs` | 82 | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI, cartridge nametables |
-| `tests/apu.rs` | 64 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
+| `tests/ppu.rs` | 55 | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI, cartridge nametables |
+| `tests/apu.rs` | 68 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 68 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
 | `tests/rom_tests.rs` | 14 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
-| `crates/nes-uniffi` unit tests | 8 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
+| `crates/nes-uniffi` unit tests | 7 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
 | Doc tests | 1 | `FrameClock` usage example |
 
 ### 13.1 Test ROMs: the accuracy baseline
@@ -860,7 +860,7 @@ Baseline as of 2026-10-15, measured on this checkout:
 | `instr_test-v5` | 16/16 |
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
-| `cpu_interrupts_v2` | 2/5 (`3`/`5` differ by one or two cycles; `4`'s offset tracks the frame counter's phase) |
+| `cpu_interrupts_v2` | 5/5 |
 | `ppu_vbl_nmi` | 9/10 (only the odd-frame skip is left, and it is a dot of ordering rather than of geometry) |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
@@ -873,11 +873,11 @@ Baseline as of 2026-10-15, measured on this checkout:
 | AccuracyCoin | 143 ran, 94 passed, 0 skipped, 34 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
-submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on;
-`cpu_interrupts_v2`'s three are down to one or two instructions each. (`apu_test` was one of
-these until the DMC became Mesen's channel: the length counter moves at the fetch, the fetched
-byte waits in the buffer for the output unit's byte boundary, and the timer's period is the
-table's own value.)
+submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on.
+(`cpu_interrupts_v2` was one of these until the APU moved to the front of the CPU cycle: its
+last three tables were all reading that one cycle. `apu_test` was another until the DMC became
+Mesen's channel: the length counter moves at the fetch, the fetched byte waits in the buffer for
+the output unit's byte boundary, and the timer's period is the table's own value.)
 
 The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
 asserted in both directions: a failure outside it is a regression, and an entry that starts
@@ -977,13 +977,16 @@ clone needs `npm run build:wasm` before building the front end.
   instruction's; the vector is chosen at the status push, so an NMI asserted by then takes it
   over and the frame already pushed stays the IRQ's. A write to `$2000-$401F` lands on its own
   cycle - the last cycle of a store, the one before it for a read-modify-write's discarded
-  write - and at `ACCESS_DOTS` inside that cycle, where the PPU's per-dot view and the APU
-  tick at the end of the same cycle both see it. Reads with side effects are placed the same
-  way, `$4015` included now that the CPU drives the read itself: blargg's `apu_test`
-  synchronises through that read, and it moved the sync error rather than removing it (§4.3 of
-  the plan), so `5-len_timing` is back on the list until the frame counter's own phase is
-  right. What is left of `cpu_interrupts_v2` is one or two cycles per case, and `4-irq_and_dma`
-  still tracks the frame counter's phase.
+  write - and at `ACCESS_DOTS` inside that cycle, where the PPU's per-dot view sees it. The
+  **APU clocks at the front of the cycle** instead, before that access (Mesen's
+  `ProcessCpuClock`, which `StartCpuCycle` calls), so a `$4017` restart is first seen by the
+  *next* cycle's tick: the frame IRQ flag goes up 29831 cycles after the write cycle, and every
+  sample of the interrupt line sees the APU one cycle later than it would with the tick behind
+  the access. That one cycle is what the last three `cpu_interrupts_v2` tables were reading -
+  all five of its ROMs pass now (`3-nmi_and_irq`, `4-irq_and_dma`, `5-branch_delays_irq`
+  included), with the three suites that pin the flag against the `$4017` write still green
+  because the flag moved with the APU. Reads with side effects are placed the same way, `$4015`
+  included: blargg's `apu_test` synchronises through that read.
 - **Resampling**: the core resamples the mixer's CPU-rate output to the host's rate with a
   band-limited filter, the shape blargg's `blip_buf` has (see
   [`mesen-alignment.md`](./mesen-alignment.md) §2.4), so aliasing from the 1.79 MHz source is
@@ -1083,11 +1086,11 @@ backlog, so they are written down here to stop them being re-litigated:
 4. **First native front end** (iOS or Android, to prove the section 10 contract really is
    "platform-agnostic").
 5. **The accuracy backlog the test ROMs now name**: the remaining cases in §13.1 —
-   `cpu_interrupts_v2`'s three, `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s last one — plus MMC5's
+   `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s last one — plus MMC5's
    extended attributes, the five mappers §8 defers, and the PAL dot ratio. The register writes,
    the `$2002`/`$2007` reads, the DMA and the DMC are on their cycles and dots now; what is left
-   mostly comes down to the same thing one level down: the interrupt sequence's own cycle and
-   the frame counter's phase.
+   is mostly below that level: the odd frame's skipped clock, the sprite evaluation's OAM reads,
+   the boards that are still missing.
 
 The accuracy work has its own document — the alignment with Mesen2's NES core, the gaps that
 are left, the measurements each step produced and the experiments that were reverted:
