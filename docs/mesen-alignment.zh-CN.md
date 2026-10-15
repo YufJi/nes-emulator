@@ -92,10 +92,18 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   标志从写入后第 29831 个周期起**连续三个周期**置位——两个数字都取自 blargg 自己在
   `roms/blargg/apu_test/source/` 里写下的实测 cycle，而不是猜的。`4-jitter`、`5-len_timing`、
   `6-irq_flag_timing` 转绿。
-- **DMC**：通道自身的时序已经对了（17 字节的样本在 rate 0 下播放 135 个周期），ROM 找出的两个
-  读写语义 bug 也已修——`$4015` 的 bit 4 此前**从未置位**（`write_4015` 没设 enable 标志），
-  且读 `$4015` 会错误地清掉 DMC 的 IRQ 标志。剩下 `7-dmc_basics` 的最后一项检查（缓冲区为空时
-  取回的字节必须先落进缓冲区）与 `8-dmc_rates` 的 rate 0 窗口（样本超出窗口）。
+- **DMC**：ROM 找出的读写语义 bug 已修——`$4015` 的 bit 4 此前**从未置位**（`write_4015` 没设
+  enable 标志），且读 `$4015` 会错误地清掉 DMC 的 IRQ 标志；`7-dmc_basics` 只剩最后一项检查。
+  Mesen 自己的模型现已抄录在 §7（`Core/NES/APU/DeltaModulationChannel.cpp`），而它与剩下两项检查
+  想要的东西**互相矛盾**，这才是必须先解决的事：
+  * Mesen 的状态位是 `_bytesRemaining > 0`，长度计数在 `SetDmcReadBuffer` 里移动——也就是字节被
+    **从内存读出**时，而不是它播完时。按这个模型，17 字节样本的状态翻转落在约 128 个周期。
+  * `8-dmc_rates` 的窗口要的是约 135 个周期（rate 0 下 57715–57805 周期），那是**最后一个字节播完**
+    的位置；本内核按播放计数的版本落在 135.3 个周期，晚了 110 个周期。
+  动手实现 Mesen 版本之前，先弄清硬件到底是哪一种——ROM 与源码在这里不一致，而
+  `7-dmc_basics` 第 19 项读的正是同两位、且两种模型给出的答案相反。
+- **DMC 的 PAL 周期表**：Mesen 为 PAL 准备了第二张表（`398, 354, ... 50`），本内核用的是 NTSC 表。
+  改动很小，但没有 PAL ROM 无法验收。
 - 重采样是采样保持抽取；Mesen 用带限（blip）重采样。
 - 扩展音源（VRC6、MMC5、Sunsoft 5B）有实现，但从未与参考录音比对过；N163 与 FDS 缺失。
 
@@ -215,6 +223,7 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | 访问的 dot | 逐 dot 渲染落地后，把 `ACCESS_DOTS` 取 0/1/2 各跑一遍完整 ROM 基线 | **实测值是 2**：0 与 1 各自让五个 ROM 失败（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`2-nmi_and_brk`、`4-scanline_timing`）；2 让所有套件通过 |
 | NES 2.0 头部 + 总线冲突 | 头部解析版本、submapper、byte 9 的尺寸高位与 byte 12 的制式（指数-乘数编码明确拒绝）；`Mapper::has_bus_conflicts` 让卡带写入等于 CPU 值与该地址板子字节的按位与，覆盖 2/3/7/11/66/71 | ROM 无移动（本地套件用的是 mapper 0/1/4，都不带那个冲突陷阱）；`Nes::rom_submapper` 把解析结果暴露出来 |
 | PPU 寄存器细节（§2.2） | 直接读 Mesen 源码（`NesPpu.cpp`、`BaseNesPpu.cpp`）：绘制行上 `$2007` 同时推进粗 X 与 Y、六个 dot 内的第二次 `$2007` 被忽略、调色板读带灰阶掩蔽、PAL/Dendy 互换强调位；OAM 衰减查明默认关闭 | ROM 无移动（`blargg_ppu_tests` 覆盖 `$2007` 路径）；三个单元测试钉住行为 |
+| Mesen 的 DMC 源码 | 读了 `Core/NES/APU/DeltaModulationChannel.cpp`（manifest 给出路径后取回）：状态位 = `_bytesRemaining > 0`；计数与 IRQ 在 `SetDmcReadBuffer` 里移动，即取数时；寄存器在 `_bitsRemaining` 归零时接收缓冲字节，静音标志保持 DAC 电平；`SetEnabled` 按奇偶把传输延迟 2/3 个周期；PAL 有独立的周期表 | 按 Mesen 形状的实现试过并**撤回**：它把 `8-dmc_rates` 放到约 128 个周期，而该 ROM 的窗口要的是约 135，`7-dmc_basics` 退回第 2 项。树里保留按播放计数的版本（135.3 个周期） |
 
 ### 实现、实测、随后撤回的实验
 
@@ -239,6 +248,11 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
   第一个该查的点）；`$2007` 的读必须用它返回的那个字节去驱动这条锁存；调色板的读要从 open bus
   取高两位、却只驱动低六位，而 `$2002` 只驱动高三位，好让低五位继续衰减。
 
+- **DMC：按 Mesen 模型实现（§2.4）**。读了源码之后模型是明确的，于是照做：长度计数与 IRQ 跟随
+  取数、寄存器只在位计数归零时才接收缓冲字节、静音标志在样本之间保持 DAC 电平、enable 的传输
+  延迟两个周期（奇数周期三个）。结果是 `8-dmc_rates` 从"周期太短"变成**超时**，`7-dmc_basics`
+  退回第 2 项——两项都比现有的播放计数版更差。因此撤回：在弄清上面那约 7 个周期的分歧之前，
+  计数/IRQ 的落点无法对齐。树里保留按播放计数的版本与它对应的 ROM 判定。
 - **DMC：把内存读取器提前一个输出时钟（§2.4）**。当长度计数在字节边界移动时，每个字节的传输
   延迟都会被加进样本长度，这正是让 `8-dmc_rates` 的 rate 0 样本刚好越过窗口的那一百多个周期。
   把读取器移到 `bits_remaining == 1`（在最后一位尚未移出时就开始取，好让寄存器见底前缓冲已满）

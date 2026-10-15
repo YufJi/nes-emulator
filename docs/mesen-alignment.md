@@ -105,12 +105,23 @@ randomised CPU/PPU alignment (this core has offset 0).
   starting 29831 clocks after the write — both taken from blargg's own measured cycles in
   `roms/blargg/apu_test/source/`, not from a guess. `4-jitter`, `5-len_timing` and
   `6-irq_flag_timing` are green.
-- **DMC**: the channel's own timing is right (a 17-byte sample at rate 0 plays for 135
-  periods), and the write/read semantics bugs the ROMs found are fixed — `$4015`'s bit 4 was
-  never set at all (`write_4015` did not set the enable flag), and reading `$4015` wrongly
-  cleared the DMC's IRQ flag. What is left is `7-dmc_basics`'s last check (a byte fetched
-  while the buffer is empty has to be in the buffer before the next fetch begins) and
-  `8-dmc_rates`'s rate-0 window, which the sample overshoots.
+- **DMC**: the write/read semantics the ROMs found are fixed — `$4015`'s bit 4 was never set
+  at all (`write_4015` did not set the enable flag) and reading `$4015` wrongly cleared the
+  DMC's IRQ flag — and `7-dmc_basics` is down to its last check. Mesen's own model is now
+  written out in §7 (`Core/NES/APU/DeltaModulationChannel.cpp`), and it disagrees with what
+  the two remaining checks want, which is the thing to resolve first:
+  * Mesen's status bit is `_bytesRemaining > 0`, and the length counter moves in
+    `SetDmcReadBuffer` — i.e. when a byte is **read out of memory**, not when it finishes
+    playing. That puts a 17-byte sample's status transition at ~128 periods.
+  * `8-dmc_rates`'s window wants it at ~135 periods (57715-57805 cycles at rate 0), which is
+    where the *playback* of the last byte ends; the playback-based counter this core has lands
+    at 135.3 periods, 110 cycles late.
+  Before implementing Mesen's version, work out which of the two the hardware does — the ROM
+  and the source disagree, and `7-dmc_basics` check 19 reads the *same* two bits at a point
+  where Mesen's model and the playback model give opposite answers.
+- **DMC's PAL period table**: Mesen has a second table for PAL
+  (`398, 354, ... 50`) where this core uses the NTSC one. Small, and unverifiable without a
+  PAL ROM.
 - Resampling is sample-and-hold decimation; Mesen uses a band-limited (blip) resampler.
 - Expansion audio (VRC6, MMC5, Sunsoft 5B) exists but has never been compared against a
   reference recording; N163 and FDS are missing.
@@ -249,6 +260,7 @@ several runs.
 | The access dot | Ran `ACCESS_DOTS` at 0, 1 and 2 against the whole ROM baseline now that the pipeline fetches at the dot | **2 is the measured value**: 0 and 1 each cost five ROMs (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `2-nmi_and_brk`, `4-scanline_timing`); 2 passes every suite |
 | NES 2.0 header + bus conflicts | The header parses the version, the submapper, byte 9's size bits and byte 12's region (and refuses the exponent-multiplier encoding); `Mapper::has_bus_conflicts` makes a cartridge write the AND of the CPU's value and the board's byte, for 2/3/7/11/66/71 | No ROM moved (the local suites use mappers 0/1/4, none of which has the conflict trap); `Nes::rom_submapper` exposes what was parsed |
 | PPU register details (§2.2) | Read from Mesen's own sources (`NesPpu.cpp`, `BaseNesPpu.cpp`): a `$2007` access on a drawing line advances the scroll both ways, a second `$2007` access within six dots is ignored, palette reads take the grayscale mask, PAL/Dendy swap the emphasis bits; OAM decay turns out to be off by default | No ROM moved (`blargg_ppu_tests` covers the `$2007` paths); three unit tests pin the behaviours |
+| Mesen's DMC source | `Core/NES/APU/DeltaModulationChannel.cpp` read (the manifest listed the path; the file was fetched): status = `_bytesRemaining > 0`; the counter and the IRQ move in `SetDmcReadBuffer`, i.e. at the fetch; the register takes the buffer when `_bitsRemaining` hits 0, with a silence flag holding the DAC; `SetEnabled` delays its transfer 2/3 cycles by parity; PAL has its own period table | The Mesen-shaped implementation was tried and **withdrawn**: it puts `8-dmc_rates` at ~128 periods where the ROM's window wants ~135, and `7-dmc_basics` regresses to its 2nd check. The tree keeps the playback-based counter (135.3 periods) |
 
 ### Experiments that were implemented, measured and reverted
 
@@ -280,6 +292,15 @@ Their value is the evidence; do not retry them without reading this first.
   read had to take its top two bits from the open bus while driving only its low six, with
   `$2002` driving only its top three so its low five keep decaying.
 
+- **DMC: Mesen's model, implemented and withdrawn (§2.4).** Reading the source makes the
+  model explicit, so it was implemented: the length counter and the IRQ follow the fetch,
+  the register takes the buffered byte only when the bit counter reaches zero, a silence flag
+  holds the DAC between samples, and the enable delays its transfer 2 cycles (3 on an odd
+  cycle). It moved `8-dmc_rates` from "period is too short" to a *timeout* and put
+  `7-dmc_basics` back to its second check, so it is worse than the current playback-based
+  counter on both: the counter/IRQ placement cannot be aligned before the ~7-period
+  disagreement above is understood. Withdrawn; the tree keeps the playback-based version and
+  the ROMs' verdicts it produces.
 - **DMC: the memory reader one clock ahead (§2.4).** With the length counter moving at the byte
   boundary, each fetched byte's transfer latency is added to the sample, which is the
   hundred-odd cycles that put `8-dmc_rates`'s rate-0 sample just past its window. Moving the
