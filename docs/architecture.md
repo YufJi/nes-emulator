@@ -862,14 +862,14 @@ Baseline as of 2026-10-14, measured on this checkout:
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 2/5 (`3`/`5` differ by one or two cycles; `4`'s offset tracks the frame counter's phase) |
-| `ppu_vbl_nmi` | 9/10 (only the odd-frame skip is left: it needs the dot the clock is skipped on) |
+| `ppu_vbl_nmi` | 9/10 (only the odd-frame skip is left, and it is a dot of ordering rather than of geometry) |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
-| `ppu_open_bus` | 0/1 (the data bus latch does not decay) |
+| `ppu_open_bus` | 1/1 |
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
-| `mmc3_test_2` | 4/6 (the A12 filter and the alternate IRQ revision are still approximate) |
+| `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper) |
 | `apu_test` | 3/8 (`5-len_timing` moved onto this list when the `$4015` read started landing on its own cycle; the frame counter's phase is what it is waiting for) |
 | AccuracyCoin | 82 passed, 0 skipped, 46 failing (the ROM's own counter depends on how long its results screen has been up, so the harness only uses it as a liveness check) |
 

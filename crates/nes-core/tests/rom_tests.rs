@@ -85,12 +85,7 @@ fn blargg_oam_stress() {
 
 #[test]
 fn blargg_ppu_open_bus() {
-    common::check_blargg_directory(
-        "blargg/ppu_open_bus",
-        BLARGG_FRAMES,
-        // The PPU data bus latch does not decay over time yet.
-        &["ppu_open_bus.nes"],
-    );
+    common::check_blargg_directory("blargg/ppu_open_bus", BLARGG_FRAMES, &[]);
 }
 
 #[test]
@@ -112,14 +107,11 @@ fn blargg_mmc3() {
     common::check_blargg_directory(
         "blargg/mmc3_test_2/rom_singles",
         BLARGG_SLOW_FRAMES,
-        // The A12 model now follows Mesen in both halves: the cartridge is
-        // handed the addresses the pipeline *really read*, on the dot it read
-        // them, and held between accesses. That is what carried
-        // `4-scanline_timing` the last dot to green: with the renderer
-        // reconstructing the fetches from the dot counter, the run before the
-        // first sprite-phase fetch was one dot too long. The "alternate" IRQ
-        // revision `6-MMC3_alt` needs is a submapper this project does not
-        // parse (§15.1).
+        // What is left is the "alternate" IRQ revision `6-MMC3_alt`, which
+        // needs a mapper-4 submapper this project does not parse (§15.1). The
+        // A12 half is done: the cartridge is handed the addresses the pipeline
+        // *really read*, on the dot it read them, and that took
+        // `4-scanline_timing` green.
         &["6-MMC3_alt.nes"],
     );
 }

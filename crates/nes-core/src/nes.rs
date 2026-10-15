@@ -1962,9 +1962,18 @@ mod tests {
     fn test_ppustatus_returns_open_bus_in_unused_bits() {
         let mut bus = NesBus::new();
 
+        // The two chips have separate data-bus latches: what the CPU last drove
+        // is not what the PPU returns.
         bus.write(0x0000, 0xFF);
-        let status = bus.read(0x2002);
-        assert_eq!(status & 0x1F, 0x1F, "bits 0-4 should come from open bus");
+        assert_eq!(
+            bus.read(0x2002) & 0x1F,
+            0x00,
+            "the CPU's data bus is not the PPU's"
+        );
+
+        // A write the PPU itself latched does show up in the unused bits.
+        bus.write(0x2000, 0xFF);
+        assert_eq!(bus.read(0x2002) & 0x1F, 0x1F);
     }
 
     /// Minimal MMC3 cartridge whose IRQ handler bumps a RAM marker.

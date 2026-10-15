@@ -30,7 +30,9 @@ Two rules, in order:
 | Operand fetches and discarded reads | `FetchOperand` spells out the dummies (zero-page indexed, indexed absolute/indirect, the implied/accumulator read) | `Cpu::fetch_operand` plus `AddressingMode::AbsoluteXWrite`/`AbsoluteYWrite`/`IndirectYWrite`, `RTS`'s two dummies, `RTI`/`PLA`/`PLP`'s one each | the same suites |
 | Interrupt timing | Lines sampled every cycle; the decision reads the previous cycle's samples (`_prevRunIrq`/`_prevNeedNmi`) | `Cpu::end_cycle` keeps the same lag; `execute_instruction` decides after the instruction | `cpu_interrupts_v2/2-nmi_and_brk` green, `ppu_vbl_nmi` 9/10 |
 | Vector choice | The vector is chosen at the status push; an NMI asserted by then takes it over (`IRQ()`, `BRK()`) | `Cpu::take_interrupt`/`Cpu::brk` do the same, including BRK's `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`, `test_nmi_takes_brks_vector_over` |
-| A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), `drive_ppu_bus` reconstructs `LoadTileInfo`'s fetch dots, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) green, `4-scanline_timing` to its 12th sub-test |
+| A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
+| Per-dot rendering | `ProcessScanlineImpl`: `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ShiftTileRegisters` and `DrawPixel` every dot, off the single `_videoRamAddr` | `PixelPipeline`: the same fetch/load/shift/draw schedule off `v`/`t`/`x`, with the sprite phase's fetches and per-dot sprite pixels and sprite-0 hit | `4-scanline_timing`, `sprite_hit` 11/11, and byte-identical frames against the whole-line renderer on `nestest` |
+| Open bus | A stamp per bit (`_openBusDecayStamp`), three frames of decay, `$2002`'s low five bits masked from it, and the PPU's own latch rather than the CPU's | the same: `Ppu::drive_open_bus`/`open_bus_decay_stamp`, `$2002` driving only its top three bits, `$2007`'s palette reads driving six | `ppu_open_bus` 1/1 |
 | The pre-render line | The pipeline runs for `scanline < 240`, which includes the pre-render line | `drive_ppu_bus`'s `in_vblank` excludes only 240..=260 | the same |
 | The odd frame's skipped dot | Decided while processing dot 339 (`_cycle = 340`), so dot 340 is the one that goes missing | the same, carried by `NesBus::skip_odd_frame_dot` | `test_a_register_write_is_in_time_for_the_odd_frame_decision` |
 
@@ -66,9 +68,6 @@ What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`,
 
 ### 2.2 PPU: the bus, OAM and the registers around rendering
 
-- **Open bus has no decay.** Mesen keeps a stamp per bit (`_openBusDecayStamp`, decayed after
-  three frames) and masks `$2002`'s low five bits; this core has one latch that never decays.
-  `ppu_open_bus` fails on it.
 - **OAM decay is not modelled at all** (`_oamDecayCycles`, `OamDecayCycleCount = 3000`).
 - **`$2007` during rendering**: the dummy read, `_ignoreVramRead`, and the `UpdateVideoRamAddr`
   timing are not modelled.
@@ -122,7 +121,8 @@ randomised CPU/PPU alignment (this core has offset 0).
 2. **DMA inside `MemoryRead`** (§2.3). Buys `cpu_interrupts_v2/4-irq_and_dma` and unblocks DMC.
 3. **The APU frame counter's phase, then DMC** (§2.4). Buys `4-jitter`, `5-len_timing`,
    `6-irq_flag_timing`, `7-dmc_basics`, `8-dmc_rates`.
-4. **Open-bus decay and OAM decay** (§2.2). Buys `ppu_open_bus`.
+4. **OAM decay** (§2.2). The open-bus half is done — `ppu_open_bus` is green; what is left is
+   the decay of OAM itself.
 5. **PAL** (16/5 with a fractional dot accumulator, then PAL's own PPU/APU rules). Needs PAL test
    ROMs to be verifiable at all.
 6. **Mappers** (§2.5): the submapper table first (it unblocks three boards at once), then bus
@@ -212,6 +212,8 @@ several runs.
 | A12, part 3 | The filter measures the low run in CPU cycles, and *every* rise ends it | **`2-details` green** ("clocked 241 times"); `4-scanline_timing` to its 12th sub-test |
 | Per-dot background | `PixelPipeline` replaces the whole-line renderer: fetches on `cycle % 8 == 1/3/5/7`, shift registers, a pixel per dot, off the real `v`/`t`; the cartridge gets the addresses really read; `RenderTiming` and `ppu.render_v` removed | **`4-scanline_timing` green** (the reconstruction was a dot long); rest of the baseline unchanged (AccuracyCoin 46); frame cost 1.32 → 1.80 ms |
 | Per-dot sprites | The sprite phase's pattern fetches, per-dot pixels, and the sprite-0 hit on its own dot; the whole-line renderer (`BackgroundRenderer`, `SpriteRenderer`, `ScanlineProcessor`) is deleted | No ROM moved (baseline unchanged, AccuracyCoin 46); frame cost 1.80 → 1.68 ms |
+| DMA inside `MemoryRead` | `NesBus::process_pending_dma` (Mesen's `ProcessPendingDma`): a `$4014` write and a DMC request only leave a pending transfer, spent at the CPU's next access in real machine cycles | No ROM moved — `4-irq_and_dma`'s trace is byte-identical, which matches the L4a finding that its offset is the frame counter's phase |
+| Open-bus decay | The PPU's own bus latch; a per-bit three-frame stamp; `$2007` driving the byte it returns; palette reads driving six bits and taking two from the bus; `$2002` driving three | **`ppu_open_bus` green** (0/1 → 1/1) |
 
 ### Experiments that were implemented, measured and reverted
 
@@ -236,10 +238,12 @@ Their value is the evidence; do not retry them without reading this first.
   counter's filter are one mechanism: with real addresses A12 is low for four dots between
   fetches, and it is the low run across a scanline boundary that is meant to be the only
   qualifying rise. This is the concrete argument for the per-dot renderer.
-- **Open-bus decay (Mesen's per-bit, three-frame model).** Implemented faithfully; `ppu_open_bus`
-  did not move (its second sub-test fails for a reason outside the decay path — the read path
-  for `$2000-$3FFF` returns the *CPU* bus latch rather than the PPU's own, which is the first
-  thing to check there).
+- **Open-bus decay (Mesen's per-bit, three-frame model).** It took three changes, in this
+  order, to turn `ppu_open_bus` green: the `$2000-$3FFF` reads had to return the *PPU's* own
+  latch rather than the CPU-side bus latch (the first thing to check, as the earlier note here
+  predicted); a `$2007` read had to drive that latch with the byte it returned; and a palette
+  read had to take its top two bits from the open bus while driving only its low six, with
+  `$2002` driving only its top three so its low five keep decaying.
 
 ## 8. Decisions still open
 

@@ -26,7 +26,9 @@
 | 操作数取指与丢弃读 | `FetchOperand` 把 dummy 逐条写出（零页索引、绝对/间接索引、隐含与累加器的那次读） | `Cpu::fetch_operand` 加上 `AddressingMode::AbsoluteXWrite`/`AbsoluteYWrite`/`IndirectYWrite`、`RTS` 两次、`RTI`/`PLA`/`PLP` 各一次 | 同上 |
 | 中断时序 | 每周期采样；判决读上一周期的采样（`_prevRunIrq`/`_prevNeedNmi`） | `Cpu::end_cycle` 保持同样的滞后；`execute_instruction` 在指令结束后判决 | `cpu_interrupts_v2/2-nmi_and_brk` 转绿、`ppu_vbl_nmi` 9/10 |
 | 向量选择 | 在压状态字节那一刻选定；此前到达的 NMI 接管（`IRQ()`、`BRK()`） | `Cpu::take_interrupt`/`Cpu::brk` 相同，含 BRK 的 `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`、`test_nmi_takes_brks_vector_over` |
-| A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持）、`drive_ppu_bus` 重建 `LoadTileInfo` 的取指 dot、`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）转绿、`4-scanline_timing` 推进到第 12 子项 |
+| A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
+| 逐 dot 渲染 | `ProcessScanlineImpl`：`cycle % 8 == 1/3/5/7` 取指，每 dot `ShiftTileRegisters` 与 `DrawPixel`，用同一个 `_videoRamAddr` | `PixelPipeline`：同样的取指/装载/移位/绘制节奏，滚动取 `v`/`t`/`x`；sprite 阶段的取指、逐 dot sprite 像素与 sprite 0 命中都在这里 | `4-scanline_timing`、`sprite_hit` 11/11，且 `nestest` 的帧与整行渲染器逐字节相同 |
+| open bus | 每位一个时间戳（`_openBusDecayStamp`）、三帧衰减、`$2002` 低五位从中取，且用 PPU 自己的锁存而非 CPU 的 | 相同：`Ppu::drive_open_bus`/`open_bus_decay_stamp`，`$2002` 只驱动高三位，`$2007` 的调色板读只驱动六位 | `ppu_open_bus` 1/1 |
 | 预渲染行 | 流水线条件 `scanline < 240`，对预渲染行（-1）成立 | `drive_ppu_bus` 的 `in_vblank` 只排除 240..=260 | 同上 |
 | 奇数帧跳点 | 在处理 dot 339 时判定（`_cycle = 340`），被跳掉的是 340 | 相同，由 `NesBus::skip_odd_frame_dot` 承载 | `test_a_register_write_is_in_time_for_the_odd_frame_decision` |
 
@@ -60,8 +62,6 @@ Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTi
 
 ### 2.2 PPU：总线、OAM 与渲染周边的寄存器
 
-- **open bus 没有衰减**：Mesen 每位一个时间戳（`_openBusDecayStamp`，3 帧后衰减）并掩蔽
-  `$2002` 的低五位；内核只有一个从不衰减的锁存。`ppu_open_bus` 因此失败。
 - **OAM 衰减完全没有建模**（`_oamDecayCycles`、`OamDecayCycleCount = 3000`）。
 - **渲染期的 `$2007`**：dummy read、`_ignoreVramRead`、`UpdateVideoRamAddr` 的时序都未建模。
 - 强调色/灰阶只有部分实现，未与 `UpdateGrayscaleAndIntensifyBits` 逐位比对。
@@ -105,7 +105,8 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 2. **DMA 移进 `MemoryRead`**（§2.3）。拿回 `cpu_interrupts_v2/4-irq_and_dma`，并解锁 DMC。
 3. **APU 帧计数器相位，然后 DMC**（§2.4）。拿回 `4-jitter`、`5-len_timing`、
    `6-irq_flag_timing`、`7-dmc_basics`、`8-dmc_rates`。
-4. **open bus 衰减与 OAM 衰减**（§2.2）。拿回 `ppu_open_bus`。
+4. **OAM 衰减**（§2.2）。open bus 那一半已完成（`ppu_open_bus` 转绿），剩下的是 OAM 自身的
+   衰减。
 5. **PAL**（16/5 加分数 dot 累加器，然后 PAL 专属的 PPU/APU 规则）。没有 PAL ROM 就无法验收。
 6. **Mapper**（§2.5）：先做 submapper 表（一次解锁三个板），再总线冲突，再 64/158/185/115。
 7. **音频重采样**对齐 Mesen 的带限参考。
@@ -183,6 +184,8 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
 | A12 之三 | 过滤以 CPU 周期计长度，且**每次**上升都结束当前低电平段 | **`2-details` 转绿**（"每帧 241 次"）；`4-scanline_timing` 推进到第 12 子项 |
 | 逐 dot 背景 | `PixelPipeline` 替换整行渲染器：取指落在 `cycle % 8 == 1/3/5/7`、移位寄存器、每 dot 一个像素，滚动取真实的 `v`/`t`；卡带拿到的是真实读过的地址；删除 `RenderTiming` 与 `ppu.render_v` | **`4-scanline_timing` 转绿**（先前的重建长了一个 dot）；其余基线不变（AccuracyCoin 46）；帧耗时 1.32 → 1.80 ms |
 | 逐 dot sprite | sprite 阶段的图案取指、逐 dot 像素、以及落在自己那个 dot 上的 sprite 0 命中；整行渲染器（`BackgroundRenderer`、`SpriteRenderer`、`ScanlineProcessor`）删除 | ROM 无移动（基线不变，AccuracyCoin 46）；帧耗时 1.80 → 1.68 ms |
+| DMA 移进 `MemoryRead` | `NesBus::process_pending_dma`（Mesen 的 `ProcessPendingDma`）：`$4014` 写与 DMC 请求只留下待办，在 CPU 下一次访问时以真实机器周期完成 | ROM 无移动——`4-irq_and_dma` 的轨迹逐字节相同，与 L4a 的结论一致：它的偏移来自帧计数器相位 |
+| open bus 衰减 | 换成 PPU 自己的总线锁存；每位三帧时间戳；`$2007` 用它返回的字节驱动总线；调色板读只驱动六位、另两位取自总线；`$2002` 只驱动三位 | **`ppu_open_bus` 转绿**（0/1 → 1/1） |
 
 ### 实现、实测、随后撤回的实验
 
@@ -202,9 +205,10 @@ cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/k
   （"每帧 241 次"）回退，因为地址序列与计数器过滤是同一套机制：用真实地址时 A12 在两次取指之间
   只低 4 个 dot，而真正应当构成每帧唯一合格上升的是跨扫描线边界的那段低电平。这是逐 dot 渲染器
   最具体的论证。
-- **open bus 衰减（Mesen 的每位、三帧模型）**。按 Mesen 忠实实现；`ppu_open_bus` 没有移动（它的
-  第 2 子项因衰减路径之外的原因失败——`$2000-$3FFF` 的读取路径返回的是 **CPU** 侧总线锁存而不是
-  PPU 自己的那条，这是那里第一个该查的点）。
+- **open bus 衰减（Mesen 的每位、三帧模型）**。让 `ppu_open_bus` 转绿一共要三处，顺序如下：
+  `$2000-$3FFF` 的读必须返回 **PPU 自己**的锁存而不是 CPU 侧总线锁存（正如先前的记录所料，这是
+  第一个该查的点）；`$2007` 的读必须用它返回的那个字节去驱动这条锁存；调色板的读要从 open bus
+  取高两位、却只驱动低六位，而 `$2002` 只驱动高三位，好让低五位继续衰减。
 
 ## 8. 仍需拍板的决策
 

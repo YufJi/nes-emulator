@@ -786,10 +786,10 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
-| `ppu_open_bus` | 0/1（数据总线锁存不会衰减） |
+| `ppu_open_bus` | 1/1 |
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
-| `mmc3_test_2` | 4/6（A12 滤波与"alternate" IRQ 版本仍为近似） |
+| `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
 | `apu_test` | 3/8（`$4015` 读开始落在自己的周期上之后，`5-len_timing` 移入本清单；它等的是帧计数器的相位） |
 | AccuracyCoin | 82 通过、0 跳过、46 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 

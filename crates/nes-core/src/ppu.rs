@@ -195,6 +195,12 @@ pub struct Ppu {
     read_buffer: u8,
     /// Open bus latch for PPU register reads
     open_bus_latch: u8,
+    /// The frame each bit of the open bus was last driven on.
+    ///
+    /// The data bus is not a latch with infinite memory: a bit the chip drove
+    /// only survives about three frames, which is what blargg's `ppu_open_bus`
+    /// measures. Mesen keeps the same per-bit stamp (`_openBusDecayStamp`).
+    open_bus_decay_stamp: [u64; 8],
     /// Set when a $2002 read wins the race against the VBlank flag, so the flag
     /// and its NMI are skipped for this frame
     suppress_vblank: bool,
@@ -219,6 +225,7 @@ crate::state::state_fields!(Ppu {
     nmi_pending,
     read_buffer,
     open_bus_latch,
+    open_bus_decay_stamp,
     suppress_vblank,
 });
 
@@ -259,6 +266,7 @@ impl Ppu {
             nmi_pending: false,
             read_buffer: 0,
             open_bus_latch: 0,
+            open_bus_decay_stamp: [0; 8],
             suppress_vblank: false,
         }
     }
@@ -293,6 +301,7 @@ impl Ppu {
         self.suppress_vblank = false;
         self.read_buffer = 0;
         self.open_bus_latch = 0;
+        self.open_bus_decay_stamp = [0; 8];
     }
 
     /// Read from a PPU register ($2000-$2007)
@@ -342,7 +351,7 @@ impl Ppu {
                 );
                 self.w = false;
                 let value = (status & 0xE0) | (self.open_bus(&memory) & 0x1F);
-                self.open_bus_latch = value;
+                self.drive_open_bus_bits(value, 0xE0);
                 value
             }
             0x2004 => {
@@ -355,7 +364,7 @@ impl Ppu {
                 } else {
                     value
                 };
-                self.open_bus_latch = value;
+                self.drive_open_bus(value);
                 value
             }
             0x2007 => {
@@ -382,8 +391,9 @@ impl Ppu {
     /// See [`Ppu::read_register_with`] for why the memory source is a
     /// parameter rather than state owned by the PPU.
     pub fn write_register_with(&mut self, addr: u16, value: u8, mut memory: PpuMemory<'_>) {
-        // Update open bus latch on all writes
-        self.open_bus_latch = value;
+        // Every write has the chip drive the data bus, which is what puts the
+        // value there for a later open-bus read.
+        self.drive_open_bus(value);
 
         match addr & 0x2007 {
             0x2000 => {
@@ -500,16 +510,21 @@ impl Ppu {
             // Pattern tables and nametables: buffered read
             result = self.read_buffer;
             self.read_buffer = self.read_vram(addr, memory);
+            // The chip drives the byte it hands back.
+            self.drive_open_bus(result);
         } else {
             // Palette RAM: returned immediately, but the buffer still picks up
-            // the nametable data "behind" the palette.
-            result = self.palette[Self::palette_index(addr)];
+            // the nametable data "behind" the palette. Palette entries are six
+            // bits wide, so the top two bits of the byte the read returns are
+            // not driven at all — they are whatever the data bus was holding.
+            result =
+                (self.palette[Self::palette_index(addr)] & 0x3F) | (self.open_bus(memory) & 0xC0);
             self.read_buffer = self.read_vram(addr & 0x2FFF, memory);
+            self.drive_open_bus_bits(result, 0x3F);
         }
 
         // Increment VRAM address
         self.increment_vram_addr();
-
         result
     }
 
@@ -547,12 +562,53 @@ impl Ppu {
         }
     }
 
-    /// Open-bus value returned by write-only or unused register reads.
-    fn open_bus(&self, memory: &PpuMemory<'_>) -> u8 {
-        match memory {
-            PpuMemory::Internal => self.open_bus_latch,
-            PpuMemory::System { open_bus, .. } => *open_bus,
+    /// Bits of the open bus the chip drove too long ago to still be there.
+    const OPEN_BUS_DECAY_FRAMES: u64 = 3;
+
+    /// Put `value` on the PPU's data bus and stamp the bits the chip is
+    /// *driving*.
+    ///
+    /// The mask matters: a `$2002` read hands back the byte the status register
+    /// makes up, whose low five bits are whatever the bus happened to hold
+    /// rather than anything the chip drove. Those bits are not refreshed, so
+    /// their decay keeps running — which is exactly what blargg's
+    /// `ppu_open_bus` checks.
+    fn drive_open_bus(&mut self, value: u8) {
+        self.drive_open_bus_bits(value, 0xFF);
+    }
+
+    /// As [`Ppu::drive_open_bus`], for a byte only some of whose bits the chip
+    /// drives.
+    fn drive_open_bus_bits(&mut self, value: u8, driven: u8) {
+        self.open_bus_latch = value;
+        for bit in 0..8 {
+            if driven & (1 << bit) != 0 && value & (1 << bit) != 0 {
+                self.open_bus_decay_stamp[bit] = self.frame;
+            }
         }
+    }
+
+    /// Open-bus value returned by write-only or unused register reads.
+    ///
+    /// It is the *PPU's* own latch, not the CPU-side data bus the bus carries
+    /// around: the two chips have separate bus latches, and a read of a
+    /// write-only PPU register returns what the PPU last had on its bus — the
+    /// byte of its last register write, `$2007` access included — regardless of
+    /// what the CPU touched in between. `PpuMemory::System`'s `open_bus` field
+    /// is the CPU's, which the PPU never sees.
+    ///
+    /// The latch decays: a bit the chip has not driven for
+    /// [`Ppu::OPEN_BUS_DECAY_FRAMES`] frames reads back as zero.
+    fn open_bus(&self, _memory: &PpuMemory<'_>) -> u8 {
+        let mut value = self.open_bus_latch;
+        for bit in 0..8 {
+            if value & (1 << bit) != 0
+                && self.frame >= self.open_bus_decay_stamp[bit] + Self::OPEN_BUS_DECAY_FRAMES
+            {
+                value &= !(1 << bit);
+            }
+        }
+        value
     }
 
     /// Read from VRAM at the given address
