@@ -961,8 +961,14 @@ impl NesBus {
             0x0000
         };
 
-        self.bus_address = match cycle {
-            0 | 337..=340 => nametable,
+        // Only the dots that really read drive the bus (Mesen's `SetBusAddress`
+        // is called from `ReadVram`, and nowhere else). The dots in between
+        // change nothing: the address the cartridge sees is the one the last
+        // access left, which is what lets a CPU access through `$2007` stay on
+        // the bus until the pipeline's next fetch — overwriting it with the
+        // "held" address every dot would erase it a dot later.
+        let fetch_address = match cycle {
+            337 | 339 => Some(nametable),
             257..=320 => {
                 let eight_by_sixteen = self.ppu.ctrl.contains(PpuCtrl::SPRITE_SIZE);
                 let sprite = self
@@ -979,25 +985,31 @@ impl NesBus {
                 } else {
                     0
                 };
+                let sprite_pattern = if table != 0 { 0x1000 } else { 0x0000 };
                 match (cycle - 257) % 8 {
                     // The group's nametable and attribute reads come first, so
                     // A12 goes low between the sprite pattern fetches; that is
                     // what an MC-ACC clone's IRQ is built on.
-                    0..=3 => nametable,
-                    _ => {
-                        if table != 0 {
-                            0x1000
-                        } else {
-                            0x0000
-                        }
-                    }
+                    0 => Some(nametable),
+                    2 => Some(nametable),
+                    4 => Some(sprite_pattern),
+                    _ => None,
                 }
             }
             _ => match cycle.wrapping_sub(1) % 8 {
-                0..=3 => nametable,
-                _ => background_pattern,
+                // `cycle & 7 == 1` reads the nametable byte, 3 the attribute
+                // byte, 5 and 7 the two pattern bytes; the rest are holding
+                // dots.
+                0 => Some(nametable),
+                2 => Some(nametable),
+                4 | 6 => Some(background_pattern),
+                _ => None,
             },
         };
+
+        if let Some(addr) = fetch_address {
+            self.bus_address = addr;
+        }
     }
 
     /// Hand the current PPU address to the cartridge.
