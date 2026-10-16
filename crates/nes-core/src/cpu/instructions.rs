@@ -100,6 +100,8 @@ impl Cpu {
         // The caller's opcode fetch was a cycle, and its end-of-cycle
         // bookkeeping (the interrupt-line samples) belongs to this instruction:
         // Mesen's `GetOPCode` is a `MemoryRead`, which brackets the same pair.
+        // (The DMA a transfer may steal before the fetch has already ended its
+        // own cycles — `Cpu::fetch_opcode` — so those were sampled there.)
         self.end_cycle(bus);
 
         // The program counter moves past the opcode byte

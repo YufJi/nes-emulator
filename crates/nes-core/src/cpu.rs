@@ -309,6 +309,7 @@ impl Cpu {
     /// the access sits inside it (Mesen's `MemoryRead`, which brackets the
     /// access with `StartCpuCycle`/`EndCpuCycle`).
     pub(crate) fn read(&mut self, bus: &mut dyn Bus, addr: u16) -> u8 {
+        self.run_pending_dma(bus, addr, false);
         let value = bus.read_cycle(addr);
         self.end_cycle(bus);
         value
@@ -317,8 +318,37 @@ impl Cpu {
     /// Write one byte the way the chip does: one CPU cycle with the write
     /// strobed inside it (Mesen's `MemoryWrite`).
     pub(crate) fn write(&mut self, bus: &mut dyn Bus, addr: u16, value: u8) {
+        // Deliberately no DMA here: Mesen's `MemoryWrite` never runs
+        // `ProcessPendingDma`, so a transfer that is due waits for the next
+        // *read* rather than starting on a write.
         bus.write_cycle(addr, value);
         self.end_cycle(bus);
+    }
+
+    /// Fetch the next opcode: its cycle, and the DMA a transfer may steal
+    /// before it.
+    ///
+    /// This is where a PAL console can start one — nowhere else does.
+    pub(crate) fn fetch_opcode(&mut self, bus: &mut dyn Bus) -> u8 {
+        let addr = self.pc;
+        self.run_pending_dma(bus, addr, true);
+        // The opcode's own cycle is sampled by `execute_instruction`, which is
+        // where the instruction's bookkeeping starts.
+        bus.read_cycle(addr)
+    }
+
+    /// Run whatever transfer is pending, one cycle at a time, sampling the
+    /// interrupt lines at the end of each — the cycles a DMA spends are the
+    /// machine's, and the chip keeps polling through them (Mesen's
+    /// `ProcessPendingDma`, whose loop calls `StartCpuCycle`/`EndCpuCycle`).
+    fn run_pending_dma(&mut self, bus: &mut dyn Bus, read_address: u16, is_opcode_fetch: bool) {
+        if bus.start_pending_dma(read_address, is_opcode_fetch) {
+            self.end_cycle(bus);
+        }
+        while bus.dma_running() {
+            bus.run_dma_cycle();
+            self.end_cycle(bus);
+        }
     }
 
     /// The discarded read the 6502 spends its internal cycles on.

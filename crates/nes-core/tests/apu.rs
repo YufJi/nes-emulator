@@ -30,8 +30,8 @@ fn dmc_with_samples() -> DmcChannel {
 /// Run `cycles` DMC clocks, answering the memory reader as the bus would.
 fn run_dmc(dmc: &mut DmcChannel, cycles: u32) {
     for _ in 0..cycles {
-        if let Some(addr) = dmc.dma_request() {
-            dmc.supply_dma_byte((addr & 0xFF) as u8);
+        if dmc.take_byte_request() {
+            dmc.supply_dma_byte((dmc.read_address() & 0xFF) as u8);
         }
         dmc.clock_timer();
     }
@@ -78,13 +78,14 @@ fn test_reading_4015_does_not_clear_the_dmc_irq() {
     let mut apu = Apu::new();
     apu.dmc.set_dma_callback(|_| 0x00); // the bus answers the fetch
     apu.dmc.write_register(0x4010, 0x8F); // rate 15, IRQ enabled
-    apu.dmc.write_register(0x4013, 0);
+    apu.dmc.write_register(0x4013, 0); // a one-byte sample
     apu.dmc.write_register(0x4015, 0x10);
 
-    // The one byte is fetched right away, and the flag goes up with it — the
-    // fetch is what ends the sample, so this is already true before the byte
-    // has finished playing.
-    apu.tick();
+    // The flag goes up with the fetch — the fetch is what ends a sample — so it
+    // is already true before the byte has finished playing.
+    for _ in 0..4 {
+        apu.tick();
+    }
     assert_eq!(
         apu.read_register(0x4015) & 0x80,
         0x80,
@@ -96,6 +97,10 @@ fn test_reading_4015_does_not_clear_the_dmc_irq() {
         "and reading it does not clear it"
     );
 
+    // Re-enabling starts a fresh sample, and its own write still clears the
+    // flag: the two-byte length means the fetch that follows cannot raise it
+    // again inside the same call.
+    apu.dmc.write_register(0x4013, 1); // two bytes
     apu.write_register(0x4015, 0x10);
     assert_eq!(
         apu.read_register(0x4015) & 0x80,
@@ -954,15 +959,16 @@ fn test_dmc_channel_enable_disable() {
     ch.write_register(0x4012, 0x00);
     ch.write_register(0x4013, 0x01);
 
-    // Enable via set_enabled (which sets is_enabled flag)
-    ch.set_enabled(true);
-    // Also write to $4015 to set up bytes_remaining
+    // Enabling with $4015 starts the sample.
     ch.write_register(0x4015, 0x10);
     assert!(ch.is_active());
 
-    // Disable
-    ch.set_enabled(false);
+    // And disabling clears the byte counter — two cycles later, on an even
+    // clock, which is the delay Mesen's `SetEnabled` models.
     ch.write_register(0x4015, 0x00);
+    assert!(ch.is_active(), "the disable is not immediate");
+    ch.clock_timer();
+    ch.clock_timer();
     assert!(!ch.is_active());
 }
 
@@ -1234,12 +1240,14 @@ fn test_channel_status_bits() {
     noise.write_register(0x400F, 0xF8); // Load length
     assert!(noise.is_active());
 
-    // DMC
+    // DMC: enabling through $4015 is what starts a sample, and the status bit
+    // follows the byte counter (Mesen's `GetStatus`).
     let mut dmc = DmcChannel::new();
-    dmc.set_enabled(true);
-    assert!(!dmc.is_active());
-    // DMC needs bytes_remaining > 0 to be active
-    // This requires enabling via $4015 with proper setup
+    dmc.set_enabled(true, false);
+    assert!(
+        dmc.is_active(),
+        "enabling starts a sample: the counter takes the length"
+    );
 }
 
 #[test]
@@ -1388,6 +1396,10 @@ fn test_the_rom_style_enable_fetches_one_byte_and_clears_the_status_bit() {
     dmc.write_register(0x4013, 0x00); // length 1
     dmc.write_register(0x4010, 0x0F); // rate 15, no IRQ, no loop
     dmc.write_register(0x4015, 0x0F); // DMC off
+                                      // The machine clocks the APU between two instructions' writes, which is
+                                      // what lets the disable's own delay land before the enable arrives.
+    dmc.clock_timer();
+    dmc.clock_timer();
     dmc.write_register(0x4015, 0x1F); // DMC on
     dmc.write_register(0x4015, 0x1F); // on again, as the ROM writes it
 
@@ -1396,15 +1408,15 @@ fn test_the_rom_style_enable_fetches_one_byte_and_clears_the_status_bit() {
         "enabling the channel has to start the sample"
     );
     assert_eq!(
-        dmc.dma_request(),
-        Some(0xC000),
-        "the fetch is asked for at once, from the sample's address"
+        dmc.read_address(),
+        0xC000,
+        "the fetch comes from the sample's own address"
     );
 
     let mut fetched = 0;
     for _ in 0..3000 {
-        if let Some(addr) = dmc.dma_request() {
-            assert_eq!(addr, 0xC000);
+        if dmc.take_byte_request() {
+            assert_eq!(dmc.read_address(), 0xC000);
             dmc.supply_dma_byte(0xAA);
             fetched += 1;
         }

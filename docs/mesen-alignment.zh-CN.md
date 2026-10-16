@@ -182,6 +182,12 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   五个 ROM 失败——`ppu_vbl_nmi` 的 `05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`，
   `cpu_interrupts_v2/2-nmi_and_brk`，以及 `mmc3_test_2/4-scanline_timing`——而 2 让所有套件通过。
   上文原先写的"没有任何套件能区分 0/1/2"在整行渲染器时代成立，现在不成立了。
+- **DMC 使能时立即取数**。Mesen 会先等两三周期（`_transferStartDelay`，再由 `ProcessClock` 调
+  `StartDmcTransfer`）；这里在 `$4015` 写入自己那个周期就发出请求——这正是 blargg 在
+  `7-dmc_basics` 里说的"一字节缓冲应立即填充"，也让 AccuracyCoin 的 `Frame Counter 4-step`/
+  `5-step` 保持绿：带上延迟那两项会失败，因为 DMC 的 active 位会多滞留到使能之后，被它们读成
+  长度计数器提前停止（两个方向都量过，§7：不带延迟 18 项失败，带延迟 20 项）。**禁用**仍走
+  Mesen 的延迟，`StopDmcTransfer` 的窗口就是它给的。
 - **上电内容**。这里的 RAM 与 PPU 调色板 RAM 都是全零上电，而 Mesen 的默认是
   `RamPowerOnState = Random`（非随机那条路还会把调色板填成固定的 32 字节上电图案，好让 blargg
   那张老调色板 ROM 通过）。随机上电内容只是 Mesen 提供的三种设置之一
@@ -335,6 +341,8 @@ cargo test --workspace
 
 | 手柄口（§10.3 第 4/5 条剩下的部分） | 照 `NesController`/`NesControlManager` 的形状：移位寄存器在 strobe 的下降沿装载，strobe 保持高时每次读都重新装载；读出的位是**补 1**的（原厂手柄在八个按键之后一律回 1）；手柄口读的高三位是 CPU 的 open bus，而不是硬写成 `$40`；同一个 CPU 周期内对同一端口的第二次读不再走位，而是重复第一次的位；`$4016` 的写要到下一个 PUT 周期开头才落到引脚上，而不是写入自己那个周期 | **AccuracyCoin 32 → 31**：`Controller Strobing` 不再失败，`Controller Clocking` 从第 2 项（"读满八次补 1"）推进到第 7 项——要用 DMA 的 put/halt 周期去走手柄口，属于第 7 条。`APU Register Activation` 的第 2 项查下来是 `DMA + $2007 Read` 的前置条件（ROM 自己的注释就是这么写的），所以它等的也不是手柄这条线。单元测试 605 全绿；`read_joy3` 的几张 ROM 仍需要脚本化输入（它们在等按键被按下） |
 
+| DMA 逐字移植（§10.3 第 7 条），Mesen 的 `ProcessPendingDma` | 传输从总线里搬出来，改成由 CPU **逐周期泵**的状态机：`Bus::start_pending_dma`/`dma_running`/`run_dma_cycle`，由 `Cpu::run_pending_dma` 调用——于是被打断的每个周期都以 CPU 自己的收尾工作结束，中断终于能在 DMA **内部**到达。`NesBus` 保存 Mesen 的状态原样：`need_halt`/`need_dummy_read`/`dmc_dma_running`/`abort_dmc_dma`/`sprite_dma_transfer`，halt 周期读的是 CPU 本来要用的那个地址，读落在偶数周期、写落在奇数周期，中止路径（`StopDmcTransfer`、`_abortDmcDma`）齐备，`ProcessDmaRead` 的内部寄存器合并也在（CPU 在 `$4000-$401F` 内被停机时，DMA 会读 CPU 自己的寄存器：可能背着程序清掉帧 IRQ 标志、吃掉输入位、或把 DMC 要的字节换成总线冲突的结果）。DMA 永不落在写周期上，两次传输可以首尾相接。DMC 同步跟进：`$4015` 的 bit 4 就是 `_bytesRemaining > 0`，禁用先倒数两三周期再请求取消传输，取数请求是一次性的 | **AccuracyCoin 31 → 18 项失败，而且 146 项全部跑到结果**（§10.3 首批修完时是 34）。一次转绿 13 项——凡是带 DMA 的，加上五项 `UnOp_` 存储与 `Instruction Timing`：`DMA + $2007 Read`/`Write`、`DMA + $4015 Read`、`DMA + $4016 Read`、`DMA + $2002 Read`、`DMA + Open Bus`、`DMALandingOnWrite`、`DMC DMA Bus Conflicts`、`DMC DMA + OAM DMA`、`Misaligned OAM DMA`、`Controller Clocking`、`UnOp_SHA`/`SHS`/`SHY`/`SHX`、`Instruction Timing`——而 `Implied Dummy Reads` 与 `Explicit`/`Implicit DMA Abort` 则推进到了更靠后的检查项。`dmc_tests` 的四张 ROM（此前卡在空白画面）全部上报 `$6000 = 0`。新增单元测试把 sprite 传输钉在按奇偶 513/514 周期、DMC 取数钉在 3 或 4 周期——正是 ROM 数的那些数。单元测试 605 → 609；存档版本 12 → 13。**回退，也正是这一条还没收尾的原因**：`7-dmc_basics` 退回第 19 项（"一字节缓冲应立即填充"）、`8-dmc_rates` 退回第 2 项（"rate N 的周期太短"），这是 P3b 之后这两项第一次失败；同时 `Controller Strobing` 也从绿退回第 4 项（"从 put 周期转到 get 周期时不应触发手柄 strobe"）——它是从一次 sprite 传输留下的 CPU 相位读出来的，所以和上面两项是同一个问题。两个方向都量过：把 Mesen 的 `_transferStartDelay` 从使能路径里去掉**并不**改变它们（不过 AccuracyCoin 从 20 降到 18 是去掉换来的），所以原因在移植的别处，下一步要拿 ROM 自己打印的期望值逐周期对。`4-irq_and_dma` 需要把 APU 的"周期之间"相位翻转（`odd_apu_cycle` 由 `cpu_cycles & 1 == 1` 改成 `== 0`）：旧映射下该 ROM 失败在第 1 项，新映射下通过，AccuracyCoin 还多两项，而 `4-jitter`、`5-len_timing`、`6-irq_flag_timing` 两种映射都绿。代价钉在 `test_the_apu_clocks_before_the_cycles_access` 里：这种合成相位下 `$4017` 写入让标志落在第 29832 个周期，而 blargg 的注释写的是 29831——记录在案而不是藏起来，因为钉住这个绝对数字的 ROM 两种映射都过 |
+
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
 而 harness 把它当成"这里没有 ROM"跳过了自己——于是中间几行原样重复了它在 `30b7267` 时的 46，
@@ -468,8 +476,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
 `sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` **10/10**、AccuracyCoin **31 项失败**（§10.3 前五项落地后 34 → 32，
-手柄口那一刀再降到 31；逐项清单见 §10.5）。单元测试 605 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+`ppu_vbl_nmi` **10/10**、AccuracyCoin **18 项失败**（§10.3 首批修完 34 → 32，手柄口降到 31，
+DMA 那一刀带使能延迟是 20、去掉是 18；逐项清单见 §10.5）。单元测试 609 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
 抖动 ±0.06）。**帧耗时只做同轮对比**：同一台机器上这项测过 1.82 ms（1.815/1.825/1.826，空闲）
 也测过 3.68 ms（10-15 那轮，机器上有别的负载），差别来自负载而不是代码——`0520b59` 里那个
 5–8% 是 Android 前端自己关掉 PPU 总线轨迹换来的（`set_ppu_bus_trace_capacity(0)`），内核默认
@@ -496,6 +504,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | C1 | **与 MesenCE 的逐文件源码对比（§10）** | 完成 | 把整棵 `Core/NES` 取下来与本内核对照读了一遍（551 个文件、约 275 个板级类）。查出 12 处缺陷，含 NES 2.0 半字节对调、`$2002` 清掉 sprite 两个标志、CPU 复位的 `SP`、手柄口的 open bus；核实 12 项已一致；AccuracyCoin 的 34 项按"第几项失败"重读（`(value >> 2) + 1`，§7/§9 原先的编号整体多一） | 按 §10.7 的顺序做：DMA 逐字移植 → `$4016`/`$4017` 配 `read_joy3` → PPU 寄存器状态机 → `$2002` 标志与逐 dot sprite 求值 |
 | C2 | **为对齐让路而移除 ROM 套件**（§6/§9） | 完成 | 10-16 删除 `tests/rom_tests.rs`、`tests/common/`、`tests/golden/`（可从 git 取回：`b6c06a1` 及更早；另有一份在 `/tmp/nes-baseline-snapshot-20261016`）。`cargo test --workspace` 130 s → 约 11 s，604 个单元测试全绿。§10.6 列出的套件已放到 `roms/nes-test-roms/`（37 张 ROM，已 gitignore）并各自量过一次 | 对齐收尾时全部放回，连同 §10.6 的那些：那次实测里 `cpu_dummy_writes`（2/2）与 `cpu_exec_space` 的 `ppuio` 已经报 "Passed"，`cpu_exec_space_apu` 失败在 open bus 第 2 项，`cpu_reset/registers` 失败在第 2 项并打印 `SP=$F7`（ROM 要的是 `$FD`）——正是 §10.3 第 3 条要修的缺陷 |
 | C3 | §10.3 的前五项：NES 2.0 半字节、`$2002` 标志寿命、Mesen 混音、复位分成两种加八个预热周期、奇数帧跳点读慢一个 dot 的渲染状态 | **完成** | 实测整行见 §7。`ppu_vbl_nmi` 10/10、AccuracyCoin 32 项失败、`cpu_reset/registers` 越过第 2 项并打出期望的 `S=$FD`；所有会自报结果的 ROM 复测无回退；单元测试 605 | §10.3 剩下的，按 §10.7 的顺序：手柄口与 `$4016` 写入延迟（第 4/5 条），再是 PPU 寄存器状态机（第 6 条），再是 DMA（第 7 条）——APU 边沿时序（第 8 条）与死代码 `addressing.rs`（第 10 条）作为侧刀 |
+| C5 | **DMA 逐字移植（§10.3 第 7 条）** | 完成，带两处已知回退 | 实测整行见 §7：AccuracyCoin 31 → 18 项失败且 146 项全部跑到结果、`dmc_tests` 4/4 转绿（此前卡死）、DMA 状态机与内部寄存器合并、DMC 的状态规则。回退：`7-dmc_basics` 第 19 项与 `8-dmc_rates` 第 2 项（带不带使能延迟都失败，说明原因在移植的别处） | 拿这两张 ROM 自己打印的期望值逐周期对——它们是目前唯一能看见这件事的 oracle，而移植的结构已经是 Mesen 的 |
 | C4 | 手柄口（§10.3 第 4/5 条） | 完成（端口自己这一侧） | 见 §7 那一行：Mesen 的 strobe 沿、补 1 的移位、open bus 掩码、同周期重复读、写入的两周期延迟。AccuracyCoin 32 → 31（`Controller Strobing` 转绿，`Controller Clocking` 由第 2 项推进到第 7 项） | 这一组剩下的是"DMA 的 put/halt 周期走手柄口"，属于 DMA 那一刀（第 7 条） |
 
 **先记住一件容易搞错的事**：AccuracyCoin 的计数是**我们的**基线，不是 Mesen 的——它不在 Mesen

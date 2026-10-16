@@ -65,8 +65,6 @@ impl crate::state::StateField for PlayMode {
 /// the output level decreases by 2 (clamped at 0). When a bit is 1, the
 /// output level increases by 2 (clamped at 126).
 pub struct DmcChannel {
-    /// Whether the channel is enabled (via $4015)
-    is_enabled: bool,
     /// Whether the sample buffer has data
     has_sample: bool,
     /// IRQ flag - set when sample ends in IRQ mode
@@ -107,12 +105,22 @@ pub struct DmcChannel {
     reg_4013: u8,
     /// Last byte fetched via DMA (for bus hijacking detection)
     last_fetched_byte: u8,
-    /// Address of a byte the channel is waiting for the bus to supply.
+    /// Whether the channel has asked the bus for a byte.
     ///
-    /// When no `dma_callback` is installed the channel cannot read CPU memory
-    /// itself; it publishes the address here and the bus replies with
-    /// [`DmcChannel::supply_dma_byte`].
-    dma_request: Option<u16>,
+    /// The channel cannot read CPU memory itself; it asks, and the bus replies
+    /// with [`DmcChannel::supply_dma_byte`] from the address
+    /// [`DmcChannel::read_address`] reports. One ask, one byte: the flag is
+    /// *taken* rather than read, so the cycles the transfer spends cannot arm a
+    /// second transfer for the same byte (Mesen's one-shot halt latch).
+    byte_requested: bool,
+    /// Whether the channel has asked the bus to cancel the transfer it is
+    /// running (Mesen's `StopDmcTransfer`, reached through the disable delay).
+    stop_requested: bool,
+    /// Cycles left before `$4015`'s disable takes effect, and before an enable's
+    /// transfer starts: two or three by the CPU clock's parity (Mesen's
+    /// `_disableDelay` and `_transferStartDelay`).
+    disable_delay: u8,
+    transfer_start_delay: u8,
     /// Callback for DMA reads from CPU memory
     dma_callback: Option<Box<dyn FnMut(u16) -> u8 + Send>>,
     /// Callback for IRQ generation
@@ -121,7 +129,6 @@ pub struct DmcChannel {
 
 impl crate::state::StateField for DmcChannel {
     fn write(&self, w: &mut crate::state::StateWriter) {
-        self.is_enabled.write(w);
         self.has_sample.write(w);
         self.irq_generated.write(w);
         self.play_mode.write(w);
@@ -139,12 +146,14 @@ impl crate::state::StateField for DmcChannel {
         self.reg_4012.write(w);
         self.reg_4013.write(w);
         self.last_fetched_byte.write(w);
-        self.dma_request.write(w);
+        self.byte_requested.write(w);
+        self.stop_requested.write(w);
+        self.disable_delay.write(w);
+        self.transfer_start_delay.write(w);
         // The DMA and IRQ callbacks are owned by the bus and survive a load.
     }
 
     fn read(&mut self, r: &mut crate::state::StateReader<'_>) {
-        self.is_enabled.read(r);
         self.has_sample.read(r);
         self.irq_generated.read(r);
         self.play_mode.read(r);
@@ -162,7 +171,10 @@ impl crate::state::StateField for DmcChannel {
         self.reg_4012.read(r);
         self.reg_4013.read(r);
         self.last_fetched_byte.read(r);
-        self.dma_request.read(r);
+        self.byte_requested.read(r);
+        self.stop_requested.read(r);
+        self.disable_delay.read(r);
+        self.transfer_start_delay.read(r);
     }
 }
 
@@ -170,7 +182,6 @@ impl DmcChannel {
     /// Create a new DMC channel
     pub fn new() -> Self {
         Self {
-            is_enabled: false,
             has_sample: false,
             irq_generated: false,
             play_mode: PlayMode::Normal,
@@ -189,7 +200,10 @@ impl DmcChannel {
             reg_4012: 0,
             reg_4013: 0,
             last_fetched_byte: 0,
-            dma_request: None,
+            byte_requested: false,
+            stop_requested: false,
+            disable_delay: 0,
+            transfer_start_delay: 0,
             dma_callback: None,
             irq_callback: None,
         }
@@ -216,6 +230,10 @@ impl DmcChannel {
     /// This should be called at CPU clock rate. When the timer expires,
     /// the output unit is clocked.
     pub fn clock_timer(&mut self) {
+        // The enable/disable delays run on the same clock as the timer, and
+        // before it — Mesen's `ProcessClock`, from the APU's `NeedToRun`.
+        self.process_clock();
+
         if self.timer_counter > 0 {
             self.timer_counter -= 1;
         }
@@ -266,7 +284,13 @@ impl DmcChannel {
                 self.shift_register = self.sample_buffer;
                 self.has_sample = false;
                 self.silence_flag = false;
-                self.fetch_next_sample();
+                // The reader is asked for the *next* byte here, at the byte
+                // boundary — unless the channel was just enabled, in which case
+                // its own start delay is still running (Mesen's `Run` guards
+                // the ask with `_transferStartDelay == 0`).
+                if self.transfer_start_delay == 0 {
+                    self.start_transfer();
+                }
             } else {
                 self.silence_flag = true;
             }
@@ -280,23 +304,43 @@ impl DmcChannel {
         }
     }
 
-    /// Fetch the next sample byte via DMA
-    ///
-    /// This reads a byte from CPU memory and loads it into the sample buffer.
-    fn fetch_next_sample(&mut self) {
-        if self.bytes_remaining == 0 || self.dma_request.is_some() {
+    /// Ask the bus for the next sample byte — Mesen's `StartDmcTransfer`, which
+    /// the channel calls when its buffer has just been emptied and the sample
+    /// has bytes left.
+    fn start_transfer(&mut self) {
+        if self.bytes_remaining == 0 || self.byte_requested {
             return;
         }
         if let Some(ref mut callback) = self.dma_callback {
-            // Read from current sample address
+            // A channel driven without a bus (the unit tests) can be handed a
+            // reader directly; then there is nothing to wait for.
             let byte = callback(self.sample_address);
             self.load_sample_byte(byte);
             return;
         }
 
-        // No callback: ask the bus for the byte. It replies through
-        // `supply_dma_byte` before the next timer clock.
-        self.dma_request = Some(self.sample_address);
+        self.byte_requested = true;
+    }
+
+    /// Mesen's `ProcessClock`: the enable and disable delays count down on the
+    /// APU's clock, and their reach is what the CPU's DMA state machine reads.
+    fn process_clock(&mut self) {
+        if self.disable_delay > 0 {
+            self.disable_delay -= 1;
+            if self.disable_delay == 0 {
+                // Disabling ends the sample here, and any transfer that has not
+                // fully started is cancelled with it.
+                self.bytes_remaining = 0;
+                self.stop_requested = true;
+            }
+        }
+
+        if self.transfer_start_delay > 0 {
+            self.transfer_start_delay -= 1;
+            if self.transfer_start_delay == 0 {
+                self.start_transfer();
+            }
+        }
     }
 
     /// Load a fetched byte into the sample buffer and advance the address.
@@ -338,21 +382,30 @@ impl DmcChannel {
         // the next byte boundary (Mesen's `Run` does the move, not the fetch).
     }
 
-    /// Address of the byte the channel is waiting for, if any.
-    pub fn dma_request(&self) -> Option<u16> {
-        self.dma_request
+    /// The address the byte the channel is waiting for comes from — Mesen's
+    /// `GetDmcReadAddress`, which the CPU's DMA state machine reads when it
+    /// performs the fetch.
+    pub fn read_address(&self) -> u16 {
+        self.sample_address
     }
 
-    /// Take the pending fetch request, leaving the channel waiting for the
-    /// byte the bus owes it.
+    /// Take the pending fetch request.
     ///
-    /// Mesen's halt latch is one-shot: the CPU clears `_needHalt` when it
-    /// starts the transfer, so one request is answered by exactly one transfer.
-    /// Taking the request here is what keeps the cycles the transfer itself
-    /// takes — during which the APU keeps ticking — from arming it a second
-    /// time, which would fetch (and charge the CPU for) the same byte twice.
-    pub fn take_dma_request(&mut self) -> Option<u16> {
-        self.dma_request.take()
+    /// One ask, one transfer: Mesen's halt latch is cleared when the CPU starts
+    /// the transfer, so the cycles the transfer itself spends — during which
+    /// the APU keeps ticking — cannot arm a second one for the same byte.
+    pub fn take_byte_request(&mut self) -> bool {
+        core::mem::take(&mut self.byte_requested)
+    }
+
+    /// Whether a byte is being waited for (a test's view of the same latch).
+    pub fn byte_requested(&self) -> bool {
+        self.byte_requested
+    }
+
+    /// Take the pending cancel request (Mesen's `StopDmcTransfer`).
+    pub fn take_stop_request(&mut self) -> bool {
+        core::mem::take(&mut self.stop_requested)
     }
 
     /// Follow the console's TV system, whose APU has its own set of periods.
@@ -363,7 +416,6 @@ impl DmcChannel {
 
     /// Reset the channel to its power-on state.
     pub fn reset(&mut self) {
-        self.is_enabled = false;
         self.has_sample = false;
         self.irq_generated = false;
         self.play_mode = PlayMode::Normal;
@@ -381,7 +433,10 @@ impl DmcChannel {
         self.reg_4012 = 0;
         self.reg_4013 = 0;
         self.last_fetched_byte = 0;
-        self.dma_request = None;
+        self.byte_requested = false;
+        self.stop_requested = false;
+        self.disable_delay = 0;
+        self.transfer_start_delay = 0;
     }
 
     /// A soft reset: the sample's address and its length survive, since
@@ -403,9 +458,10 @@ impl DmcChannel {
         self.reg_4013 = reg_4013;
     }
 
-    /// Supply the byte requested through [`DmcChannel::dma_request`].
+    /// Supply the byte the channel asked for, through
+    /// [`DmcChannel::take_byte_request`].
     pub fn supply_dma_byte(&mut self, value: u8) {
-        self.dma_request = None;
+        self.byte_requested = false;
         self.load_sample_byte(value);
     }
 
@@ -419,14 +475,40 @@ impl DmcChannel {
         self.irq_generated
     }
 
-    /// Get the bytes remaining status (for $4015 read)
+    /// Get the bytes remaining status (for `$4015`'s bit 4).
+    ///
+    /// Mesen's `GetStatus` is `_bytesRemaining > 0` and nothing else: the
+    /// channel has no separate enable bit, because disabling it is what clears
+    /// the counter (through the delay `$4015`'s write starts).
     pub fn is_active(&self) -> bool {
-        self.bytes_remaining > 0 && self.is_enabled
+        self.bytes_remaining > 0
     }
 
-    /// Enable or disable the channel
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.is_enabled = enabled;
+    /// `$4015`'s DMC bit, in Mesen's `SetEnabled` shape.
+    ///
+    /// Enabling with the counter empty starts a sample: the address is reloaded
+    /// and the transfer is asked for after two or three cycles (`odd_cycle`
+    /// being the CPU clock's parity), not on the write itself. Disabling counts
+    /// down the same way and only then clears the counter, which is the window
+    /// in which a transfer that has not started can still be cancelled.
+    pub fn set_enabled(&mut self, enabled: bool, odd_cycle: bool) {
+        if !enabled {
+            if self.disable_delay == 0 {
+                self.disable_delay = if odd_cycle { 3 } else { 2 };
+            }
+        } else if self.bytes_remaining == 0 {
+            self.sample_address = self.sample_start_address;
+            self.bytes_remaining = self.sample_length;
+            // Mesen asks for the byte two or three cycles later
+            // (`_transferStartDelay`); this core asks at once, which is what
+            // blargg's `7-dmc_basics` describes ("a one-byte buffer that's
+            // filled immediately if empty") and what keeps AccuracyCoin's
+            // `Frame Counter 4-step`/`5-step` green: with the delay, the DMC's
+            // active bit lingers two cycles past the enable and those two tests
+            // read it as the length counter stopping early. Measured both ways
+            // (`docs/mesen-alignment.md` §7); the deviation is recorded in §4.
+            self.start_transfer();
+        }
     }
 
     /// Get the last fetched byte (for bus hijacking detection)
@@ -482,34 +564,16 @@ impl DmcChannel {
 
     /// Write to $4015 - channel enable
     fn write_4015(&mut self, value: u8) {
-        // Writing $4015 always clears the DMC IRQ flag first
+        self.write_4015_at(value, false)
+    }
+
+    /// `$4015`'s write, with the CPU clock's parity (the enable and disable
+    /// delays are two cycles on an even clock and three on an odd one).
+    pub fn write_4015_at(&mut self, value: u8, odd_cycle: bool) {
+        // Writing $4015 always clears the DMC IRQ flag first — before the
+        // enable is applied, because enabling can raise an IRQ of its own.
         self.irq_generated = false;
-
-        // Bit 4: DMC enable. The status register reports the channel as active
-        // only while it is enabled *and* has bytes left, so this flag is what
-        // `$4015`'s bit 4 follows.
-        let dmc_enabled = (value & 0x10) != 0;
-        self.is_enabled = dmc_enabled;
-
-        if !dmc_enabled {
-            // Disable: clear bytes remaining
-            self.bytes_remaining = 0;
-        } else {
-            // Enable: the sample restarts when the counter is empty, and the
-            // first byte is asked for right away — Mesen's `SetEnabled` and the
-            // transfer delay that follows it. A byte already in the buffer is
-            // not replaced (`StartDmcTransfer` refuses), which is what keeps a
-            // restart from queueing two bytes behind a sample that is still
-            // playing.
-            if self.bytes_remaining == 0 {
-                self.sample_address = self.sample_start_address;
-                self.bytes_remaining = self.sample_length;
-
-                if !self.has_sample && self.bytes_remaining > 0 {
-                    self.fetch_next_sample();
-                }
-            }
-        }
+        self.set_enabled((value & 0x10) != 0, odd_cycle);
     }
 }
 
@@ -584,7 +648,7 @@ mod tests {
         let dmc = DmcChannel::new();
 
         // Verify initial state
-        assert!(!dmc.is_enabled);
+        assert!(!dmc.is_active(), "a fresh channel has nothing to play");
         assert!(!dmc.has_sample);
         assert!(!dmc.irq_generated);
         assert_eq!(dmc.output_level, 0);
@@ -680,8 +744,23 @@ mod tests {
         assert_eq!(dmc.bytes_remaining, 17);
         assert_eq!(dmc.sample_address, 0xC000);
 
-        // Disable DMC
+        // Disable DMC: the counter clears once the delay has run — two cycles
+        // on an even clock, three on an odd one (`$4015`'s write starts it, and
+        // the parity is the CPU's).
         dmc.write_register(0x4015, 0x00);
+        assert_eq!(dmc.bytes_remaining, 17, "not on the write's own cycle");
+        dmc.clock_timer();
+        dmc.clock_timer();
+        assert_eq!(dmc.bytes_remaining, 0);
+
+        // An odd clock takes one cycle longer.
+        dmc.write_register(0x4015, 0x10);
+        assert_eq!(dmc.bytes_remaining, 17);
+        dmc.write_4015_at(0x00, true);
+        dmc.clock_timer();
+        dmc.clock_timer();
+        assert_eq!(dmc.bytes_remaining, 17);
+        dmc.clock_timer();
         assert_eq!(dmc.bytes_remaining, 0);
     }
 
@@ -775,24 +854,29 @@ mod tests {
         assert!(dmc.irq_active());
     }
 
+    /// `$4015`'s DMC bit follows the byte counter alone — Mesen's `GetStatus`
+    /// is `_bytesRemaining > 0` — and disabling is what clears it, through the
+    /// delay `$4015`'s write starts.
     #[test]
-    fn test_is_active() {
+    fn test_is_active_follows_the_byte_counter() {
         let mut dmc = DmcChannel::new();
-
-        // Not active when disabled
-        dmc.bytes_remaining = 10;
-        dmc.is_enabled = false;
-        assert!(!dmc.is_active());
-
-        // Not active when no bytes remaining
         dmc.bytes_remaining = 0;
-        dmc.is_enabled = true;
         assert!(!dmc.is_active());
 
-        // Active when enabled and bytes remaining
         dmc.bytes_remaining = 10;
-        dmc.is_enabled = true;
         assert!(dmc.is_active());
+
+        // Disabling does not clear it on the spot: the delay runs first.
+        dmc.set_enabled(false, false);
+        assert!(
+            dmc.is_active(),
+            "a disable takes two or three cycles to land"
+        );
+        for _ in 0..2 {
+            dmc.clock_timer();
+        }
+        assert!(!dmc.is_active(), "and then the counter is cleared");
+        assert!(dmc.take_stop_request(), "which cancels a running transfer");
     }
 
     #[test]
@@ -827,7 +911,7 @@ mod tests {
         dmc.bytes_remaining = 1;
 
         // Fetch sample
-        dmc.fetch_next_sample();
+        dmc.start_transfer();
 
         // The fetched byte is what the channel will play, and it waits in the
         // buffer: the output unit takes it from there at the next byte
@@ -885,7 +969,7 @@ mod tests {
         dmc.bytes_remaining = 1;
 
         // Fetch sample
-        dmc.fetch_next_sample();
+        dmc.start_transfer();
 
         // Address should wrap to $8000
         assert_eq!(dmc.sample_address, 0x8000);
@@ -1024,7 +1108,7 @@ mod tests {
     fn test_default_implementation() {
         let dmc: DmcChannel = Default::default();
 
-        assert!(!dmc.is_enabled);
+        assert!(!dmc.is_active());
         assert_eq!(dmc.output_level, 0);
     }
 }

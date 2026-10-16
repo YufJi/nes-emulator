@@ -287,7 +287,7 @@ impl Apu {
                 self.triangle.set_enabled(value & 0x04 != 0);
                 self.noise.set_enabled(value & 0x08 != 0);
                 // The DMC handles its own enable/disable and IRQ clearing.
-                self.dmc.write_register(0x4015, value);
+                self.dmc.write_4015_at(value, odd_apu_cycle);
             }
             0x4017 => {
                 // Frame counter control:
@@ -327,9 +327,11 @@ impl Apu {
     /// Every channel is clocked at the CPU rate; the frame counter runs
     /// alongside it and drives the envelope, sweep and length units.
     ///
-    /// If the DMC needs a sample byte it publishes the address through
-    /// [`Apu::take_dmc_dma_request`]; the caller must answer with
-    /// [`Apu::supply_dmc_byte`].
+    /// If the DMC needs a sample byte it asks through
+    /// [`Apu::take_dmc_start_request`]; the caller's DMA state machine answers
+    /// with a read from [`Apu::dmc_read_address`] and hands the byte back
+    /// through [`Apu::supply_dmc_byte`]. A disable can ask the same machine to
+    /// cancel a transfer through [`Apu::take_dmc_stop_request`].
     pub fn tick(&mut self) {
         self.pulse1.tick();
         self.pulse2.tick();
@@ -362,16 +364,26 @@ impl Apu {
         self.dmc.set_region(region);
     }
 
-    /// Address of the byte the DMC channel is waiting for, if any.
-    pub fn dmc_dma_request(&self) -> Option<u16> {
-        self.dmc.dma_request()
+    /// The address the DMC's next fetch reads from.
+    pub fn dmc_read_address(&self) -> u16 {
+        self.dmc.read_address()
     }
 
-    /// Take that request when the CPU is about to service it.
-    ///
-    /// One request, one transfer: see [`DmcChannel::take_dma_request`].
-    pub fn take_dmc_dma_request(&mut self) -> Option<u16> {
-        self.dmc.take_dma_request()
+    /// Whether the DMC is asking for a byte right now (a test's view).
+    pub fn dmc_byte_requested(&self) -> bool {
+        self.dmc.byte_requested()
+    }
+
+    /// Take the DMC's request for a byte, if it made one (Mesen's
+    /// `StartDmcTransfer`).
+    pub fn take_dmc_start_request(&mut self) -> bool {
+        self.dmc.take_byte_request()
+    }
+
+    /// Take the DMC's request to cancel the transfer it is running (Mesen's
+    /// `StopDmcTransfer`, reached through the disable delay).
+    pub fn take_dmc_stop_request(&mut self) -> bool {
+        self.dmc.take_stop_request()
     }
 
     /// Clock the units driven by the current frame counter step.

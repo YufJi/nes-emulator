@@ -38,6 +38,31 @@ pub trait Bus {
         self.write(addr, value);
     }
 
+    /// Start the transfer the chip owes, if there is one, and report whether a
+    /// cycle was spent doing it.
+    ///
+    /// Mesen runs its DMA loop inside `MemoryRead`; here the CPU pumps it so
+    /// that the cycles it steals are still its own — each one ends with
+    /// [`crate::Bus::read_cycle`]'s bookkeeping and, more importantly, with the
+    /// interrupt-line sampling the CPU does at the end of *every* cycle,
+    /// DMA's included. `read_address` is the address the CPU was about to use,
+    /// which the halt cycle reads from; `is_opcode_fetch` matters only on PAL,
+    /// where a transfer cannot start anywhere else.
+    ///
+    /// The default does nothing, so a bus used on its own (the CPU's unit
+    /// tests) is unaffected.
+    fn start_pending_dma(&mut self, _read_address: u16, _is_opcode_fetch: bool) -> bool {
+        false
+    }
+
+    /// Whether a transfer is still running.
+    fn dma_running(&self) -> bool {
+        false
+    }
+
+    /// Run one cycle of that transfer.
+    fn run_dma_cycle(&mut self) {}
+
     /// Called when the CPU completes a cycle
     ///
     /// This allows the bus to update other components (PPU, APU)
