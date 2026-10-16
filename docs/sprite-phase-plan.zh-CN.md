@@ -326,6 +326,47 @@ glitch causing the current address to be incremented by 1"）。实现后按 Mes
 
 ### S3——sprite 阶段：取指 dot 与移位器表
 
+> **已完成，2026-10-16。** 这个阶段现在是 Mesen 的形状：取指落在它自己的 dot 上、从二级 OAM 的字节
+> 出发，像素来自一串"在各自 sprite 的 X 所指 dot 上上电"的移位器，而不是绘制时按 X 挑槽位。
+
+**实测。** 除了两张必须动的画面，什么都没有移动：
+
+| 门 | S3 之前 | S3 之后 |
+| --- | --- | --- |
+| AccuracyCoin | 跑 146 / 过 111 / 失败 17 | **146 / 111 / 17，失败地址与检查项逐一相同** |
+| `sprite_hit_tests` | 11/11 | 11/11 |
+| `sprite_overflow_tests` | 4/5（`3.Timing` 第 4 项） | 4/5，没动——那是 S2 的门 |
+| `mmc3_test_2`（A12 那一半） | 5/6 | 5/6——`3-A12_clocking` 与 `4-scanline_timing` 仍过 |
+| `ppu_vbl_nmi` | 10/10 | 10/10 |
+| `cpu_interrupts_v2`、`apu_test`、`instr_test-v5`、`instr_timing`、`oam_read`、`oam_stress`、`ppu_open_bus`、`blargg_ppu_tests`、`branch_timing` | 全绿 | 全绿 |
+| 单元测试 | 616 | **620** |
+
+两张金标准在读过画面之后重录：`ppu_read_buffer` 仍打印 `Passed`、`Hit`/`No-Hit` 表逐格相同（动的是它
+动画的帧相位），AccuracyCoin 的结果表逐字节相同，因此只是屏幕的帧挪了。
+
+**落地了什么。** `PixelPipeline` 现在持有 Mesen `NesPpu` 的那套状态：`_spriteTiles`（八个 `SpriteInfo`）、
+带 `SpriteShifterDone` 哨兵的 `_spriteShifterList`、扫描位置（`_nextSpriteShifter`/
+`_nextSpriteShifterCycle`）与它的 `active`/`counting`/`expired` 三个掩码、
+`_spriteCount`/`_processSprites`、`_sprite0Visible`，以及三个 `_minimumDraw*` 裁剪 dot。总线在 dot 257
+把这一行的二级 OAM 字节交过来（`begin_sprite_fetch`）；261、269、… 317 上的取指是
+`LoadSpriteTileInfo`——槽位来自 dot、两个图案平面在同一个 dot 里读完、范围判断与地址算术取自
+`LoadSprite`；像素来自 `draw_sprites`，即 `GetPixelColor` 的 sprite 那一半：每 dot 移位一次、最前面的
+不透明 sprite 胜出、sprite 0 命中在重叠的那个像素上升起。dot 0 排序并把扫描位置重置到队首，dot 339 把
+没轮到的以 counting 模式交接。左列裁剪 dot 在帧顶**以及**每次 `$2001` 写时重算，正如 `SetMaskRegister`
+所为——`/tmp/newsrc4` 里那句"不在 `$2001` 写时更新"的注释是错的。
+
+除模型本身之外还买到两件事：取指窗口挂在渲染状态而不是 `$2001` 的 sprite 位（Mesen 把 257-320 整段挂在
+`_prevRenderingEnabled` 上），以及两个图案平面在同一个 dot 里读完，于是两个 sprite 取指之间总线只低一个
+dot 而不是两个——上面那张表里的 MMC3 那一半盯着这件事，它没动。
+
+**测试**（五条，改动前全部失败）：
+`test_the_fetch_takes_the_control_register_as_it_stands_on_the_fetch_dot`（`Suddenly Resize Sprite` 的
+判别条件：比取指行高十行的 sprite 在 8x8 下出界、16x16 下在界内，于是在两个槽位的取指 dot 之间翻转
+`SPRITE_SIZE` 就决定了谁进得了移位器）、`test_the_fetch_runs_with_the_sprite_enable_bit_clear`、
+`test_a_shifter_activates_at_sprite_x_plus_one`、`test_dot_339_hands_the_unreached_shifters_over`，
+以及改写过的 `test_line_zero_is_fetched_from_the_last_walks_secondary_oam`（预渲染取指把每一条遗留
+都拒掉，因为 261 截成八位是 5）。
+
 **改动。** dot 257 的槽位锁存与逐像素重算让位给 Mesen 的那套机器：带 `SpriteShifterDone` 哨兵的
 移位器表、`(cycle - 257) % 8 == 4` 上的 `LoadSpriteTileInfo`（从二级 OAM 取四个字节，并在**同一个
 dot 里**读**两个**图案平面）、257 时重置 `_spriteIndex`/`_spriteCount`、257-320 每个 dot 把

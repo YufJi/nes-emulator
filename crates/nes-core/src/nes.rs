@@ -9,7 +9,7 @@ use crate::apu::Apu;
 use crate::bus::Bus;
 use crate::cpu::Cpu;
 use crate::mapper::{create_mapper, Mapper};
-use crate::ppu::pipeline::{PixelPipeline, SpriteSlot};
+use crate::ppu::pipeline::PixelPipeline;
 use crate::ppu::rendering::{FrameBuffer, MapperChr, Mirroring, VramChr};
 use crate::ppu::sprite::SpriteEvaluator;
 use crate::ppu::{Ppu, PpuCtrl, PpuMask, PpuMemory, PpuStatus};
@@ -966,6 +966,11 @@ impl NesBus {
             drawing_line,
         };
         self.ppu.write_register_with(addr, value, memory);
+        if addr & 0x2007 == 0x2001 {
+            // Mesen's `SetMaskRegister` ends with `UpdateMinimumDrawCycles`, so the
+            // left-column bits move the clip dots from the write on.
+            self.pipeline.update_minimum_draw_cycles(self.ppu.mask);
+        }
     }
 
     /// A controller port read.
@@ -1143,6 +1148,13 @@ impl NesBus {
                 self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
                 self.pipeline.reset_shifters();
             }
+            if cycle == 0 {
+                // Mesen's `ProcessScanlineFirstCycle` re-reads the clip dots when
+                // the frame rolls over, so a mid-frame `$2001` walk moves them for
+                // the rest of *this* frame while the new frame starts from whatever
+                // the mask says at its top.
+                self.pipeline.update_minimum_draw_cycles(self.ppu.mask);
+            }
             self.latch_sprite_slots(cycle);
         } else if scanline < 240 {
             // The sprite pipeline is driven at Mesen's dots: the evaluation
@@ -1184,37 +1196,26 @@ impl NesBus {
         self.latch_sprite_slots(cycle);
     }
 
-    /// Hand the pipeline the slots for the next line, on the dot the chip does.
+    /// Hand the pipeline the line's secondary OAM on the dot the chip starts its
+    /// sprite fetch.
     ///
-    /// This is the *fetch* half and it is gated the same way the walk is, for
-    /// the same reason: Mesen's whole dots-257-320 window sits inside
+    /// This is the *fetch* half and it is gated the same way the walk is, for the
+    /// same reason: Mesen's whole dots-257-320 window sits inside
     /// `if(_prevRenderingEnabled)`. On the pre-render line it is the only thing
     /// that runs, and what it hands over is whatever secondary OAM holds — line
     /// 0's sprites.
     fn latch_sprite_slots(&mut self, cycle: u16) {
         if cycle == 257 && self.rendering_enabled_delayed {
-            let slots = self.sprite_slots_from_secondary_oam();
-            self.pipeline.set_sprite_slots(slots);
-        }
-    }
-
-    /// The line's secondary-OAM slots, in the form the sprite pipeline wants.
-    fn sprite_slots_from_secondary_oam(&self) -> [SpriteSlot; 8] {
-        let mut slots = [SpriteSlot::default(); 8];
-        for (index, slot) in slots.iter_mut().enumerate() {
-            if let Some(sprite) = self.sprite_evaluator.secondary_oam.get_sprite(index) {
-                *slot = SpriteSlot {
-                    y: sprite.y,
-                    tile: sprite.tile,
-                    attributes: sprite.attributes,
-                    x: sprite.x,
-                    is_sprite_zero: self.sprite_evaluator.secondary_oam.has_sprite_0()
-                        && index == 0,
-                    occupied: true,
-                };
+            let mut bytes = [0xFFu8; 0x20];
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                *byte = self.sprite_evaluator.secondary_oam.get_byte(index);
             }
+            // Mesen copies `_sprite0Added` into `_sprite0Visible` on every dot of
+            // 257-320; the walk that sets it is over by dot 256, so one copy here
+            // carries the same value.
+            let sprite_0_added = self.sprite_evaluator.secondary_oam.has_sprite_0();
+            self.pipeline.begin_sprite_fetch(bytes, sprite_0_added);
         }
-        slots
     }
 
     /// Run the pixel pipeline for the dot the PPU is standing on.
@@ -1223,14 +1224,17 @@ impl NesBus {
     /// bank switch or an MMC5 nametable window takes effect on the fetch that
     /// follows it.
     fn step_pipeline(&mut self, pre_render: u16) {
+        let rendering_delayed = self.rendering_enabled_delayed;
         match self.mapper.as_deref_mut() {
             Some(mapper) => {
                 let mut chr = MapperChr(mapper);
-                self.pipeline.step(&mut self.ppu, &mut chr, pre_render);
+                self.pipeline
+                    .step(&mut self.ppu, &mut chr, pre_render, rendering_delayed);
             }
             None => {
                 let mut chr = VramChr;
-                self.pipeline.step(&mut self.ppu, &mut chr, pre_render);
+                self.pipeline
+                    .step(&mut self.ppu, &mut chr, pre_render, rendering_delayed);
             }
         }
     }
@@ -4580,12 +4584,16 @@ mod tests {
         nes.bus.ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES;
 
         let pre_render = nes.region().last_scanline();
-        run_until_at_least(&mut nes, pre_render, 258);
-        let slots = *nes.bus.pipeline.sprite_slots();
-        assert!(slots[0].occupied, "the pre-render fetch still runs");
-        assert_eq!(
-            slots[0].y, 238,
-            "and it fetches the bytes line 239's walk left behind"
+        // Past dot 317, so every slot has been fetched for line 0.
+        run_until_at_least(&mut nes, pre_render, 320);
+        // The fetch is what reads the leftover bytes, and its in-range test is
+        // what rejects them: the line it compares against is truncated to eight
+        // bits, so 261 becomes 5 and every sprite that was on line 239 is *below*
+        // it. Every shifter is therefore marked done and line 0 draws no sprite.
+        let shifters = *nes.bus.pipeline.sprite_shifters();
+        assert!(
+            shifters[..8].iter().all(|entry| *entry == 0x8000),
+            "the pre-render fetch rejects the leftovers from line 239"
         );
     }
 }

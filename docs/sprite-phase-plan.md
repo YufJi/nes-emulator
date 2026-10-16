@@ -353,6 +353,53 @@ normal store. Plus `test_overflow_is_raised_on_the_dot_the_ninth_sprite_is_judge
 
 ### S3 — the sprite phase: the fetch dots and the shifter list
 
+> **Done, 2026-10-16.** The phase is now Mesen's: the fetch runs on its own dots
+> out of the secondary-OAM bytes, and the pixels come from a list of shifters that
+> go live on the dot each sprite's X names, rather than from a slot picked by X at
+> draw time.
+
+**Measured.** Nothing moved except the two pictures that had to:
+
+| Gate | Before S3 | After S3 |
+| --- | --- | --- |
+| AccuracyCoin | 146 ran / 111 passed / 17 failing | **146 / 111 / 17, the same 17 addresses and the same checks** |
+| `sprite_hit_tests` | 11/11 | 11/11 |
+| `sprite_overflow_tests` | 4/5 (`3.Timing` check 4) | 4/5, unchanged — that is S2's gate |
+| `mmc3_test_2` (the A12 half) | 5/6 | 5/6 — `3-A12_clocking` and `4-scanline_timing` still pass |
+| `ppu_vbl_nmi` | 10/10 | 10/10 |
+| `cpu_interrupts_v2`, `apu_test`, `instr_test-v5`, `instr_timing`, `oam_read`, `oam_stress`, `ppu_open_bus`, `blargg_ppu_tests`, `branch_timing` | green | green |
+| unit tests | 616 | **620** |
+
+Two goldens were re-recorded after their screens were read: `ppu_read_buffer` still prints `Passed`
+with the same `Hit`/`No-Hit` table (its animation's frame phase moved), and AccuracyCoin's result
+table is byte-identical, so only the screen's frames shifted.
+
+**What landed.** `PixelPipeline` now holds what Mesen's `NesPpu` holds: `_spriteTiles` (eight
+`SpriteInfo` entries), `_spriteShifterList` with the `SpriteShifterDone` sentinel, the sweep
+(`_nextSpriteShifter`/`_nextSpriteShifterCycle`) and its `active`/`counting`/`expired` masks,
+`_spriteCount`/`_processSprites`, `_sprite0Visible`, and the three `_minimumDraw*` clip dots. The bus
+hands the line's secondary-OAM bytes over on dot 257 (`begin_sprite_fetch`), the fetch at dots
+261, 269, … 317 is `LoadSpriteTileInfo` — the slot from the dot, both pattern planes read in that one
+dot, the range test and the address arithmetic from `LoadSprite` — and the pixels come from
+`draw_sprites`, which is `GetPixelColor`'s sprite half: the shifters are shifted once per dot, the
+frontmost opaque sprite wins, and the sprite-0 hit is raised on the pixel that overlaps. Dot 0 sorts
+the list and restarts the sweep; dot 339 hands the unfinished ones over in counting mode. The
+left-column clip dots are recomputed at the top of the frame *and* on every `$2001` write, as
+`SetMaskRegister` does — the note in `/tmp/newsrc4` that said otherwise was wrong.
+
+Two things this buys beyond the model itself: the fetch window hangs off the rendering state rather
+than `$2001`'s sprite bit (Mesen gates the whole of 257-320 on `_prevRenderingEnabled`), and both
+pattern planes are read in one dot, so the bus is low between two sprites' fetches for one dot rather
+than two — which the MMC3 half of the gate above watched and did not move.
+
+**Tests** (five, all failing before the change): `test_the_fetch_takes_the_control_register_as_it_stands_on_the_fetch_dot`
+(the `Suddenly Resize Sprite` discriminator: a sprite ten lines above the fetched line is out of range
+at 8x8 and in range at 16, so flipping `SPRITE_SIZE` between two slots' fetch dots decides which of
+them reaches the shifters), `test_the_fetch_runs_with_the_sprite_enable_bit_clear`,
+`test_a_shifter_activates_at_sprite_x_plus_one`, `test_dot_339_hands_the_unreached_shifters_over`,
+and the reworked `test_line_zero_is_fetched_from_the_last_walks_secondary_oam` (the pre-render fetch
+rejects every leftover, because 261 truncates to 5).
+
 **Change.** The dot-257 slot latch and the per-pixel recomputation give way to Mesen's machinery: a
 shifter list with the `SpriteShifterDone` sentinel, `LoadSpriteTileInfo` on `(cycle - 257) % 8 == 4`
 reading the four bytes from secondary OAM and **both** pattern planes in that one dot, `_spriteIndex`/

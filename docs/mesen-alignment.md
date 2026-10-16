@@ -83,11 +83,14 @@ green (the reconstructed run before the first sprite-phase fetch was a dot long)
 `RenderTiming` and the whole-line renderer are gone. (`ppu.render_v` is *not*: the field survives,
 unused but serialized — §10.3.)
 
-What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`, `LoadTileInfo`,
-`LoadSprite`/`LoadExtraSprites`, `ShiftTileRegisters`, `GetPixelColor`, `DrawPixel`,
-`_minimumDrawBgCycle`/`_minimumDrawSpriteCycle`, and `ProcessSpriteEvaluation`
-(`ProcessSpriteEvaluationStart`/`End`, the OAM address behaviour, `SetOamCorruptionFlags` /
-`ProcessOamCorruption`).
+**After S3 (2026-10-16) the sprite *phase* is Mesen's**: the fetch runs on its own dots with both
+pattern planes read in the one dot (the equivalent of `LoadSpriteTileInfo`/`LoadSprite`), the pixels
+come from a list of shifters (`GetPixelColor`/`DrawPixel`'s sprite half), and the `_minimumDraw*`
+clip dots follow `$2001` writes. **What is still missing** is the evaluation half —
+`ProcessSpriteEvaluation` (`ProcessSpriteEvaluationStart`/`End`, the OAM address behaviour,
+`SetOamCorruptionFlags`/`ProcessOamCorruption`), `LoadExtraSprites`, and the nametable reads at dots
+337/339 — all of which is S2/S4: S2 is ported and measured but blocked on S4, see
+`sprite-phase-plan.md` §4.
 
 ### 2.2 PPU: the bus, OAM and the registers around rendering
 
@@ -463,6 +466,8 @@ the per-dot renderer). The harness now fails when the ROM reports nothing, and t
 row is measured.
 
 | S1 of the sprite-phase plan, 2026-10-16 | The sprite walk is gated the way Mesen gates it: it runs only while the picture is being drawn (`_prevRenderingEnabled`, the mask as of the end of the previous dot) and never on the pre-render line, whose fetch instead latches the slots straight out of secondary OAM. That needed one more piece of `LoadSprite` — the fetch's in-range test, with the line truncated to eight bits (261 and -1 both become 5) and the difference widened signed — or line 0 would draw the stale entries | `sprite_overflow_tests` 2/5 → **4/5**: `1.Basics` (check 6, "must not be set when all rendering is off") and `5.Emulator` (check 3, "disabling rendering did not recalculate the flag time") print `PASSED`; `3.Timing` is still `FAILED: #4`, which is S2's gate. `sprite_hit_tests` 11/11 — without the fetch test `07.screen_bottom` fell to `FAILED: #4`, and the same missing piece put AccuracyCoin's `Sprite0Hit_Behavior` (`$0457`, check 13) on the failing list; both came back with it. AccuracyCoin 146/111/17, the same 17 addresses; `mmc3_test_2` 5/6, `ppu_vbl_nmi` 10/10, `cpu_interrupts_v2` 5/5, `apu_test` 8/8 unchanged; unit tests 613 → 616. Detail in [`sprite-phase-plan.md`](./sprite-phase-plan.md) §4/S1 |
+
+| S3 of the sprite-phase plan, 2026-10-16 | The sprite phase becomes Mesen's machinery: `PixelPipeline` holds the shifter list with its `SpriteShifterDone` sentinel and active/counting/expired masks, `LoadSpriteTileInfo` on dots 261…317 with **both** pattern planes read in that one dot, `_spriteCount`/`_processSprites`, `_sprite0Visible`, the dot-0 sort, the dot-339 counting handoff, and the three `_minimumDraw*` clip dots (recomputed at the top of the frame *and* on every `$2001` write, as `SetMaskRegister` does). `draw_sprites` is `GetPixelColor`'s sprite half: the shifters shift once per dot and the frontmost opaque sprite wins. The fetch window now hangs off the rendering state rather than `$2001`'s sprite bit | **Nothing moved but the two pictures that had to**: AccuracyCoin 146 ran / 111 passed / 17 failing with the same addresses *and* the same checks; `sprite_hit_tests` 11/11; `sprite_overflow_tests` 4/5 (S2's gate); `mmc3_test_2` 5/6 with `3-A12_clocking` and `4-scanline_timing` still green (the one-dot pattern fetch was the A12 risk); `ppu_vbl_nmi` 10/10, `cpu_interrupts_v2` 5/5, `apu_test` 8/8 unchanged; unit tests 616 → 620. `ppu_read_buffer`'s golden was re-recorded after its screen was read (still `Passed`, same table), and AccuracyCoin's after its result table came back byte-identical. Detail in [`sprite-phase-plan.md`](./sprite-phase-plan.md) §4/S3 |
 
 ### Experiments that were implemented, measured and reverted
 

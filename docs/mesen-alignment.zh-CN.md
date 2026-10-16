@@ -71,11 +71,12 @@ dot 上画出来，滚动取芯片自己的 `v`/`t`/`x`；sprite 阶段的图案
 让首个 sprite 阶段取指之前的低电平段长了一个 dot），`RenderTiming` 与整行渲染器都已删除。
 （`ppu.render_v` 其实**没有**删：字段还在，没人用它却仍进存档——见 §10.3。）
 
-Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTileInfo`、
-`LoadSprite`/`LoadExtraSprites`、`ShiftTileRegisters`、`GetPixelColor`、`DrawPixel`、
-`_minimumDrawBgCycle`/`_minimumDrawSpriteCycle`，以及 `ProcessSpriteEvaluation`
-（`ProcessSpriteEvaluationStart`/`End`、OAM 地址行为、`SetOamCorruptionFlags`/
-`ProcessOamCorruption`）。
+**S3（2026-10-16）之后**，sprite **阶段**已经是 Mesen 的形状：取指落在自己的 dot 上、图案平面在同一个
+dot 里读完（`LoadSpriteTileInfo`/`LoadSprite` 的等价物）、像素来自移位器表（`GetPixelColor`/`DrawPixel`
+的 sprite 那一半）、`_minimumDraw*` 裁剪 dot 随 `$2001` 写更新。**仍然缺的**是求值那一半——`ProcessSpriteEvaluation`
+（`ProcessSpriteEvaluationStart`/`End`、OAM 地址行为、`SetOamCorruptionFlags`/`ProcessOamCorruption`）、
+`LoadExtraSprites`，以及 dot 337/339 的 nametable 读；这些是 S2/S4 的活（S2 已移植并实测、卡在 S4，
+见 `sprite-phase-plan.zh-CN.md` §4）。
 
 ### 2.2 PPU：总线、OAM 与渲染周边的寄存器
 
@@ -385,6 +386,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 
 | sprite 阶段计划的 S1，2026-10-16 | 步进按 Mesen 的门限起来：只在画面正在绘制时运行（`_prevRenderingEnabled`，上一个 dot 末尾的掩码），且**不再**在预渲染行上运行——预渲染行保留取指，并直接从二级 OAM 锁存槽位。这需要同时补上 `LoadSprite` 的另一半：取指处的 in-range 判定（行号截成八位，261 与 -1 都变成 5，差值按有符号加宽），否则第 0 行会把陈旧槽位画出来 | `sprite_overflow_tests` 2/5 → **4/5**：`1.Basics`（第 6 项"全部渲染关闭时不得置位"）与 `5.Emulator`（第 3 项"关闭渲染没有重算标志时间"）打出 `PASSED`；`3.Timing` 仍 `FAILED: #4`，那是 S2 的门。`sprite_hit_tests` 11/11——不补取指判定时 `07.screen_bottom` 掉到 `FAILED: #4`，同一处缺失也让 AccuracyCoin 的 `Sprite0Hit_Behavior`（`$0457` 第 13 项）进了清单，补上后两者都回来了。AccuracyCoin 146/111/17、失败地址逐个相同；`mmc3_test_2` 5/6、`ppu_vbl_nmi` 10/10、`cpu_interrupts_v2` 5/5、`apu_test` 8/8 不变；单元测试 613 → 616。细节见 [`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md) §4/S1 |
 
+| sprite 阶段计划的 S3，2026-10-16 | sprite 阶段换成 Mesen 的那套机器：`PixelPipeline` 持有带 `SpriteShifterDone` 哨兵与 active/counting/expired 三个掩码的移位器表、261…317 上的 `LoadSpriteTileInfo`（**两个图案平面在同一个 dot 里**读完）、`_spriteCount`/`_processSprites`、`_sprite0Visible`、dot 0 的排序、dot 339 的 counting 交接，以及三个 `_minimumDraw*` 裁剪 dot（帧顶**与**每次 `$2001` 写都重算，正如 `SetMaskRegister`）。`draw_sprites` 就是 `GetPixelColor` 的 sprite 那一半：每 dot 移位一次、最前面的不透明 sprite 胜出。取指窗口改挂在渲染状态上，而不是 `$2001` 的 sprite 位 | **除两张必须动的画面外没有任何移动**：AccuracyCoin 跑 146 / 过 111 / 失败 17，地址**与检查项**都逐一相同；`sprite_hit_tests` 11/11；`sprite_overflow_tests` 4/5（S2 的门）；`mmc3_test_2` 5/6，`3-A12_clocking` 与 `4-scanline_timing` 仍绿（单 dot 取指正是 A12 的风险点）；`ppu_vbl_nmi` 10/10、`cpu_interrupts_v2` 5/5、`apu_test` 8/8 不变；单元测试 616 → 620。`ppu_read_buffer` 的金标准在读过屏幕后重录（仍 `Passed`、同一张表），AccuracyCoin 的在结果表逐字节相同后重录。细节见 [`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md) §4/S3 |
+
 ### 实现、实测、随后撤回的实验
 
 它们的价值在于证据；不先读这一段就不要重试。
@@ -590,6 +593,13 @@ AccuracyCoin 结果日志、进度监视）都在 `tests/cycle_trace.rs` 里。`
 合在一起，在 S4 的 OAM 地址簿记到位之前要代价十一项 AccuracyCoin。四组对照在
 `sprite-phase-plan.zh-CN.md` §4/S2，本文件 §7 的实验清单里也有一条；移植在
 `/tmp/s2-walk-dot-exact.diff` 里等着。
+
+**S3 已经做完**（2026-10-16）：sprite **阶段**现在是 Mesen 的形状——取指在自己的 dot 上、两个图案平面
+在同一个 dot 里读完、像素来自移位器表（带 `SpriteShifterDone` 哨兵与 active/counting/expired 三个掩码）、
+dot 0 排序与 dot 339 的 counting 交接、三个 `_minimumDraw*` 裁剪 dot 随 `$2001` 写重算；取指窗口改挂在
+渲染状态而不是 sprite 使能位上。**门是无移动**：AccuracyCoin 146/111/17 连检查项都逐一相同、
+`sprite_hit_tests` 11/11、`mmc3_test_2` 5/6（含 A12 两张）、`ppu_vbl_nmi` 10/10；单元测试 616 → 620。
+细节见 `sprite-phase-plan.zh-CN.md` §4/S3。
 
 **套件 2026-10-16 已经回到树里**（`sprite-phase-plan.zh-CN.md` 的第 0 步）：它们曾为 §10 那轮让路被
 移出，又从 `b4caaf6^` 放了回去。放回之前，凡是以**画面**为判决的 ROM 都被人眼读过一遍，然后才按当前

@@ -119,77 +119,79 @@ pub struct PixelPipeline {
     /// Address of the last access the pipeline made, for the cartridge's A12
     /// filter. `None` on dots that made no access.
     bus_access: Option<u16>,
-    /// The secondary-OAM slots the sprite phase fetches for, filled by the
-    /// line's evaluation: one entry per slot.
+    /// The line's secondary-OAM bytes, as the fetch reads them (Mesen's
+    /// `_secondarySpriteRam`).
     ///
-    /// The *evaluation* that fills these is still done a line at a time; the
-    /// fetch, the drawing and the sprite-0 hit all run at the dot.
-    sprite_slots: [SpriteSlot; 8],
-    /// The pattern bytes fetched for those slots, which is what the drawing
-    /// phase reads.
-    sprite_tiles: [SpriteTile; 8],
-}
-
-/// One of the line's eight secondary-OAM slots, as the evaluation found it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SpriteSlot {
-    /// OAM byte 0: the sprite's Y position, one less than its top line.
-    pub y: u8,
-    /// OAM byte 1: tile index.
-    pub tile: u8,
-    /// OAM byte 2: attributes (flips, priority, palette).
-    pub attributes: u8,
-    /// OAM byte 3: X position.
-    pub x: u8,
-    /// Whether this slot holds OAM sprite 0, which is the only one that can
-    /// raise the sprite-0 hit.
-    pub is_sprite_zero: bool,
-    /// Whether the evaluation put a sprite here at all.
+    /// The bus hands these over on dot 257 — `LoadSpriteTileInfo` reads them on
+    /// dots 261, 269, … 317, and the walk that fills secondary OAM is over by
+    /// dot 256, so one copy at 257 is the same bytes.
+    secondary_oam: [u8; 0x20],
+    /// The pattern bytes each of the eight slots was fetched for (Mesen's
+    /// `_spriteTiles` — eight of its sixty-four entries, since the sprite limit
+    /// is not removed).
+    sprite_tiles: [SpriteInfo; 8],
+    /// Each slot's place on the line, encoded as `(x + 1) << 4 | slot` — the dot
+    /// its shifter becomes live on (Mesen's `_spriteShifterList`).
     ///
-    /// The chip reports an empty slot by fetching tile $FF; this is what keeps
-    /// that fetch from ever being drawn.
-    pub occupied: bool,
+    /// Nine entries, because the sweep walks a sentinel: entry 8 is always
+    /// [`SPRITE_SHIFTER_DONE`], which is what stops it.
+    sprite_shifter_list: [u16; 9],
+    /// Where the sweep of `sprite_shifter_list` stands (Mesen's
+    /// `_nextSpriteShifter` and `_nextSpriteShifterCycle`).
+    next_sprite_shifter: usize,
+    next_sprite_shifter_cycle: u16,
+    /// The shifters whose pixels are being output, the ones waiting for their X
+    /// to come round, and the ones that have finished (Mesen's `_activeSpriteShifters`,
+    /// `_countingSpriteShifters` and `_expiredSpriteShifters`).
+    active_sprite_shifters: u8,
+    counting_sprite_shifters: u8,
+    expired_sprite_shifters: u8,
+    /// How many sprites the line's fetch found, which is what decides whether
+    /// the sprite half of the pixel runs at all (Mesen's `_spriteCount` and
+    /// `_processSprites`).
+    sprite_count: u8,
+    process_sprites: bool,
+    /// Whether the line's first secondary-OAM entry is treated as sprite 0
+    /// (Mesen's `_sprite0Visible`, copied from `_sprite0Added`).
+    sprite_0_visible: bool,
+    /// The dots the background and sprite pixels are clipped on, from the mask
+    /// at the start of the frame and on every `$2001` write (Mesen's
+    /// `_minimumDrawBgCycle`, `_minimumDrawSpriteCycle` and
+    /// `_minimumDrawSpriteStandardCycle`).
+    minimum_draw_bg_cycle: u16,
+    minimum_draw_sprite_cycle: u16,
+    minimum_draw_sprite_standard_cycle: u16,
 }
 
-crate::state::state_fields!(SpriteSlot {
-    y,
-    tile,
-    attributes,
-    x,
-    is_sprite_zero,
-    occupied,
-});
-
-impl SpriteSlot {
-    fn vertical_flip(&self) -> bool {
-        self.attributes & 0x80 != 0
-    }
-    fn horizontal_flip(&self) -> bool {
-        self.attributes & 0x40 != 0
-    }
-    fn behind_background(&self) -> bool {
-        self.attributes & 0x20 != 0
-    }
-    fn palette(&self) -> u8 {
-        (self.attributes >> 2) & 0x03
-    }
-}
-
-/// A secondary-OAM slot's pattern bytes for the line being drawn.
+/// One sprite's fetched pattern bytes and the attributes that go with them —
+/// Mesen's `NesSpriteInfo`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct SpriteTile {
+struct SpriteInfo {
+    /// Attributes bit 5: draw the sprite behind an opaque background pixel.
+    background_priority: bool,
+    /// OAM byte 3: the sprite's leftmost column.
+    sprite_x: u8,
+    /// The two pattern bytes, already mirrored if the sprite is.
     low: u8,
     high: u8,
-    /// Whether the slot was occupied, i.e. whether the fetched bytes mean
-    /// anything. The chip fetches tile $FF for an empty slot, and it fetches
-    /// for a slot whose sprite is not on the line either; this is what keeps
-    /// those fetches from being drawn.
-    occupied: bool,
+    /// `(attributes & 3) << 2 | 0x10`, the palette the sprite draws in.
+    palette_offset: u8,
 }
 
+crate::state::state_fields!(SpriteInfo {
+    background_priority,
+    sprite_x,
+    low,
+    high,
+    palette_offset,
+});
+
+/// Mesen's `SpriteShifterDone`: a shifter-list entry that names no sprite.
+const SPRITE_SHIFTER_DONE: u16 = 0x8000;
+
 /// Where a slot's pattern bytes are on the line the chip is fetching for, and
-/// whether the sprite is on that line — Mesen's `LoadSprite`, less the work it
-/// does for the shifters.
+/// whether the sprite is on that line at all — Mesen's `LoadSprite`, less the
+/// work it does for the shifters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct SpriteFetch {
     /// Address of the tile's first row.
@@ -199,12 +201,6 @@ struct SpriteFetch {
     /// Whether the sprite covers the line being fetched for.
     in_range: bool,
 }
-
-crate::state::state_fields!(SpriteTile {
-    low,
-    high,
-    occupied
-});
 
 crate::state::state_fields!(PixelPipeline {
     shifters,
@@ -216,8 +212,20 @@ crate::state::state_fields!(PixelPipeline {
     bg_opaque,
     mirroring,
     region,
-    sprite_slots,
+    secondary_oam,
     sprite_tiles,
+    sprite_shifter_list,
+    next_sprite_shifter,
+    next_sprite_shifter_cycle,
+    active_sprite_shifters,
+    counting_sprite_shifters,
+    expired_sprite_shifters,
+    sprite_count,
+    process_sprites,
+    sprite_0_visible,
+    minimum_draw_bg_cycle,
+    minimum_draw_sprite_cycle,
+    minimum_draw_sprite_standard_cycle,
 });
 
 impl Default for PixelPipeline {
@@ -240,19 +248,77 @@ impl PixelPipeline {
             mirroring: Mirroring::Horizontal,
             region: Region::Ntsc,
             bus_access: None,
-            sprite_slots: [SpriteSlot::default(); 8],
-            sprite_tiles: [SpriteTile::default(); 8],
+            secondary_oam: [0xFF; 0x20],
+            sprite_tiles: [SpriteInfo::default(); 8],
+            sprite_shifter_list: [SPRITE_SHIFTER_DONE; 9],
+            next_sprite_shifter: 0,
+            next_sprite_shifter_cycle: 0,
+            active_sprite_shifters: 0,
+            counting_sprite_shifters: 0,
+            expired_sprite_shifters: 0,
+            sprite_count: 0,
+            process_sprites: false,
+            sprite_0_visible: false,
+            minimum_draw_bg_cycle: 0,
+            minimum_draw_sprite_cycle: 0,
+            minimum_draw_sprite_standard_cycle: 0,
         }
     }
 
     /// Hand the sprite phase the line's secondary-OAM slots.
-    pub fn set_sprite_slots(&mut self, slots: [SpriteSlot; 8]) {
-        self.sprite_slots = slots;
-        for (tile, slot) in self.sprite_tiles.iter_mut().zip(slots.iter()) {
-            tile.low = 0;
-            tile.high = 0;
-            tile.occupied = slot.occupied;
-        }
+    /// Hand over the line's secondary OAM and whether its first entry counts as
+    /// sprite 0, on the dot the chip starts its sprite fetch.
+    ///
+    /// Mesen copies `_sprite0Added` into `_sprite0Visible` on every dot of
+    /// 257-320 and reads `_secondarySpriteRam` at each fetch dot; the walk that
+    /// writes both is over by dot 256, so one copy at 257 carries the same
+    /// values.
+    pub fn begin_sprite_fetch(&mut self, secondary_oam: [u8; 0x20], sprite_0_added: bool) {
+        self.secondary_oam = secondary_oam;
+        self.sprite_0_visible = sprite_0_added;
+        self.sprite_count = 0;
+    }
+
+    /// The shifter list, for the diagnostics and the tests that ask which dot a
+    /// sprite's pixels start on.
+    pub fn sprite_shifters(&self) -> &[u16; 9] {
+        &self.sprite_shifter_list
+    }
+
+    /// Recompute the left-edge clip dots (Mesen's `UpdateMinimumDrawCycles`).
+    ///
+    /// Mesen calls this on a reset, at the top of the frame, and from
+    /// `SetMaskRegister` — so a mid-frame walk with the left-column bits does
+    /// move the clip dots, while the frame's *first* dots come from the mask as
+    /// it stood when the frame began.
+    pub fn update_minimum_draw_cycles(&mut self, mask: PpuMask) {
+        self.minimum_draw_bg_cycle = if mask.contains(PpuMask::SHOW_BG) {
+            if mask.contains(PpuMask::SHOW_BG_LEFT) {
+                0
+            } else {
+                8
+            }
+        } else {
+            300
+        };
+        self.minimum_draw_sprite_cycle = if mask.contains(PpuMask::SHOW_SPRITES) {
+            if mask.contains(PpuMask::SHOW_SPRITES_LEFT) {
+                0
+            } else {
+                8
+            }
+        } else {
+            300
+        };
+        self.minimum_draw_sprite_standard_cycle = if mask.contains(PpuMask::SHOW_SPRITES) {
+            if mask.contains(PpuMask::SHOW_SPRITES_LEFT) {
+                0
+            } else {
+                8
+            }
+        } else {
+            300
+        };
     }
 
     /// Forget the shift registers, as the chip does at the pre-render line.
@@ -306,17 +372,6 @@ impl PixelPipeline {
     }
 
     /// The secondary-OAM slots the sprite phase is holding for this line.
-    ///
-    /// Read-only, for the tests and diagnostics that ask *which dot* the fetch
-    /// ran on: the slots are the pipeline's own state, so a caller outside this
-    /// module has no other way to see what the dot-257 latch produced.
-    ///
-    /// S3 of `docs/sprite-phase-plan.md` replaces this latch with Mesen's
-    /// shifter list; this getter goes with it.
-    pub fn sprite_slots(&self) -> &[SpriteSlot; 8] {
-        &self.sprite_slots
-    }
-
     /// Run the pipeline for the dot the PPU has just advanced to.
     ///
     /// The PPU's own `scanline`/`cycle` are the input: the machine counts the
@@ -324,7 +379,13 @@ impl PixelPipeline {
     /// region's last scanline, which the pipeline treats as part of the visible
     /// range (Mesen's `_scanline == -1`).
     #[inline]
-    pub fn step(&mut self, ppu: &mut Ppu, chr: &mut dyn ChrSource, pre_render: u16) {
+    pub fn step(
+        &mut self,
+        ppu: &mut Ppu,
+        chr: &mut dyn ChrSource,
+        pre_render: u16,
+        rendering_delayed: bool,
+    ) {
         self.bus_access = None;
         let cycle = ppu.cycle;
         let scanline = ppu.scanline;
@@ -355,40 +416,25 @@ impl PixelPipeline {
         }
 
         // Dots 257-320 fetch the sprites: two nametable reads the chip throws
-        // away, then the slot's pattern bytes. The thrown-away reads matter to
-        // the cartridge even though nothing uses them — they are what takes A12
-        // low between two sprites' pattern fetches, which is what an MC-ACC
-        // clone's IRQ is built on.
-        if rendering && show_sprites && (257..=320).contains(&cycle) {
-            let slot = ((cycle - 257) / 8) as usize;
+        // away, then the slot's pattern bytes — both planes in the one dot, as
+        // Mesen's `LoadSpriteTileInfo` does. The thrown-away reads matter to the
+        // cartridge even though nothing uses them — they are what takes A12 low
+        // between two sprites' pattern fetches, which is what an MC-ACC clone's
+        // IRQ is built on.
+        //
+        // The window hangs off the rendering state and *not* off the sprite
+        // enable bit: Mesen gates the whole of 257-320 on `_prevRenderingEnabled`
+        // (`LoadSpriteTileInfo` asks nothing else), so with the background on and
+        // sprites off the chip still fetches. The bytes are then never drawn,
+        // because the drawing half is what asks `$2001`'s sprite bit.
+        if rendering_delayed && (257..=320).contains(&cycle) {
             match (cycle - 257) % 8 {
                 0 | 2 => {
                     let addr = 0x2000 | (ppu.v & 0x0FFF);
                     let _ = self.read_nametable(ppu, chr, addr);
                     self.bus_access = Some(addr);
                 }
-                4 | 6 => {
-                    let fetch = self.sprite_fetch(ppu, slot);
-                    // The tile's eight low-plane bytes come first and the high
-                    // plane's eight follow them: phase 4 reads `row`, phase 6
-                    // reads `row + 8`. Reading the same address twice hands the
-                    // low plane in as the high one, which halves the sprite's
-                    // colours — every pixel whose planes are (0, 1), colour 2,
-                    // reads as (0, 0) and is dropped as transparent.
-                    let high_plane = if (cycle - 257) % 8 == 4 { 0 } else { 8 };
-                    let pattern_addr = fetch.addr + fetch.row + high_plane;
-                    let byte = chr.read_pattern(ppu, pattern_addr);
-                    if high_plane == 0 {
-                        self.sprite_tiles[slot].low = byte;
-                        // Mesen's `LoadSprite`: a sprite that is not on the line
-                        // being fetched for never reaches the shifters, whatever
-                        // bytes it happened to leave in secondary OAM.
-                        self.sprite_tiles[slot].occupied = fetch.in_range;
-                    } else {
-                        self.sprite_tiles[slot].high = byte;
-                    }
-                    self.bus_access = Some(pattern_addr);
-                }
+                4 => self.load_sprite_tile_info(ppu, chr, ((cycle - 257) / 8) as usize),
                 _ => {}
             }
         }
@@ -407,6 +453,13 @@ impl PixelPipeline {
             if scanline == pre_render && (280..=304).contains(&cycle) {
                 copy_vertical(ppu);
             }
+        }
+
+        // The sprite shifters are stepped for this dot *before* the pixel is
+        // built, and they are stepped whether or not the picture is being drawn
+        // — Mesen's `ProcessRenderingDisabledPixel` runs the same sweep.
+        if scanline < 240 && (1..=256).contains(&cycle) {
+            self.process_sprite_shifters(cycle);
         }
 
         if scanline < 240 && (1..=256).contains(&cycle) {
@@ -432,9 +485,18 @@ impl PixelPipeline {
                 let backdrop = nes_color(ppu.palette[0], ppu.mask, self.region);
                 self.frame.set_pixel(x, scanline as usize, backdrop);
             }
-            if show_sprites {
-                self.draw_sprite_pixel(ppu, x);
-            }
+            self.draw_sprites(ppu, cycle, x, rendering_delayed);
+        } else if cycle == 0 {
+            // Dot 0 belongs to this line's shifters: Mesen restarts them here,
+            // sorting the list by X and starting the sweep at its head
+            // (`ProcessScanlineFirstCycle` runs for `_scanline < 240`, which
+            // includes the pre-render line).
+            self.begin_sprite_line();
+        } else if cycle == 339 {
+            // Dot 339 is where the line's shifters are handed on: the active
+            // mask is dropped, and the ones whose X never came go into counting
+            // mode so the sweep activates them.
+            self.finish_sprite_line(rendering_delayed);
         }
 
         // Shift every dot of the line up to 336: the sprite phase shifts the
@@ -520,8 +582,7 @@ impl PixelPipeline {
     ///
     /// Two ROM checks measure it: `sprite_hit_tests/07.screen_bottom`'s check 4
     /// (a Y of 255 must never hit) and AccuracyCoin's `Sprite0Hit_Behavior`.
-    fn sprite_fetch(&self, ppu: &Ppu, slot: usize) -> SpriteFetch {
-        let sprite = self.sprite_slots[slot];
+    fn sprite_fetch(&self, ppu: &Ppu, sprite_y: u8, attributes: u8, tile_index: u8) -> SpriteFetch {
         let (height, size_mask) = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_SIZE) {
             (16u16, 15u16)
         } else {
@@ -531,8 +592,8 @@ impl PixelPipeline {
         // `(uint8_t)_scanline`: 261 becomes 5, 311 becomes 55, visible lines are
         // themselves. Then the subtraction Mesen's `uint16_t rangeResult` gets.
         let scanline8 = (ppu.scanline & 0xFF) as i32;
-        let mut range = (scanline8 - sprite.y as i32) as u16;
-        if sprite.vertical_flip() {
+        let mut range = (scanline8 - sprite_y as i32) as u16;
+        if attributes & 0x80 != 0 {
             range ^= size_mask;
         }
 
@@ -541,15 +602,15 @@ impl PixelPipeline {
         // tile from bit 3 of the row. 8x8 takes its table from `$2000` and keeps
         // the tile index whole.
         let addr = if height == 16 {
-            let table = if sprite.tile & 1 != 0 { 0x1000 } else { 0x0000 };
-            table | ((sprite.tile & 0xFE) as u16) << 4 | ((range & 0x08) << 1)
+            let table = if tile_index & 1 != 0 { 0x1000 } else { 0x0000 };
+            table | ((tile_index & 0xFE) as u16) << 4 | ((range & 0x08) << 1)
         } else {
             let table = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_PATTERN) {
                 0x1000
             } else {
                 0x0000
             };
-            table | (sprite.tile as u16) << 4
+            table | (tile_index as u16) << 4
         };
 
         SpriteFetch {
@@ -559,63 +620,183 @@ impl PixelPipeline {
         }
     }
 
-    /// Draw the sprite pixel for this dot, if any sprite covers it.
+    /// Mesen's `LoadSpriteTileInfo`: fetch one slot's sprite on the dot the chip
+    /// does, out of the secondary-OAM bytes as they stand.
     ///
-    /// Secondary OAM is in priority order, so the first slot with an opaque
-    /// pixel wins. The sprite-0 hit is raised *here*, on the dot the pixel is
-    /// drawn on, which is what makes it usable as a mid-line timing reference.
-    fn draw_sprite_pixel(&mut self, ppu: &mut Ppu, x: usize) {
-        let y = ppu.scanline as usize;
-        for slot in 0..8 {
-            let sprite = self.sprite_slots[slot];
-            let tile = self.sprite_tiles[slot];
-            if !tile.occupied {
-                continue;
+    /// The slot comes from the dot (`(cycle - 257) >> 3`), not from a counter, so
+    /// a line whose fetch starts half way through still lands on the right entry.
+    /// Both pattern planes are read in this one dot — Mesen puts them both here —
+    /// and that is also what the cartridge sees, so the bus is low between two
+    /// sprites' fetches for one dot rather than two.
+    fn load_sprite_tile_info(&mut self, ppu: &mut Ppu, chr: &mut dyn ChrSource, slot: usize) {
+        let bytes = &self.secondary_oam[slot * 4..slot * 4 + 4];
+        let (sprite_y, tile_index, attributes, sprite_x) = (bytes[0], bytes[1], bytes[2], bytes[3]);
+        let fetch = self.sprite_fetch(ppu, sprite_y, attributes, tile_index);
+        let pattern_addr = fetch.addr + fetch.row;
+
+        let mut info = SpriteInfo {
+            background_priority: attributes & 0x20 != 0,
+            sprite_x,
+            palette_offset: ((attributes & 0x03) << 2) | 0x10,
+            low: chr.read_pattern(ppu, pattern_addr),
+            high: chr.read_pattern(ppu, pattern_addr + 8),
+        };
+        self.bus_access = Some(pattern_addr + 8);
+
+        if fetch.in_range {
+            if attributes & 0x40 != 0 {
+                info.low = info.low.reverse_bits();
+                info.high = info.high.reverse_bits();
             }
-            if x < sprite.x as usize || x >= sprite.x as usize + 8 {
-                continue;
-            }
-            // Bit 7 of the pattern byte is the sprite's leftmost pixel, so the
-            // pixel for this column is counted from the other end — unless the
-            // sprite is flipped, which is exactly the other way round.
-            let column = x - sprite.x as usize;
-            let bit = if sprite.horizontal_flip() {
-                column
-            } else {
-                7 - column
+            self.sprite_tiles[slot] = info;
+            // The sweep runs by X, so the entry carries the dot the shifter goes
+            // live on: one past the sprite's leftmost pixel.
+            self.sprite_shifter_list[slot] = ((u16::from(sprite_x) + 1) << 4) | slot as u16;
+            self.expired_sprite_shifters &= !(1u8 << slot);
+            self.sprite_count += 1;
+            self.process_sprites = true;
+        } else {
+            // Out of range: the bytes are thrown away and the shifter is marked
+            // done, which is what keeps an empty slot — or one left over from the
+            // previous line — from ever being drawn.
+            self.sprite_tiles[slot] = SpriteInfo {
+                low: 0,
+                high: 0,
+                ..info
             };
-            let low = (tile.low >> bit) & 0x01;
-            let high = (tile.high >> bit) & 0x01;
-            let color_index = (high << 1) | low;
-            if color_index == 0 {
-                // A transparent pixel of a higher-priority sprite does not hide
-                // the ones behind it.
+            self.sprite_shifter_list[slot] = SPRITE_SHIFTER_DONE;
+        }
+    }
+
+    /// Mesen's `ProcessSpriteShifters`: the sweep that makes a sprite's shifters
+    /// live on its own dot.
+    ///
+    /// The list is in X order, so this walks its head: every entry whose dot has
+    /// arrived and which was still waiting becomes *active* — and counts as
+    /// finished, because from here on it shifts.
+    fn process_sprite_shifters(&mut self, cycle: u16) {
+        if self.next_sprite_shifter_cycle != cycle {
+            return;
+        }
+        while self.sprite_shifter_list[self.next_sprite_shifter] >> 4 == cycle {
+            let bit = 1u8 << (self.sprite_shifter_list[self.next_sprite_shifter] & 0x07);
+            if self.counting_sprite_shifters & bit != 0 {
+                self.active_sprite_shifters |= bit;
+                self.expired_sprite_shifters |= bit;
+                self.counting_sprite_shifters &= !bit;
+            }
+            self.next_sprite_shifter += 1;
+        }
+        self.next_sprite_shifter_cycle = self.sprite_shifter_list[self.next_sprite_shifter] >> 4;
+    }
+
+    /// The line's shifter state at its first dot (Mesen's
+    /// `ProcessScanlineFirstCycle`): the list is sorted by X and the sweep starts
+    /// at its head.
+    fn begin_sprite_line(&mut self) {
+        self.sprite_shifter_list[..8].sort_unstable();
+        self.next_sprite_shifter = 0;
+        self.next_sprite_shifter_cycle = self.sprite_shifter_list[0] >> 4;
+    }
+
+    /// Hand the line's shifters to the next one (Mesen's dot-339 block).
+    ///
+    /// What has not gone out yet goes into counting mode, so the sweep activates
+    /// it; what has already been counted is activated outright, so its pixels
+    /// start from X 0 on the next line.
+    fn finish_sprite_line(&mut self, rendering_delayed: bool) {
+        self.active_sprite_shifters = 0;
+
+        if rendering_delayed {
+            for index in 0..8 {
+                let entry = self.sprite_shifter_list[index];
+                if entry == SPRITE_SHIFTER_DONE {
+                    continue;
+                }
+                let bit = 1u8 << (entry & 0x07);
+                if self.expired_sprite_shifters & bit == 0 {
+                    self.counting_sprite_shifters |= bit;
+                }
+            }
+        }
+
+        for index in 0..8 {
+            let entry = self.sprite_shifter_list[index];
+            if entry == SPRITE_SHIFTER_DONE {
                 continue;
             }
-
-            let clipped = x < 8 && !ppu.mask.contains(PpuMask::SHOW_SPRITES_LEFT);
-            let bg_opaque = self.bg_opaque[y * WIDTH + x] != 0;
-
-            // Sprite 0's hit: both planes have an opaque pixel here, the pixel
-            // is not the rightmost column (where the chip never reports it),
-            // and neither plane is clipped at the left edge.
-            if sprite.is_sprite_zero
-                && !clipped
-                && bg_opaque
-                && x != 255
-                && !ppu.status.contains(PpuStatus::SPRITE_0_HIT)
-                && ppu.mask.contains(PpuMask::SHOW_BG)
-                && !(x < 8 && !ppu.mask.contains(PpuMask::SHOW_BG_LEFT))
-            {
-                ppu.status.insert(PpuStatus::SPRITE_0_HIT);
+            let bit = 1u8 << (entry & 0x07);
+            if self.counting_sprite_shifters & bit == 0 {
+                self.active_sprite_shifters |= bit;
             }
+        }
 
-            if !clipped && !(sprite.behind_background() && bg_opaque) {
-                let palette_addr = 0x10 + (sprite.palette() as usize) * 4 + color_index as usize;
-                let color = nes_color(ppu.palette[palette_addr], ppu.mask, self.region);
-                self.frame.set_pixel(x, y, color);
-            }
+        self.process_sprites = self.sprite_count != 0 || self.active_sprite_shifters != 0;
+    }
+
+    /// The sprite half of the pixel: shift every live sprite's bytes, take the
+    /// frontmost opaque one, and raise the sprite-0 hit on it.
+    ///
+    /// The shifters are shifted *here*, once per dot, and only the active ones —
+    /// a sprite whose X has not come round must keep its bytes, or its pixels
+    /// would start too early. That is the whole point of sweeping the list rather
+    /// than picking a slot by X at draw time.
+    fn draw_sprites(&mut self, ppu: &mut Ppu, cycle: u16, x: usize, rendering_delayed: bool) {
+        if !self.process_sprites || !rendering_delayed {
             return;
+        }
+
+        let mut remaining = self.active_sprite_shifters;
+        let mut chosen: Option<(usize, u8)> = None;
+        while remaining != 0 {
+            // Mesen sweeps from the highest slot *down*, so a lower slot — the
+            // higher-priority sprite — is the last one kept.
+            let slot = (7 - remaining.leading_zeros()) as usize;
+            remaining &= !(1u8 << slot);
+
+            let sprite = &mut self.sprite_tiles[slot];
+            let color = ((sprite.high >> 6) & 0x02) | (sprite.low >> 7);
+            if color != 0 {
+                chosen = Some((slot, color));
+            }
+            sprite.high <<= 1;
+            sprite.low <<= 1;
+            if sprite.high | sprite.low == 0 {
+                // The shifter has shifted its last pixel out.
+                self.active_sprite_shifters &= !(1u8 << slot);
+                self.process_sprites = self.sprite_count != 0 || self.active_sprite_shifters != 0;
+            }
+        }
+
+        let Some((slot, color)) = chosen else {
+            return;
+        };
+        // The sprite half only reaches the wire past the clip dot, and only when
+        // `$2001` says sprites are on: the *fetch* runs either way.
+        if cycle <= self.minimum_draw_sprite_cycle || !ppu.mask.contains(PpuMask::SHOW_SPRITES) {
+            return;
+        }
+
+        let sprite = self.sprite_tiles[slot];
+        let bg_opaque = self.bg_opaque[ppu.scanline as usize * WIDTH + x] != 0;
+
+        // The hit needs an opaque background pixel *and* an opaque sprite-0 pixel,
+        // the left edges unclipped, and it never fires in the last column.
+        if self.sprite_0_visible
+            && slot == 0
+            && bg_opaque
+            && cycle != 256
+            && cycle > self.minimum_draw_sprite_standard_cycle
+            && ppu.mask.contains(PpuMask::SHOW_BG)
+            && !ppu.status.contains(PpuStatus::SPRITE_0_HIT)
+        {
+            ppu.status.insert(PpuStatus::SPRITE_0_HIT);
+        }
+
+        if !(sprite.background_priority && bg_opaque) {
+            let index = sprite.palette_offset.wrapping_add(color) & 0x1F;
+            let color = nes_color(ppu.palette[index as usize], ppu.mask, self.region);
+            self.frame.set_pixel(x, ppu.scanline as usize, color);
         }
     }
 
@@ -747,8 +928,223 @@ mod tests {
         for dot in 0..=340u16 {
             ppu.cycle = dot;
             let mut chr = VramChr;
-            pipeline.step(ppu, &mut chr, 261);
+            pipeline.step(ppu, &mut chr, 261, true);
         }
+    }
+
+    /// A line's secondary OAM as the walk leaves it: eight four-byte sprites,
+    /// `$FF` in the slots nothing was found for.
+    fn secondary_oam(sprites: &[(u8, u8, u8, u8)]) -> [u8; 0x20] {
+        let mut bytes = [0xFF; 0x20];
+        for (index, &(y, tile, attributes, x)) in sprites.iter().enumerate() {
+            let at = index * 4;
+            bytes[at] = y;
+            bytes[at + 1] = tile;
+            bytes[at + 2] = attributes;
+            bytes[at + 3] = x;
+        }
+        bytes
+    }
+
+    /// Run one line's dots, letting `at_dot` change the registers as the line
+    /// goes — which is how a test puts a `$2000`/`$2001` write on a chosen dot.
+    fn run_line_with(
+        pipeline: &mut PixelPipeline,
+        ppu: &mut Ppu,
+        scanline: u16,
+        mut at_dot: impl FnMut(&mut Ppu, u16),
+    ) {
+        ppu.scanline = scanline;
+        for dot in 0..=340u16 {
+            ppu.cycle = dot;
+            at_dot(ppu, dot);
+            let mut chr = VramChr;
+            pipeline.step(ppu, &mut chr, 261, true);
+        }
+    }
+
+    /// The sprite phase's fetch takes `$2000` as it stands *on the fetch dot*.
+    ///
+    /// `Suddenly Resize Sprite` is the ROM that measures it: the sprite size bit
+    /// flips between two slots' fetches, and what decides whether a slot reaches
+    /// the shifters is the range test — `scanline - Y <= size_mask` — read with
+    /// the size of the moment. A sprite ten lines above the line being fetched
+    /// for is out of range at eight pixels high and in range at sixteen.
+    #[test]
+    fn test_the_fetch_takes_the_control_register_as_it_stands_on_the_fetch_dot() {
+        let mut ppu = ppu_with(&[], &[]);
+        ppu.mask = PpuMask::SHOW_SPRITES | PpuMask::SHOW_SPRITES_LEFT;
+        ppu.palette[0x11] = 0x30;
+        // Two sprites, both a Y of 0 on line 10: `range = 10 - 0 = 10`, which is
+        // past the eighth pixel of an 8x8 sprite and inside a 16x16 one.
+        let bytes = secondary_oam(&[(0, 2, 0, 0), (0, 2, 0, 8)]);
+
+        let mut pipeline = PixelPipeline::new();
+        pipeline.begin_sprite_fetch(bytes, false);
+        run_line_with(&mut pipeline, &mut ppu, 10, |ppu, dot| {
+            // The fetch for line 11 runs on line 10: slot 0 at dot 261, slot 1 at
+            // 269. Eight-pixel sprites for the first, sixteen for the second.
+            ppu.ctrl = if dot < 262 {
+                crate::ppu::PpuCtrl::empty()
+            } else {
+                crate::ppu::PpuCtrl::SPRITE_SIZE
+            };
+        });
+
+        let shifters = *pipeline.sprite_shifters();
+        assert_eq!(
+            shifters[0], SPRITE_SHIFTER_DONE,
+            "slot 0 was fetched while $2000 said 8x8, so its Y is out of range"
+        );
+        assert!(
+            shifters[1] != SPRITE_SHIFTER_DONE,
+            "slot 1 was fetched after $2000 said 16x16, so the same Y is in range"
+        );
+    }
+
+    /// The fetch window hangs off the rendering state, not off `$2001`'s sprite
+    /// bit: with the background on and sprites off the chip still fetches, and
+    /// Mesen says so by gating the whole of 257-320 on `_prevRenderingEnabled`
+    /// alone.
+    ///
+    /// The bytes are then never *drawn*, because the drawing half is what asks
+    /// the sprite bit — which is the second half of this test.
+    #[test]
+    fn test_the_fetch_runs_with_the_sprite_enable_bit_clear() {
+        let mut ppu = ppu_with(&[], &[]);
+        ppu.mask = PpuMask::SHOW_BG;
+        let bytes = secondary_oam(&[(0, 2, 0, 0)]);
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        pipeline.begin_sprite_fetch(bytes, false);
+        run_line(&mut pipeline, &mut ppu, 0);
+        run_line(&mut pipeline, &mut ppu, 1);
+
+        let shifter = pipeline.sprite_shifters()[0];
+        assert_ne!(
+            shifter, SPRITE_SHIFTER_DONE,
+            "the fetch runs with the sprite bit clear"
+        );
+        let backdrop = nes_color(ppu.palette[0], ppu.mask, pipeline.region);
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(0, 1),
+            backdrop,
+            "and its pixels are not drawn, because $2001 says sprites are off"
+        );
+    }
+
+    /// A shifter goes live on the dot its sprite's X names — one past the
+    /// sprite's leftmost pixel — and not before: that is what sweeping the list
+    /// buys over picking a slot by X at draw time.
+    #[test]
+    fn test_a_shifter_activates_at_sprite_x_plus_one() {
+        let mut ppu = ppu_with(&[], &[]);
+        ppu.mask = PpuMask::SHOW_SPRITES | PpuMask::SHOW_SPRITES_LEFT;
+        ppu.palette[0x11] = 0x30;
+        let bytes = secondary_oam(&[(0, 2, 0, 3)]);
+        // Tile 2's row lights its leftmost pixel only.
+        for row in 0..8 {
+            ppu.vram[2 * 16 + row] = 0x80;
+        }
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        pipeline.begin_sprite_fetch(bytes, false);
+        run_line(&mut pipeline, &mut ppu, 0);
+
+        assert_eq!(
+            pipeline.sprite_shifters()[0],
+            4 << 4,
+            "the entry carries the dot the shifter goes live on"
+        );
+        // The fetch line draws nothing: the sprites it fetches belong to the line
+        // after it, and the dot-339 handoff is what passes them on.
+        let backdrop = nes_color(ppu.palette[0], ppu.mask, pipeline.region);
+        assert_eq!(pipeline.frame_buffer().get_pixel(3, 0), backdrop);
+
+        run_line(&mut pipeline, &mut ppu, 1);
+        let sprite_color = nes_color(ppu.palette[0x11], ppu.mask, pipeline.region);
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(3, 1),
+            sprite_color,
+            "the sprite's pixel is at its X, on the line after the fetch"
+        );
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(2, 1),
+            backdrop,
+            "and not one dot early"
+        );
+    }
+
+    /// The list is sorted at dot 0, and that is load-bearing: the sweep walks it
+    /// from the head, so an entry whose X sits *behind* a later one in the list
+    /// would not go live until the later X came round — its pixels would simply be
+    /// missing from the screen.
+    #[test]
+    fn test_the_shifter_list_is_sorted_at_dot_zero() {
+        let mut ppu = ppu_with(&[], &[]);
+        ppu.mask = PpuMask::SHOW_SPRITES | PpuMask::SHOW_SPRITES_LEFT;
+        ppu.palette[0x11] = 0x30;
+        for row in 0..8 {
+            ppu.vram[2 * 16 + row] = 0x80;
+        }
+        // Slot 0 is the far sprite and slot 1 the near one, so the fetch writes
+        // the list out of X order.
+        let bytes = secondary_oam(&[(0, 2, 0, 100), (0, 2, 0, 10)]);
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        pipeline.begin_sprite_fetch(bytes, false);
+        run_line(&mut pipeline, &mut ppu, 0);
+        run_line(&mut pipeline, &mut ppu, 1);
+
+        let sprite_color = nes_color(ppu.palette[0x11], ppu.mask, pipeline.region);
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(10, 1),
+            sprite_color,
+            "the near sprite's pixel lands on its own dot"
+        );
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(100, 1),
+            sprite_color,
+            "and so does the far one's"
+        );
+    }
+
+    /// The dot-339 handoff, and the dot-0 restart that goes with it: a shifter
+    /// whose X never came round during the fetch line is carried into the next
+    /// line and activated there.
+    #[test]
+    fn test_dot_339_hands_the_unreached_shifters_over() {
+        let mut ppu = ppu_with(&[], &[]);
+        ppu.mask = PpuMask::SHOW_SPRITES | PpuMask::SHOW_SPRITES_LEFT;
+        ppu.palette[0x11] = 0x30;
+        // X = 200: its dot (201) is far past the fetch dot, so the sweep never
+        // reaches it while the line is being fetched.
+        let bytes = secondary_oam(&[(0, 2, 0, 200)]);
+        for row in 0..8 {
+            ppu.vram[2 * 16 + row] = 0x80;
+        }
+
+        let mut pipeline = PixelPipeline::new();
+        run_line(&mut pipeline, &mut ppu, 261);
+        pipeline.begin_sprite_fetch(bytes, false);
+        run_line(&mut pipeline, &mut ppu, 0);
+        run_line(&mut pipeline, &mut ppu, 1);
+
+        let sprite_color = nes_color(ppu.palette[0x11], ppu.mask, pipeline.region);
+        let backdrop = nes_color(ppu.palette[0], ppu.mask, pipeline.region);
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(200, 1),
+            sprite_color,
+            "the sprite reaches the wire on the line after its fetch"
+        );
+        assert_eq!(
+            pipeline.frame_buffer().get_pixel(201, 1),
+            backdrop,
+            "and only the pixel its pattern lights, at its own X"
+        );
     }
 
     #[test]
@@ -833,7 +1229,7 @@ mod tests {
         let mut chr = VramChr;
         for dot in 1..=8u16 {
             ppu.cycle = dot;
-            pipeline.step(&mut ppu, &mut chr, 261);
+            pipeline.step(&mut ppu, &mut chr, 261, true);
             assert_eq!(
                 ppu.v & 0x001F,
                 if dot == 8 { 1 } else { 0 },
@@ -918,17 +1314,9 @@ mod tests {
 
             // Sprite 0 sits on line 1 (an OAM Y of 0 means the sprite's top row
             // is line 1), and its tile lights pixel 0.
-            let mut slots = [SpriteSlot::default(); 8];
-            slots[0] = SpriteSlot {
-                y: 0,
-                tile: 2,
-                attributes: 0,
-                x: sprite_x,
-                is_sprite_zero: true,
-                occupied: true,
-            };
+            let bytes = secondary_oam(&[(0, 2, 0, sprite_x)]);
             ppu.vram[2 * 16] = 0x80;
-            pipeline.set_sprite_slots(slots);
+            pipeline.begin_sprite_fetch(bytes, true);
 
             // Line 0's sprite phase fetches the pattern bytes for line 1.
             run_line(&mut pipeline, &mut ppu, 0);
@@ -942,7 +1330,7 @@ mod tests {
             for dot in 0..=340u16 {
                 ppu.cycle = dot;
                 let mut chr = VramChr;
-                pipeline.step(&mut ppu, &mut chr, 261);
+                pipeline.step(&mut ppu, &mut chr, 261, true);
                 if hit_dot.is_none() && ppu.status.contains(PpuStatus::SPRITE_0_HIT) {
                     hit_dot = Some(dot);
                 }
@@ -980,19 +1368,9 @@ mod tests {
             ppu.vram[2 * 16 + 8 + row] = 0b0000_0100;
         }
 
-        let mut slots = [SpriteSlot::default(); 8];
-        slots[0] = SpriteSlot {
-            y: 0,
-            tile: 2,
-            attributes: 0,
-            x: 0,
-            is_sprite_zero: false,
-            occupied: true,
-        };
-
         let mut pipeline = PixelPipeline::new();
         run_line(&mut pipeline, &mut ppu, 261);
-        pipeline.set_sprite_slots(slots);
+        pipeline.begin_sprite_fetch(secondary_oam(&[(0, 2, 0, 0)]), false);
         // Line 0's sprite phase fetches the pattern bytes for line 1.
         run_line(&mut pipeline, &mut ppu, 0);
         run_line(&mut pipeline, &mut ppu, 1);
@@ -1031,23 +1409,6 @@ mod tests {
 
         // Slot 0's tile is blank (transparent) where slot 1 has a pixel, and
         // slot 1 is drawn behind the background.
-        let mut slots = [SpriteSlot::default(); 8];
-        slots[0] = SpriteSlot {
-            y: 0,
-            tile: 3,
-            attributes: 0,
-            x: 0,
-            is_sprite_zero: false,
-            occupied: true,
-        };
-        slots[1] = SpriteSlot {
-            y: 0,
-            tile: 4,
-            attributes: 0b0010_0000,
-            x: 0,
-            is_sprite_zero: false,
-            occupied: true,
-        };
         for row in 0..8 {
             // Both planes, so the sprite's pixels are colour 3: an opaque pixel
             // is what the priority test needs, and the low plane alone would be
@@ -1055,7 +1416,10 @@ mod tests {
             ppu.vram[4 * 16 + row] = 0xFF;
             ppu.vram[4 * 16 + 8 + row] = 0xFF;
         }
-        pipeline.set_sprite_slots(slots);
+        pipeline.begin_sprite_fetch(
+            secondary_oam(&[(0, 3, 0, 0), (0, 4, 0b0010_0000, 0)]),
+            false,
+        );
         run_line(&mut pipeline, &mut ppu, 0);
         run_line(&mut pipeline, &mut ppu, 1);
 
