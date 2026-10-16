@@ -207,6 +207,32 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 - 以 Mesen 本身作为 oracle 的差分（它的调试器能输出逐 cycle 轨迹），可把"整片 ROM 通过/失败"
   变成逐指令差异。
 
+### 5.1 Mesen 自己的测试套件**不是**这一套（2026-10-16 核实）
+
+动手追基线之前先看这一段——两套回答的是不同问题，认错了就会把修复做成死循环：
+
+- **维护中的 Mesen 在哪。** `SourMesen/Mesen2` 的 README 指向 `nesdev-org/MesenCE`：带 CI、
+  带发布、带测试的是那个分叉。源码布局相同，所以本文档用的那些路径照样能取，但**要读的是
+  MesenCE**。
+- **MesenCE 的精度 CI 是 `.github/workflows/tests.yml`**：它把 `nesdev-org/MesenTests` checkout
+  到 `Tests/`，再跑 `PGOHelper <Tests 目录> citests`——把找到的每个 `.mtp` 都跑一遍（多线程，
+  失败时上传截图）。`SourMesen/Mesen2` 自己的 CI **只构建**，不跑任何 ROM。
+- **`.mtp` 是"录制型 ROM 测试"**（`Core/Shared/RecordedRomTest`）：回放输入记录，并逐帧比对
+  **截图哈希**（`_screenshotHashes`、`_badFrameCount`）。套件按机种分目录（`NES/`、`GB/`、
+  `SNES/`、`GBA/` …），而且**不含 ROM**：运行时按**文件名 + CRC32** 到使用者自己的游戏目录里找
+  （`Core/Shared/RomFinder.h`）。
+- **我们用的是"自报结果的精度 ROM"**：blargg 的套件把结论打印出来并写进 `$6000`，
+  AccuracyCoin 为每个测试写一个结果字节到 `$0400`；而我们的 CI 是 `cargo test --workspace`，
+  这些套件在没有 `roms/` 时**跳过**——所以这份清单是本地工具，不是 CI 在守的门。
+
+由此得出：**AccuracyCoin 的计数是我们的基线，不是 Mesen 的**——Mesen 的 CI 从不跑它。所以每个
+失败项的 oracle 必须是 **Mesen 的源码**（规则 1），ROM 的裁决只是证据、不是目标。AccuracyCoin 的
+README 自己也写着这些测试是给 RP2A03G + RP2C02G 写的、有些与芯片版本有关（它甚至删过一个测试，
+因为 G 版 PPU 会挂），因此那 34 项里可能有几项是"ROM 想要的行为 Mesen 有意不建模"——那种应当按
+§4 记成**有意偏差**并附上依据，而不是为了让数字好看去弯模拟器。它的 README 还逐条解释了错误码，
+这是判断"某一项到底在测什么"最快的办法。若哪天真的想要更强的 oracle，可以拿 MesenCE 跑
+`.mtp` 式的录制、比对金标准帧；但那需要构建 Mesen 并备好 ROM，不是免费的。
+
 ## 6. 验收协议
 
 ```bash
@@ -422,13 +448,18 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | B2 | 背景瓦片拿到右邻的调色板（`?` 砖、砖行末尾、标题文字末尾变绿） | **完成** | 粗 X 在属性取指之前自增（§7 那一行）；回归测试三条在旧代码上失败 | 无；相邻项是 §2.2 里背景取指的开关（关背景时 Mesen 仍取指） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 
+**先记住一件容易搞错的事**：AccuracyCoin 的计数是**我们的**基线，不是 Mesen 的——它不在 Mesen
+的测试套件里（§5.1）。每一项的 oracle 都应当是 Mesen 的源码，ROM 的裁决是证据而不是目标；少数项
+可能是"ROM 想要、Mesen 有意不建模"的行为，那些按 §4 记成有意偏差而不是弯模拟器。
+
 **AccuracyCoin 那 34 项已经按名字归好类**（13 项 DMA 边界情形、7 项 CPU 指令细节、5 项未文档
 `SHx`、3 项 sprite、3 项 APU、2 项手柄、1 项 PPU），清单在
 `docs/architecture.md` §13.1；13 项 DMA 失败在同一两项检查上，说明它们是**同一个机制**——
 这是当前最值得开的一刀。
 
 **取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：
-仓库是 `SourMesen/Mesen2`，按需要抓单个文件即可，例如
+仓库是 `SourMesen/Mesen2`，它的 README 指向维护中的分叉 `nesdev-org/MesenCE`（布局相同，
+CI 与测试在那边——见 §5.1）；两边都能按需抓单个文件，例如
 `curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/APU/DeltaModulationChannel.cpp`。
 已读过并写进本文档的：`Core/NES/NesPpu.cpp`、`Core/NES/BaseNesPpu.{h,cpp}`、
 `Core/NES/NesCpu.cpp`、`Core/NES/NesMemoryManager.cpp`、`Core/NES/APU/DeltaModulationChannel.{h,cpp}`、

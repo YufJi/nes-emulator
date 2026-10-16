@@ -250,6 +250,39 @@ Missing, and worth adding when it is needed:
 - an oracle comparison against Mesen itself (its debugger can emit cycle traces), which would
   give per-instruction diffs instead of end-of-ROM verdicts.
 
+### 5.1 Mesen's own test suite is *not* this one (checked 2026-10-16)
+
+Worth knowing before chasing a baseline, because the two sets answer different questions and a
+wrong assumption here turns a fix into a loop:
+
+- **Where the maintained Mesen lives.** `SourMesen/Mesen2`'s README points at
+  `nesdev-org/MesenCE`: that fork is the one with CI, releases and tests. Its source layout is
+  the same, so the paths this document uses still resolve, but `MesenCE` is what to read.
+- **MesenCE's accuracy CI is `.github/workflows/tests.yml`**, and it works by checking out
+  `nesdev-org/MesenTests` into `Tests/` and running `PGOHelper <Tests folder> citests`, which
+  runs every `.mtp` file it finds (multi-threaded, screenshots uploaded when something fails).
+  `SourMesen/Mesen2`'s own CI is *build only*: no ROM is run.
+- **A `.mtp` is a "recorded ROM test"** (`Core/Shared/RecordedRomTest`): a played-back input log
+  plus **per-frame screenshot hashes** to compare against (`_screenshotHashes`, `_badFrameCount`).
+  The suite is organised by system (`NES/`, `GB/`, `SNES/`, `GBA/`, …), and it ships **no ROMs**:
+  the runner looks each one up by **filename and CRC32** in the tester's own game folders
+  (`Core/Shared/RomFinder.h`).
+- **Ours are self-reporting accuracy ROMs**: blargg's suites print their verdict and write it to
+  `$6000`, AccuracyCoin writes a result byte per test into `$0400`, and our CI runs
+  `cargo test --workspace` with those suites *skipping* when `roms/` is absent — so this list is
+  a local instrument, not something CI enforces.
+
+What follows from that: **AccuracyCoin's count is our baseline, not Mesen's** — Mesen's CI never
+runs it. So for each failing item the oracle has to be **Mesen's source** (rule 1), with the ROM's
+verdict as evidence rather than as the target. AccuracyCoin's own README says its tests are
+written for an RP2A03G + RP2C02G and that some are revision-specific (it dropped one test because
+revision-G PPUs failed it), so a few of the 34 may be cases where the ROM wants a behaviour Mesen
+models differently — those belong in §4 as deliberate deviations, with the reading that justifies
+them, not as a reason to bend the emulator. Its README also documents every error code, which is
+the fastest way to see *what* a failing check means. The stronger oracle, if it is ever wanted, is
+to run MesenCE itself over `.mtp`-style recordings and compare golden frames; that needs Mesen
+built and the ROMs present, so it is not free.
+
 ## 6. Verification protocol
 
 ```bash
@@ -511,13 +544,20 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
+**One thing to get right first**: AccuracyCoin's count is *our* baseline, not Mesen's — it is not
+part of Mesen's test suite (§5.1). Every item's oracle has to be Mesen's source, with the ROM's
+verdict as evidence rather than as the target; a few of them may be cases where the ROM wants a
+behaviour Mesen deliberately does not model, and those belong in §4 as deliberate deviations
+rather than as reasons to bend the emulator.
+
 **AccuracyCoin's 34 have been sorted by name** (13 DMA edge cases, 7 CPU instruction details, 5
 unofficial `SHx` opcodes, 3 sprites, 3 APU, 2 controllers, 1 PPU); the list is in
 `docs/architecture.md` §13.1. The thirteen DMA ones fail on the same two checks, which says they
 are *one* mechanism — that is the first cut worth making.
 
 **How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the
-repository is `SourMesen/Mesen2`; fetch a file at a time, e.g.
+repository is `SourMesen/Mesen2`, whose README points at the maintained fork `nesdev-org/MesenCE`
+(same layout, and the one whose CI and tests exist — §5.1); either URL serves a file, e.g.
 `curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/APU/DeltaModulationChannel.cpp`.
 Already read and written into this document: `Core/NES/NesPpu.cpp`,
 `Core/NES/BaseNesPpu.{h,cpp}`, `Core/NES/NesCpu.cpp`, `Core/NES/NesMemoryManager.cpp`,
