@@ -355,6 +355,18 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
   两个标志的握手、`_abortDmcDma`、以及 `$4016`/`$4017` 的 `skipDummyReads`/`skipFirstInputClock`，
   同时保持 OAM 传输仍是 513/514 个周期。
 
+  第二版把上面这些（奇偶、两个标志的握手、`skipDummyReads`、OAM 字节经 `$2004` 落地）都做了，
+  实测同样撤回：`4-irq_and_dma` 同一行仍然动，AccuracyCoin 这次是启动期走进了它自己的陷阱——
+  `$37` 保持 0（0 项测试），ROM 停在 `$80DD`（`JMP $80DD`），它是在 `JSR $F109`
+  （`LDA $F0 / ORA #$80 / STA $F0 / STA $2000`）与 `INC $EC` 之后落到那里的，也就是菜单还没出现
+  就已经走错。这把范围缩小到了：dummy 读进来之后，DMC 的一次取数变成"看奇偶的 3 或 4 个周期"，
+  而我们的模型一直是固定 4；AccuracyCoin 的启动**是拿 DMC 的字节做同步的**（上面那条同类症状的
+  卡死记录也是这个），所以字节送达的那个周期必须跟着一起挪。`dmc_sync_rom`（那份同步的简化模型）
+  依然通过，因此下一次应当把**真的**那段同步循环写成测试，用它对通道的字节边界送达，而不只是对
+  DMA 的长度。同一版里还有两件小事：我们的机器在 DMA 周期里不采样中断线（Mesen 的
+  `StartCpuCycle`/`EndCpuCycle` 会采），以及 `$4016`/`$4017` 还需要 `skipFirstInputClock` 与
+  `ProcessDmaRead` 的内部寄存器合并。
+
 ## 8. 仍需拍板的决策
 
 **已拍板**：渲染器一次做到背景 + sprite（§2.1）；PAL 跑 16/5 加分数 dot 累加器（§4）；扩展音源
@@ -406,7 +418,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P3c | `cpu_interrupts_v2` 剩下的三张表 | **完成** | 链条按周期量了一遍（§7），缺的那一个周期是 APU 在周期里的位置：芯片在 CPU 周期的**开头**给 APU 打点（Mesen 的 `ProcessCpuClock`），而不是末尾。**`cpu_interrupts_v2` 2/5 → 5/5**——`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` 全部通过，而把标志钉在 `$4017` 写入上的那些一条没动。见 §2.4；两个撤回的旋钮实验在 §7 里都得到了解释 | 无；相邻项是 sprite 的**求值**仍是逐行（P1） |
 | B1 | 游戏里 sprite 一块块透明（"人物像透明的"） | **完成** | sprite 取指的 high 平面用了 low 平面的地址（§7），颜色 2 的像素读成颜色 0 而消失。改成 `addr + row + 8`；单元测试 `test_a_sprites_high_plane_is_the_tiles_second_half` 在旧代码上失败 | 无。值得记住：ROM 基线看不见"画出来的像素"，这类问题靠游戏或单元测试来抓 |
 | B3 | 未文档 `SHx` 的地址损坏（AccuracyCoin 5 项） | 部分完成 | 按 Mesen 的 `SyaSxaAxa` 建模：保留进位、高位与寄存器对按位与、值用 base 的高位 +1 掩蔽、DMA 打断则不掩蔽（§7）。五项 `UnOp_SHA/SHS/SHY/SHX` 从第 3 项推进到第 15 项 | 剩下那一项在这些测试的 DMA 段里——并入下一刀（DMA 那一组 13 项） |
-| B4 | AccuracyCoin 的 DMA 组（13 项） | **进行中** | 机制已定位：DMA 的 halt/dummy 周期必须是"对 CPU 即将访问地址的真实读"（`DMA + $2007 Read` 第 3 项就在数它）。第一版实现实测后撤回（`4-irq_and_dma` 的表动了、AccuracyCoin 启动卡死），细节与下一步写进 §7 | **逐字**移植 Mesen 的 `ProcessPendingDma`（奇偶、两个标志、`_abortDmcDma`、`$4016/$4017` 的跳过规则），保持 OAM 513/514 |
+| B4 | AccuracyCoin 的 DMA 组（13 项） | **进行中** | 机制已定位：DMA 的 halt/dummy 周期必须是"对 CPU 即将访问地址的真实读"（`DMA + $2007 Read` 第 3 项就在数它）。两版实现都实测后撤回（都让 `4-irq_and_dma` 的表动了、AccuracyCoin 启动卡死；第二版停在 ROM 自己的陷阱 `$80DD`），两轮证据与收窄后的下一步写进 §7 | **逐字**移植 Mesen 的 `ProcessPendingDma`（奇偶、两个标志、`_abortDmcDma`、`$4016/$4017` 的跳过规则），保持 OAM 513/514 |
 | B2 | 背景瓦片拿到右邻的调色板（`?` 砖、砖行末尾、标题文字末尾变绿） | **完成** | 粗 X 在属性取指之前自增（§7 那一行）；回归测试三条在旧代码上失败 | 无；相邻项是 §2.2 里背景取指的开关（关背景时 Mesen 仍取指） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 

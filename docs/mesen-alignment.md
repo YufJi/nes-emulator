@@ -433,6 +433,22 @@ Their value is the evidence; do not retry them without reading this first.
   `skipDummyReads`/`skipFirstInputClock` for `$4016`/`$4017` — with the OAM total staying at
   513/514 cycles.
 
+  A second attempt did exactly that much — the parity, the two-flag handshake, `skipDummyReads`
+  and the OAM bytes going in through `$2004` — and was measured and withdrawn as well: the same
+  `4-irq_and_dma` row moved, and AccuracyCoin booted into its own trap this time. `$37` stayed
+  zero (0 tests ran) and the ROM came to rest on `$80DD`, a `JMP $80DD` it reaches right after
+  `JSR $F109` (`LDA $F0 / ORA #$80 / STA $F0 / STA $2000`) and `INC $EC` — i.e. inside the boot,
+  before the menu ever appears. What that narrows it to: with the dummy reads in place the DMC's
+  fetch takes 3 or 4 cycles depending on the parity, where the model we have always charged 4,
+  and AccuracyCoin's boot *synchronises against the DMC's byte* (an earlier row here records a
+  hang with the same signature) — so the byte's delivery cycle has to move together with the
+  dummy reads. `dmc_sync_rom`, which is a simplified model of that sync, still passed, so the
+  next attempt should write the *real* sync loop as its test and check the channel's
+  byte-boundary delivery against it, not just the DMA's length. Two smaller things belong in the
+  same port: our machine does not sample the interrupt lines during DMA cycles (Mesen's
+  `StartCpuCycle`/`EndCpuCycle` do), and `$4016`/`$4017` also need `skipFirstInputClock` and
+  `ProcessDmaRead`'s internal-register merge.
+
 ## 8. Decisions still open
 
 **Decided**: the renderer went all the way (background *and* sprites, §2.1); PAL runs 16/5 with
@@ -491,7 +507,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | P3c | `cpu_interrupts_v2`'s three remaining tables | **Done** | The chain was measured cycle by cycle (§7) and the missing cycle was the APU's place in it: the chip clocks the APU at the *start* of a CPU cycle (Mesen's `ProcessCpuClock`), not at the end. **`cpu_interrupts_v2` 2/5 → 5/5** — `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` all pass, and everything that pinned the flag against the `$4017` write stayed green. §2.4; the two withdrawn knob experiments are explained in §7 | Nothing; the neighbouring item is the sprite *evaluation* being per line (P1) |
 | B1 | A game's sprites drawn with holes ("transparent" characters) | **Done** | The sprite pattern fetch's high plane came from the low plane's address (§7), so colour 2 pixels read as colour 0 and vanished. Fixed to `addr + row + 8`; unit test `test_a_sprites_high_plane_is_the_tiles_second_half` fails on the old code | Nothing. Worth remembering: the ROM baseline is blind to drawn pixels — a game, or a unit test, is what catches this class |
 | B3 | The unofficial `SHx` stores' address corruption (5 AccuracyCoin cases) | Partly done | Modelled on Mesen's `SyaSxaAxa`: the index's carry into the high byte is kept, that byte is ANDed with the register pair, the value is masked by the base's high byte plus one, and a DMA in the cycle before the write lifts the mask (§7). The five `UnOp_SHA`/`SHS`/`SHY`/`SHX` tests move from check 3 to check 15 | That last check is in the tests' own DMA section — it goes with the next cut, the 13 DMA cases |
-| B4 | AccuracyCoin's DMA group (13 cases) | **In progress** | The mechanism is identified: the DMA's halt and dummy cycles have to be *reads at the address the CPU was about to use* (`DMA + $2007 Read` check 3 counts them). The first implementation was measured and withdrawn — it moved `4-irq_and_dma`'s table and hung AccuracyCoin's boot; §7 has the detail and the next step | Port Mesen's `ProcessPendingDma` **verbatim**: the parity, the two-flag handshake, `_abortDmcDma`, and the `$4016`/`$4017` skip rules — with the OAM transfer still 513/514 cycles |
+| B4 | AccuracyCoin's DMA group (13 cases) | **In progress** | The mechanism is identified: the DMA's halt and dummy cycles have to be *reads at the address the CPU was about to use* (`DMA + $2007 Read` check 3 counts them). Two implementations were measured and withdrawn: both moved `4-irq_and_dma`'s table and hung AccuracyCoin's boot (the second one reaching the ROM's own trap at `$80DD`); §7 has both sets of evidence and the narrowed next step | Port Mesen's `ProcessPendingDma` **verbatim**: the parity, the two-flag handshake, `_abortDmcDma`, and the `$4016`/`$4017` skip rules — with the OAM transfer still 513/514 cycles |
 | B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
