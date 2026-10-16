@@ -5,7 +5,9 @@
 这是精度工作的**工作文档**：**把内核与 [Mesen2](https://github.com/SourMesen/Mesen2) 的 NES 内核
 对齐，遇到歧义一律以 Mesen 为准。** `docs/architecture.md` 仍是"模拟器今天是什么样"的描述（其
 §15.1 是已知限制的摘要）；本文档是计划、计划背后的实测数据，以及仍然不同的地方。
-**新会话请先读 §9 的任务台账**——那里是"哪些做完了、哪些卡在哪、下一步做什么"的一页汇总。
+**新会话请先读 §9 的任务台账**——那里是"哪些做完了、哪些卡在哪、下一步做什么"的一页汇总——以及
+**§10：与 MesenCE 的 NES 内核逐文件对比**（2026-10-16），它列出仍然不同的地方、**已经一致**的地方
+（免得重做），以及每一项该由哪张 ROM 来证。
 
 两条规则，按优先级：
 
@@ -31,7 +33,7 @@
 | A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
 | 逐 dot 渲染 | `ProcessScanlineImpl`：`cycle % 8 == 1/3/5/7` 取指，每 dot `ShiftTileRegisters` 与 `DrawPixel`，粗 X 在每组最后一个 dot 推进（`(_cycle & 0x07) == 0`），全程用同一个 `_videoRamAddr` | `PixelPipeline`：同样的取指/装载/移位/绘制节奏，粗 X 在装载那个 dot 推进，滚动取 `v`/`t`/`x`；sprite 阶段的取指、逐 dot sprite 像素与 sprite 0 命中都在这里 | `4-scanline_timing`、`sprite_hit` 11/11，且 `nestest` 的帧与整行渲染器逐字节相同（那一份检查看不见属性取指，见 §7 末行） |
 | open bus | 每位一个时间戳（`_openBusDecayStamp`）、三帧衰减、`$2002` 低五位从中取，且用 PPU 自己的锁存而非 CPU 的 | 相同：`Ppu::drive_open_bus`/`open_bus_decay_stamp`，`$2002` 只驱动高三位，`$2007` 的调色板读只驱动六位 | `ppu_open_bus` 1/1 |
-| 预渲染行 | 流水线条件 `scanline < 240`，对预渲染行（-1）成立 | `drive_ppu_bus` 的 `in_vblank` 只排除 240..=260 | 同上 |
+| 预渲染行 | 流水线条件 `scanline < 240`，对预渲染行（-1）成立 | 流水线自己的 `visible` 判断，`scanline < 240 \|\| scanline == pre_render` | 同上 |
 | 奇数帧跳点 | 在处理 dot 339 时判定（`_cycle = 340`），被跳掉的是 340 | 相同，由 `NesBus::skip_odd_frame_dot` 承载 | `test_a_register_write_is_in_time_for_the_odd_frame_decision` |
 
 ## 2. 尚未对齐的部分
@@ -53,8 +55,8 @@ dot 上画出来，滚动取芯片自己的 `v`/`t`/`x`；sprite 阶段的图案
   影响 sprite。
 
 随逐 dot 背景与 sprite 一起落地的还有：真实取指地址让 `4-scanline_timing` 转绿（先前的重建
-让首个 sprite 阶段取指之前的低电平段长了一个 dot），`RenderTiming`、`ppu.render_v` 与整行渲染器
-都已删除。
+让首个 sprite 阶段取指之前的低电平段长了一个 dot），`RenderTiming` 与整行渲染器都已删除。
+（`ppu.render_v` 其实**没有**删：字段还在，没人用它却仍进存档——见 §10.3。）
 
 Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTileInfo`、
 `LoadSprite`/`LoadExtraSprites`、`ShiftTileRegisters`、`GetPixelColor`、`DrawPixel`、
@@ -472,6 +474,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | B4 | AccuracyCoin 的 DMA 组（13 项） | **进行中** | 机制已定位：DMA 的 halt/dummy 周期必须是"对 CPU 即将访问地址的真实读"（`DMA + $2007 Read` 第 3 项就在数它）。两版实现都实测后撤回（都让 `4-irq_and_dma` 的表动了、AccuracyCoin 启动卡死；第二版停在 ROM 自己的陷阱 `$80DD`），两轮证据与收窄后的下一步写进 §7 | **逐字**移植 Mesen 的 `ProcessPendingDma`（奇偶、两个标志、`_abortDmcDma`、`$4016/$4017` 的跳过规则），保持 OAM 513/514 |
 | B2 | 背景瓦片拿到右邻的调色板（`?` 砖、砖行末尾、标题文字末尾变绿） | **完成** | 粗 X 在属性取指之前自增（§7 那一行）；回归测试三条在旧代码上失败 | 无；相邻项是 §2.2 里背景取指的开关（关背景时 Mesen 仍取指） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
+| C1 | **与 MesenCE 的逐文件源码对比（§10）** | 完成 | 把整棵 `Core/NES` 取下来与本内核对照读了一遍（551 个文件、约 275 个板级类）。查出 12 处缺陷，含 NES 2.0 半字节对调、`$2002` 清掉 sprite 两个标志、CPU 复位的 `SP`、手柄口的 open bus；核实 12 项已一致；AccuracyCoin 的 34 项按"第几项失败"重读（`(value >> 2) + 1`，§7/§9 原先的编号整体多一） | 按 §10.7 的顺序做：DMA 逐字移植 → `$4016`/`$4017` 配 `read_joy3` → PPU 寄存器状态机 → `$2002` 标志与逐 dot sprite 求值 |
 
 **先记住一件容易搞错的事**：AccuracyCoin 的计数是**我们的**基线，不是 Mesen 的——它不在 Mesen
 的测试套件里（§5.1）。每一项的 oracle 都应当是 Mesen 的源码，ROM 的裁决是证据而不是目标；少数项
@@ -482,15 +485,273 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 `docs/architecture.md` §13.1；13 项 DMA 失败在同一两项检查上，说明它们是**同一个机制**——
 这是当前最值得开的一刀。
 
-**取 Mesen 源码的办法**（`/tmp` 里的副本可能不在了；下面这条本会话用过）：
-仓库是 `SourMesen/Mesen2`，它的 README 指向维护中的分叉 `nesdev-org/MesenCE`（布局相同，
-CI 与测试在那边——见 §5.1）；两边都能按需抓单个文件，例如
-`curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/APU/DeltaModulationChannel.cpp`。
-已读过并写进本文档的：`Core/NES/NesPpu.cpp`、`Core/NES/BaseNesPpu.{h,cpp}`、
-`Core/NES/NesCpu.cpp`、`Core/NES/NesMemoryManager.cpp`、`Core/NES/APU/DeltaModulationChannel.{h,cpp}`、
-`Core/NES/APU/ApuFrameCounter.h`、`Core/NES/Mappers/`（`MMC3.h`、`Mapper4.h`、`BaseMapper.*`、`VRC6.h`）。
-仓库根的 `mesen_files.json` 是它全仓的清单，可用 `name` 字段查任意文件的路径。
+**取 Mesen 源码的办法**：整棵树取下来，别按单个文件抓——只有 3.8 MB 一条命令（配方在 §10.1：
+blob 过滤的 clone 加稀疏 checkout `Core/NES`、`Core/Shared`、`UI/Dependencies`、`UI/Config`）。
+逐文件抓（`curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/NesPpu.cpp`）
+是之前会话的做法，也正是两棵树被混在一起来源的由来：`SourMesen/Mesen2` 与 `nesdev-org/MesenCE`
+同一文件能差 5–100 行。**要读的是 `nesdev-org/MesenCE`**（§5.1），`UI/Dependencies/MesenNesDB.txt`
+也在那棵树上。已读过并写进本文档的文件清单在 §10.1。
 
 **交接时的约定**：ROM 不入库（`roms/` 缺目录时测试打印跳过）；文档英中必须同时改（`*.zh-CN.md` 对照）；
 每一步的实测数字写进提交信息与 §7；因"更忠实于 Mesen"而产生的回退要连同原因记进 §7 的撤回清单，
 而不是把代码改回去。
+
+---
+
+## 10. 与 MesenCE 的 NES 内核逐文件对比（2026-10-16）
+
+§2 记的是"已知的差距"；这一节是把两边的源码逐子系统并排读完之后的结果，因此也包含此前没人找过的
+那些。它是接活时的第一参考：每一行都写明两边各是什么，§10.4 列出**已经一致**的部分以免重复劳动。
+
+### 10.1 对比的是哪一份，怎么拿到同一棵树
+
+Mesen 维护中的分叉是 `nesdev-org/MesenCE`（§5.1）。本次读的是真正的 checkout，不是逐文件拷贝：
+
+```bash
+git clone --depth 1 --filter=blob:none https://github.com/nesdev-org/MesenCE.git /tmp/MesenCE
+cd /tmp/MesenCE
+git sparse-checkout set --cone Core/NES Core/Shared UI/Dependencies UI/Config
+git checkout                      # 取回稀疏集需要的 blob
+```
+
+当时的 `HEAD` 是 `4b8a196`。`Core/NES` 共 551 个文件：顶层十个翻译单元 10,644 行（`NesPpu.cpp`
+1,769、`BaseMapper.cpp` 1,383、`NesCpu.h` 914、`NesConsole.cpp` 775、`MapperFactory.cpp` 670、
+`NesCpu.cpp` 612、`NesTypes.h` 527、`GameDatabase.cpp` 346、`NesControlManager.cpp` 303、
+`NesHeader.cpp` 250），`Core/NES/Mappers/` 另有 296 个文件（1.3 MB），`MapperFactory::GetMapperFromID`
+里 include 了 275 个板级头、共 326 个 `case` 标签。与内核有交集的文件都读完了：`NesCpu.{h,cpp}`、
+`NesPpu.{h,cpp}`、`BaseNesPpu.{h,cpp}`、
+`DefaultNesPpu.h`、`NesConsole.{h,cpp}`、`NesMemoryManager.{h,cpp}`、`OpenBusHandler.h`、
+`InternalRamHandler.h`、`NesControlManager.{h,cpp}`、`Input/NesController.h`、`NesConstants.h`、
+`NesHeader.cpp`、`Loaders/iNesLoader.cpp`、`APU/` 全部十一个文件、`NesSoundMixer.{h,cpp}`、
+`Shared/Audio/SoundResampler.cpp`、`NesDefaultVideoFilter.cpp`、`BaseMapper.{h,cpp}`、
+`Mappers/Nintendo/MMC3.h`、`Mappers/A12Watcher.h`、`Shared/SettingTypes.h`（`NesConfig` 的默认值）
+以及 `UI/Dependencies/MesenNesDB.txt`。
+
+这样做带来两个必须记住的结论：
+
+- 之前的会话是按单个文件从 `SourMesen/Mesen2` 抓的。两棵树接近但**并不相同**（同一文件相差 5–100
+  行：`ApuFrameCounter.h` 236 对 256、`NesPpu.cpp` 1,614 对 1,769），所以任何结论都要写明出自哪
+  个分叉。下面的行都是 MesenCE 的。
+- `NesConfig` 的默认值就是"Mesen 的行为"的定义（默认关闭的开关不是要模仿的对象）。与本内核相关的：
+  `EnableOamDecay = false`、`EnablePpuOamRowCorruption = false`、`EnablePpu2000ScrollGlitch = false`、
+  `EnablePpu2006ScrollGlitch = false`、`DisablePpu2004Reads = false`、`DisablePaletteRead = false`、
+  `RestrictPpuAccessOnFirstFrame = false`、`RemoveSpriteLimit = false`、
+  `ForceBackgroundFirstColumn = false`、`ForceSpritesFirstColumn = false`、
+  `EnableDmcSampleDuplicationGlitch = false`、`SwapDutyCycles = false`、`ReverseDpcmBitOrder = false`、
+  `SilenceTriangleHighFreq = false`、`ReduceDmcPopping = false`、`IsFullColorPalette = false`、
+  `RandomizeCpuPpuAlignment = false`、`RandomizeMapperPowerOnState = false`、
+  **`RamPowerOnState = Random`**、`InputScanline = 241`、`ConsoleType = Nes001`、`Region = Auto`，
+  以及超频用的额外扫描线数全为 0。
+
+Mesen 自己的数字，供后续步骤算账用：时钟 1,789,773 / 1,662,607 Hz（`NesConstants.h`）；
+`cpuDivider`/`ppuDivider` NTSC 12/4、PAL 16/5、Dendy 15/5（`NesCpu::Reset`、`NesPpu::UpdateTimings`）；
+CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 8/8、Dendy 7/8
+（`NesCpu::SetMasterClockDivider`）；`_ppuOffset = 1`；`_nmiScanline` 241/241/291、`_vblankEnd`
+260/310/310；一行 341 dot；APU 的 `_stepCycles` 与 DMC 的周期表。
+
+### 10.2 仍然不同的地方
+
+#### 机器与 CPU
+
+| | MesenCE | 本内核 | 代价 |
+| --- | --- | --- | --- |
+| 复位 | `NesCpu::Reset`：`CycleCount = -1`、主时钟先偏 `cpuDivider`、`_ppuOffset = 1`，然后**跑八个空周期**才执行第一条指令；上电时 `SP = $FD`、`A/X/Y = 0`、`PS = I`，且**不**从 SP 减 3（只有软复位才减） | `Cpu::reset`（`cpu.rs`）在 SP 从 `$FD` 开始时无条件减 3——所以这里上电后是 **`SP = $FA`**——周期计数从 0 起，也没有预热周期 | `cpu_reset` 一类 ROM；第一条指令执行时 PPU/APU 的相位 |
+| 访问落在周期的哪里 | 按制式取 `_startClockCount`/`_endClockCount`：NTSC 一个周期 12 个主时钟、访问落在第 5 个，PAL 16 中第 7 个，Dendy 15 中第 6 个 | 三个制式都是 `ACCESS_DOTS = 2` 个 dot——PAL 上等于 16 个 tick 里的第 10 个，不是第 7 个 | NTSC 是实测过的、也是有意的（§4）；PAL 的落点从未量过，而且没有 PAL ROM |
+| DMA | `NesCpu::ProcessPendingDma` 在 halt 周期、DMC 的 dummy 周期与 OAM 的对齐周期里都读 `readAddress`；DMC 取数是**按奇偶 3 或 4 个周期**；DMC 与 sprite 传输共用一个两标志握手；`StopDmcTransfer`/`_abortDmcDma` 在确定点取消；`$4016`/`$4017` 有跳过规则；一次 DMC DMA 若撞上位计数复位可以再次请求（开关控制） | `NesBus::process_pending_dma`（`nes.rs`）：DMC 取数固定四个周期，任何 halt/dummy 周期都不做总线访问，没有中止路径，也不看奇偶 | AccuracyCoin 的 13 项 DMA、`4-irq_and_dma`、`Misaligned OAM DMA`、`DMC DMA + OAM DMA`、`Explicit`/`Implicit DMA Abort` |
+| DMA 期间的中断线 | DMA 周期就是普通的 `StartCpuCycle`/`EndCpuCycle`，`_prevRunIrq`/`_needNmi` 照常采样 | `advance_one_cpu_cycle` 只是总线的 begin/end，而唯一采样中断线的 `Cpu::end_cycle` 不会被调用——停机期间到达的中断永远不会被锁存 | `cpu_interrupts_v2`、`DMA + Open Bus` |
+| Dendy | 第三个制式：`cpuDivider` 15、`ppuDivider` 5、`_nmiScanline` 291、`_vblankEnd` 310、`startClockCount` 7 | 没有这个制式；Dendy 卡带按 NTSC 跑 | 本地无法验收（没有 Dendy ROM）；它是头部能声明而内核无法表示的制式 |
+| 未文档 `KIL`/`JAM` | `NesCpu::HLT` 让 CPU 停住**并且**清掉中断采样，挂死不可被打断 | CPU 停住但仍可被中断拉起（`Cpu::jam`），宿主因此能上报并恢复 | 有意偏差（§4） |
+| `cpu/addressing.rs` | — | 760 行寻址加一整个测试模块**已经不再运行**：真正的实现是 `instructions.rs::fetch_operand`，模块外没有任何地方引用 `addressing::` | 不是精度差距而是陷阱：那些测试钉的是一个机器并不使用的模型，其中一个还曾钉住错误的 SHx 行为 |
+
+#### PPU
+
+| | MesenCE | 本内核 | 代价 |
+| --- | --- | --- | --- |
+| `$2002` 读 | **只**清 VBlank 标志与 CPU 的 NMI 锁存（`UpdateStatusFlag`）；sprite overflow 与 sprite 0 命中在预渲染行 cycle 0 清 | `ppu.rs` 每次读都清 VBlank **加** sprite overflow **加** sprite 0 命中 | 任何在还没用完另两个标志就提前读 `$2002` 的 ROM；AccuracyCoin 读第 5 位之后还指望这个标志的状态有意义 |
+| `$2002` 低五位 | open bus，`openBusMask = 0x1F`，另有 2C05 的几种变体（`ProcessStatusRegOpenBus`） | 同样取 PPU 自己锁存的五位 | 已对齐；2C05 变体只对 VS System 游戏有意义 |
+| `$2004` | 渲染期间读返回 `_oamCopybuffer`，并在 257-340 与 dot 0 从二级 OAM 重新装载；渲染期间写**被丢弃**、只让 OAMADDR 的高六位跳（`+4 & 0xFC`）；属性字节读回时掩蔽 `& 0xE3`；自增在 PAL 上有奇偶规则 | 普通的 OAM 读写加无条件自增 | 行内的 OAM 流量；`Misaligned OAM DMA`（Mesen 的传输经 `$2004` 落地，因此继承这些规则） |
+| `$2007` 读 | 返回的是缓冲，且缓冲要**再过五个 PPU 周期**才重新装载（`_ppuMemoryDataReadStateMachine = 5`）；`v` 再晚一个周期自增（`_needVideoRamIncrement`）；六个 dot 内的第二次读返回 open bus | 立刻换缓冲、立刻自增 `v`；六个 dot 的忽略窗口已建模（`_ignoreVramRead`） | `ppu_read_buffer`、`full_palette`；读 `$2007` 的那些 DMA 项 |
+| `$2007` 写 | 值先锁存、五个 PPU 周期后才写；**渲染期间这个值被丢掉，写进去的是地址的低字节** | 立刻写，而且永远写真实的值 | 同上两套 ROM；任何在渲染期间写 VRAM 的游戏 |
+| `$2006` | `v` 要**三个 PPU 周期后**才更新（`_updateVramAddrDelay = 3`），`t` 随之跟进 | 在写入的那个周期就 `v = t` | 在自增之前紧接着改 `v` 的行内分屏 |
+| 交给卡带的总线地址 | `SetBusAddress` 除了每次 `ReadVram`/`WriteVram`，还在若干非取指时刻被调用：不渲染时的 `UpdateVideoRamAddr`、vblank 起点、扫描线 0 的第一个周期、行内开关渲染、延迟的 `$2006` 更新 | 只喂流水线真正读过的地址（`take_bus_access`），每 dot 一次 | A12 滤波器看到的边沿比 Mesen 少——这正是 A12 那一刀必须逐 dot 量的原因（§7） |
+| sprite 求值 | 逐 dot，65-256：1-64 清二级 OAM、65 调 `ProcessSpriteEvaluationStart` 且 dot 66 定 `_sprite0Added`、OAM 地址损坏（`spriteAddrH`/`spriteAddrL` 同时走）、`_oamCopyDone` 重对齐与伪溢出计数 | dot 65 一次调用填满下一行的二级 OAM | `oam_flicker_test*`；AccuracyCoin 的 `$2002 flag timing` 第 2 项（要 `$55 == $60`，即同一读里 sprite 0 与 overflow 同时置位）、`Arbitrary Sprite zero`、`Suddenly Resize Sprite` |
+| sprite 像素 | 八个硬件移位器加 `_dotSkipped`，含 counting/active/expired 三种模式，`RemoveSpriteLimit` 时还有额外 sprite；奇数帧跳掉的那个 dot 会把所有 sprite 推迟一个像素（`_spriteShifterList[i] += 1 << 4`） | 每 dot 从逐行槽位重算 | 奇数帧的一像素 sprite 延迟缺失；sprite 上限开关不存在 |
+| 关背景时的背景取指 | `LoadTileInfo` 挂在 `IsRenderingEnabled()`（背景**或** sprite）上，所以只开 sprite 时仍然取指、仍然移位、`v` 仍然推进 | 整条背景路径挂在 `SHOW_BG` 上 | 只开 sprite 时的 A12（MMC3 时钟不同）；本地没有 ROM 覆盖 |
+| 左侧列掩蔽 | 三个独立阈值 `_minimumDrawBgCycle`/`_minimumDrawSpriteCycle`/`_minimumDrawSpriteStandardCycle`，各按掩码与"强制第一列"设置取 8 或 300 | 用两个掩码位做 `x < 8` 判断 | 默认设置下等价；三个阈值并非在所有情形都是同一个数 |
+| 强制消隐 | 渲染关闭且 `v` 落在 `$3F00-$3FFF` 时，`DrawPixel` 显示 `paletteRam[v & 0x1F]` | 显示 backdrop | `full_palette` 一类 ROM |
+| 复位后的状态 | 调色板 RAM 取固定的 32 字节上电图案（默认 `RamPowerOnState = Random` 时为随机）；`v` **不**被复位清掉，只有上电才清；`_scanline = -1`、`_cycle = 340`、`_frameCount = 1` | 调色板、VRAM、OAM 全部清零，`v = 0`、`scanline = 0`、`cycle = 0`、`frame = 0` | `blargg_ppu_tests` 里的 `power_up_palette` 与 `palette_ram`（今天绿是因为它们先写自己测的东西） |
+| 帧边界 | `SendFrame` 跑在扫描线 240 的 cycle 0，所以前端的"一帧"从 vblank 开始 | 预渲染行绕回时才换帧 | 只影响宿主：我们的边界早一行 |
+| OAM 衰减 | `ReadSpriteRam` 带逐行时间戳，**默认关闭**（`EnableOamDecay = false`）；时间戳窗口是 `OamDecayCycleCount = 4500`（约 40 扫描线） | 未建模 | 没有：不做正是 Mesen 的默认（§2.2）。§2.2 里写的"3000"是 `SourMesen/Mesen2` 的值——正好是两棵树不一致的例子（MesenCE 是 4500） |
+
+#### APU 与音频
+
+| | MesenCE | 本内核 | 代价 |
+| --- | --- | --- | --- |
+| 长度计数器装载 | `LoadLengthCounter` 只记下 `_reloadValue`/`_previousValue`；`ReloadCounter` 在**帧计数器为该周期跑完之后**才应用，且只在 `_counter == _previousValue` 时应用；halt 标志也在那里落地 | `LengthCounter::load` 在寄存器写入时立刻改计数器 | blargg 的 `len_reload_timing` 第 4、5 项——Mesen 自己的注释点名的那张 ROM |
+| 帧计数器 | 六项表（`...29828, 29829, 29830` 与 `...37281, 37282`）、带 3/4 周期延迟的 `_newValue` 待写机制、`_blockFrameCounterTick = 2`（一次 tick 会挡住随后两个周期里写入的时钟），以及 `GetIrqFlag` **在被读之后的下一个 APU 周期开头自动清标志** | 五项表加 `hold`，标志用三周期的 `frame_counter_irq_window` | `4-jitter`/`5-len_timing`/`6-irq_flag_timing` 通过；AccuracyCoin 的 `Frame Counter IRQ` 与 `Controller Strobing`（第 3 项读 put/get 转换）不通过 |
+| DMC | `SetEnabled` 的效果延迟 2/3 个周期（`_disableDelay`）、传输起点延迟 2/3 个周期（`_transferStartDelay`）、未开始的传输会被中止，另有采样重复与单字节采样的特例（开关控制）；定时器周期存的是表值减一 | `set_enabled` 立即生效；周期就是表值 | `dmc_dma_start_test`、`dmc_dma_start_test_v2`、AccuracyCoin 的 `DMC Reload Timing`，以及 DMA 组里的 DMC 那一半 |
+| 混音 | 非线性，但用的是自己的常数：`95.88 * 5000 / (8128 / square + 100)` 与 `159.79 * 5000 / (22638 / tnd + 100)`，其中 `tnd = dmc + 2.7516713261 * triangle + 1.8493587125 * noise`，全部按声道原始 0-15 单位，送进 blip 前再乘 4 | `95.52 / (8128 / pulse + 100)` 与 `163.67 / (24329 / tnd + 100)`，`tnd = dmc + 3 * triangle + 2 * noise`，浮点 | 几个百分点的声道平衡差异：满音量下三角波 Mesen 是 0.2464、这里是 0.2555（三角波响 3.7%、噪声响 3.0%），脉冲轻 0.4%。能裁决它的是 `apu_mixer` 与 `apu_mixer_recordings` |
+| 扩展音源混音 | 线性叠加，权重固定：FDS 20、MMC5 14、N163 20、5B 15、VRC6 5、VRC7 1 | 每个扩展音源各走各的路径 | 只有那些板子上听得出来；本地没有金标准 |
+| 重采样 | blip 跑 96 kHz（`bass_shift = 9`），再用 Hermite 重采样到声卡的真实速率 | 一级带限直接到设备率 | 有意偏差，已记录（§2.4/§7） |
+
+#### 内存、open bus 与手柄
+
+| | MesenCE | 本内核 | 代价 |
+| --- | --- | --- | --- |
+| 数据总线 | 两个锁存，`NesCpuBusType::Internal`/`External`（`OpenBusHandler.h`）：读会同时更新两者，读 `$4015` **只**更新内部那个，DMA 读可以只更新其中一个 | 总线上一个 `open_bus` 锁存，每次读、每次写都覆盖 | AccuracyCoin 的 `Internal Data Bus`、`Open Bus`，以及 `APU Register Activation` 里 `$4015` 那一半 |
+| 内部 RAM | 默认 `RamPowerOnState = Random`，另有 Famicom Box 的 8 KB 变体（`InternalRamHandler<0x1FFF>`） | 清零的 2 KB | 先读后写的 `cpu_reset` 一类 ROM |
+| `$4016`/`$4017` 读 | `openBus(GetOpenBusMask(port)) \| device`，掩码按机种：NES-001 是 $E0，NES-101 的一号口是 $E4，HVC-001 是 $F8；同一个 CPU 周期内重复读同一地址返回上一次的值（`ReadDevice`）；读满八次之后手柄移位寄存器补 1 | 一律 `bit \| 0x40`，一律移位，八次之后寄存器空成 0 | `read_joy3`；AccuracyCoin 的 `Open Bus`（第 2 项）、`APU Register Activation`（第 2 项）、`Controller Clocking`（第 2 项） |
+| `$4016` 写 | strobe 与 OUT 引脚在下一个 PUT 周期更新（`_writePending = (masterClock & 1) ? 1 : 2`，由 `ProcessCpuClock` 落地） | 在写入自己的周期就生效 | AccuracyCoin 的 `Controller Strobing` |
+| 手柄采样 | 控制设备每帧在 PPU 扫描线 `InputScanline = 241` 刷新一次 | 宿主按钮状态随设随到 | 帧中途改按钮的宿主会立刻看到，而不是等到 vblank |
+
+#### 卡带、载入与视频
+
+| | MesenCE | 本内核 | 代价 |
+| --- | --- | --- | --- |
+| MMC3 的 IRQ 修订版 | `_forceMmc3RevAIrqs = DatabaseInfo.Chip.substr(0,5) == "MMC3A"`——逐游戏，来自数据库 | 两个修订版都没有：只有 rev-B 条件 | `6-MMC3_alt`（见 §10.6，**Mesen 同样失败**）以及板子标注 `MMC3A` 的那些游戏 |
+| `$C001` | `_irqCounter = 0; _irqReload = true` | `irq_counter \|= 0x80`——blargg 描述的"病态"行为，Mesen 并未实现 | 观察不到：两种写法在每次被计数的上升都会从锁存重装 |
+| MMC6 | `SubMapperID == 1` 时工作 RAM 切成四个 $400 字节的 bank，各自带读写使能 | 未建模 | mapper 4 submapper 1 的游戏——而且要先修下面 NES 2.0 那条才看得见 |
+| 非 MMC3 板的 A12 | `A12Watcher::UpdateVramAddress(addr, frameCycle)`，`minDelay = 10` 个**帧周期**（PPU dot），MMC4/VRC/FME7 一类板子用它 | `Mapper::on_ppu_bus(addr, cpu_cycles)`，三个 CPU 周期的规则 | 这里只有 MMC3 有滤波器；其它板的 watcher 不存在 |
+| 总线冲突 | `BaseMapper::WriteRam` **只在寄存器地址上**做按位与（`_isWriteRegisterAddr[addr]`），数据库还能逐游戏强制这个标志（`BusConflictType`） | `NesBus::write_now` 只要板子声明冲突就对所有卡带写入做与 | 冲突板上的 PRG RAM 写入会在这里被破坏（本地没有这种板子） |
+| Mapper 钩子 | `EnableCpuClockHook()` → **每个 CPU 周期**调 `ProcessCpuClock()`，声明它的有 Sunsoft FME7/3/4、IremH3001、Kaiser 202/7017、Mapper 40/42/43/50/83/106/253、Tf1201、Fk23C、Smb2j、CityFighter、T230、Yoko、DripGame、Rainbow 等 | `on_cpu_cycles(cycles)` 每条指令一次，另有 `on_scanline` | 本应落在指令中途的 mapper IRQ 最多晚六个周期（这里用到它的有 mapper 21/24/16/18/5/69） |
+| 板级覆盖 | 296 个 mapper 文件、`MapperFactory::GetMapperFromID` 里约 275 个 `case`，外加数据库覆盖 | 44 个 mapper 文件 | 64（含 158）、115、116、176、185、MMC5 扩展属性模式、VRC7、Namco 163、FDS、EPSM、VS System、NSF、HD pack——长尾，且有意排在 CPU/PPU 之后 |
+| NES 2.0 头部 | `GetMapperID()` 里 mapper 的高四位取自 byte 8 的**低**半字节，`GetSubMapper()` 取 byte 8 的**高**半字节；指数-乘数尺寸已实现；byte 13 的机种/VS/PPU 型号与 byte 15 的输入类型都解析 | **两个半字节被对调**（`nes.rs`）：mapper 取了 byte 8 的高半字节，"submapper"取了低半字节——于是 NES 2.0 文件里 submapper 1 的会当成 mapper 260 载入，submapper 读出来是 0 | 本地没有 ROM 带 NES 2.0 头，所以什么都没动；任何 submapper 非 0 的 NES 2.0 文件都会中招 |
+| 游戏数据库 | `UI/Dependencies/MesenNesDB.txt`：10,655 条，按 PRG+CHR 的 CRC32 索引，18 个字段（板、PCB、芯片、mapper、尺寸、镜像、输入、总线冲突、submapper、VS 类型……）。`MMC3A` 与镜像覆盖都出自这里 | 没有 | 商业游戏的怪癖；**`roms/` 下 82 个 ROM 没有一个在库里**（逐个算 CRC 核实过），所以本基线不受任何覆盖影响（§10.6） |
+| 视频 | 2C02/2C03/2C04-A-D/2C05-1-5 调色板、用户调色板、强调色生成，以及可选的 NTSC 复合视频滤波（`NesNtscFilter`、`BisqwitNtscFilter`） | 2C02 表、强调色生成、`nes_color` | 调色板与强调色已经**完全一致**（§10.4）；RGB PPU 的调色板与复合滤波不存在 |
+
+### 10.3 本轮查出的缺陷（每条附修法）
+
+1. **NES 2.0 的 mapper 与 submapper 半字节对调**（`crates/nes-core/src/nes.rs` 的 `RomHeader` 解析）。
+   Mesen 是 `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)`、`SubMapper = (Byte8 & 0xF0) >> 4`；
+   这里 mapper 取 `(flags8 & 0xF0) << 4`、submapper 取 `flags8 & 0x0F`。`roms/` 里没有一个带 NES 2.0
+   头，六套 ROM 因此从未发现它。
+2. **`$2002` 读会清掉 sprite overflow 与 sprite 0 命中**（`ppu.rs` 的 `0x2002` 分支）。Mesen 在那里
+   只清 VBlank，另两个在预渲染 cycle 0 清。帧中途的一次读，在这里会把那两个标志拿走，在那里会留下。
+3. **CPU 复位**：上电时也执行了 `SP -= 3`（新机器是 `SP = $FA` 而不是 `$FD`），周期计数从 0 而不是 -1
+   起算，八个空周期缺失。
+4. **手柄口一律回答 `bit | 0x40`**（`nes.rs` 的 `ControllerState::read`）：没有按机种的 open bus 掩码、
+   没有"同一周期内重复读"规则，移位寄存器读满八次后是 0 而不是补 1。
+5. **`$4016` 的写立刻传到手柄**，而不是落在下一个 PUT 周期。
+6. **PPU 的寄存器状态机不存在**：`$2007` 的延迟读缓冲与延迟写（含渲染期"写地址低字节"）、`$2006`
+   的三周期延迟、`$2004` 的渲染期行为，以及强制消隐时的 `palette[v & 0x1F]` 路径。
+7. **DMA 的形状**（§2.3/B4）：halt 与 dummy 周期不做总线访问，DMC 取数永远四个周期，没有中止路径，
+   这些周期也不采样中断线。
+8. **APU 的边沿时序**：长度计数器的延迟装载、帧 IRQ 标志真实的生命周期、DMC 使能/禁用的 2/3 周期延迟。
+9. **混音常数**用的是 wiki 的而不是 Mesen 的（数字见 §10.2）。
+10. **`cpu/addressing.rs` 是死代码**——760 行外加它整个测试模块。要么删掉，要么让它成为唯一实现；
+    留着它，下一个会话就会"修"一个并不在跑的模型。
+11. **`ppu.render_v` 仍然存在**（`ppu.rs`，而且在 `state_fields!` 里，会被存档序列化），尽管 §2.1
+    写它已删除。
+12. **§1 的预渲染行仍在归功于 `NesBus::drive_ppu_bus`**，而那个函数早已不在。
+
+### 10.4 已核实一致——不要重开这些
+
+两边都读过，答案相同：
+
+- 2C02 调色板表与强调色生成：把 MesenCE 的 `_ppuPaletteArgb[0]` 与这里的 64 项表取出来机械比对，
+  结果**完全相同**；`GenerateFullColorPalette` 把另外两个通道乘 **0.84** 后截断、并跳过 `$xE`/`$xF`
+  两列——与 §7 九位色那一行记的完全一样。
+- 调色板读：低六位来自调色板 RAM、高两位来自 open bus、读出时套灰阶掩蔽（`_paletteRamMask`），
+  `$3F00/04/08/0C` 与 `$3F10/14/18/1C` 互为别名。
+- PPU 侧的 open bus：`_openBusDecayStamp` 按位、**3 帧**后失效，`$2002` 只驱动三位，`$2007` 驱动它
+  返回的那个字节。
+- 第二次 `$2007` 访问的 `_ignoreVramRead = 6`，以及 `>= $3F00` 的调色板路径。
+- 奇数帧跳点：在预渲染行的 dot 339 决定，被跳掉的是 340，且仅 NTSC、仅 2C02。
+- OAM 衰减在 Mesen 里默认关闭（开启时每行 4500 周期）——不做正是对齐它的默认值。
+- MMC3 的 A12 滤波：`_a12LowClock > 0 && GetMasterClock() - _a12LowClock >= 3`，`GetMasterClock()`
+  就是 CPU 周期数，且每次上升都结束当前低电平段（`NotifyVramAddressChange`）——`mapper4.rs` 正是这样。
+  `5-MMC3` 在两边都是绿的。
+- 总线冲突的语义（与本身；只有上面那条"仅在寄存器地址"的差别）。
+- blip 的 `bass_shift = 9`；DMC"取数时移计数、字节留在缓冲、静音标志保持电平"的形状；DMC 的 NTSC
+  与 PAL 周期表逐值相同。
+- 每次 `ReadVram` 都会调 `SetBusAddress`（上面总线地址那一条的"逐取指"那一半）。
+- `$2002` 读的 VBlank 抑制窗口：AccuracyCoin 的 `$2002 flag timing` 第 1 项（答案 `$E0 $E0 $80 $00`）
+  在 `ACCESS_DOTS = 2` 下通过，这是 §4 那条有意偏差的独立证据。
+- `UpdateStatusFlag` 的特例（NMI 扫描线 cycle 0 置 `_preventVblFlag`）与抑制窗口建模的是同一次竞争。
+
+### 10.5 AccuracyCoin 那 34 项，各自到底要什么
+
+harness 打印的是 ROM 存下的那个字节，它的构造是 `(ErrorCode << 2) | 2`（`AccuracyCoin.asm` 的 `TEST_Fail`）。
+**因此失败的是第 `(value >> 2) + 1` 项**，比 §7、§9 里 `SHx` 组与 DMA 组用的 `value / 2` 少一。本 checkout
+实测（`cargo test -p nes-core --test rom_tests accuracy -- --nocapture`：跑 140、过 94、失败 34）：
+
+| 地址 | 测试 | 失败第几项 | 那一项要什么 |
+| --- | --- | --- | --- |
+| `$0408` | Open Bus | 2 | 用 `LDA absolute` 读 open bus 时返回操作数的高字节 |
+| `$0446`-`$044A` | `UnOp_SHA_93`、`_SHA_9F`、`_SHS_9B`、`_SHY_9C`、`_SHX_9E` | 8 | `SHx` 在各自测试的 DMA 段里的行为（地址损坏本身已落地，§7） |
+| `$044C` | DMA + `$2007` Read | 3 | halt/对齐周期必须让 `v` 前进足够多次 |
+| `$044F` | DMA + `$2007` Write | 2 | DMA 必须被写周期推迟 |
+| `$0458` | Arbitrary Sprite zero | 3 | OAM 地址非 0 时的 sprite 0 |
+| `$0459` | Sprite overflow behavior | 2 | 一行九个 sprite 时，`CLV` 之后读 `$2002` 第 5 位仍置位 |
+| `$045C` | APU Register Activation | 2 | 读手柄口时不能有不该置的位 |
+| `$045D` | DMA + `$4015` Read | 3 | — |
+| `$045E` | DMA + `$4016` Read | 2 | — |
+| `$045F` | Controller Strobing | 2 | 任何 bit 0 为 1 的值写入 `$4016` 都要 strobe |
+| `$0460` | Instruction Timing | 2 | DMA 时序精确到可以拿它同步 |
+| `$0461` | Interrupt flag latency | 11 | — |
+| `$0467` | Frame Counter IRQ | 8 | 标志置位后切到 5-step 模式不得把它清掉 |
+| `$046A` | Delta Modulation Channel | 20 | — |
+| `$046B` | DMC DMA Bus Conflicts | 2 | DMC DMA 与 APU 寄存器的总线冲突 |
+| `$046C` | DMA + Open Bus | 3 | — |
+| `$046D` | Implied Dummy Reads | 4 | open bus（或者 `JSR` 的周期顺序不对） |
+| `$0477` | DMC DMA + OAM DMA | 2 | 两次重叠 DMA 的周期数 |
+| `$0478`/`$0479` | Implicit/Explicit DMA Abort | 2 | 被中止的 DMA 的周期数 |
+| `$047A` | Controller Clocking | 2 | strobe 期间读手柄不得扰动移位寄存器 |
+| `$047C` | JSR Edge Cases | 3 | open bus |
+| `$0488` | DMA + `$2002` Read | 3 | — |
+| `$0489` | Suddenly Resize Sprite | 2 | HBlank 开始时写 `$2000` 能把已经判为在范围内的 sprite 改尺寸 |
+| `$048B` | Branch Dummy Reads | 6 | — |
+| `$048D` | `$2002` flag timing | 2 | sprite 0 与 overflow 必须在同一次读里置位（`$55 == $60`） |
+| `$0490` | Internal Data Bus | 2 | 读 `$4015` 不得动外部总线 |
+| `$0494` | Misaligned OAM DMA | 2 | 传输从已设置的 OAM 地址开始 |
+| `$0496` | DMA Landing on Write | 3 | DMC DMA 不得落在写周期上——它要等一个读 |
+| `$0497` | DMC Reload Timing | 2 | — |
+
+每一行 "DMA + …" 都是同一个缺失机制（§10.2 的 DMA 行）；两组手柄项与 `Internal Data Bus`、`Open Bus`
+都是 `$4016`/`$4015` 的 open bus 工作。这里没有哪一项需要 AccuracyCoin 是对的——它只是一份顺手就有的
+检查表。
+
+### 10.6 基线套件：Mesen 自己开发时用的那些
+
+Mesen 在注释里点名了自己的 oracle，所以缺哪些套件很好选。下面这些都在 `christopherpow/nes-test-roms`
+合集里（本机 checkout 在 `/tmp/nes-test-roms`），而且今天一个都不在 `crates/nes-core/tests/rom_tests.rs` 里：
+
+| 套件 | 出处（Mesen 注释） | 钉住什么 |
+| --- | --- | --- |
+| `blargg_apu_2005.07.30/11.len_reload_timing.nes`（`pal_apu_tests/` 里也有） | `APU/NesApu.cpp:166`："This fixes the test len_reload_timing (tests 4 & 5)" | 长度计数器的延迟装载 |
+| `full_palette/` | `NesPpu.cpp:1589`："This allows the full_palette tests to properly display single-pixel glitches" | `$2007` 之后 `v` 的自增晚一个 dot |
+| `ppu_read_buffer/` | — | `$2007` 的读缓冲及其延迟 |
+| `read_joy3/` | — | `$4016`：strobe、重复读、位丢失、读满八次后的 1 |
+| `sprdma_and_dmc_dma/`（含 `_512`） | `NesCpu.cpp:397`："Fixes dmc_dma_start_test_v2 case C" | sprite 与 DMC DMA 重叠 |
+| `dmc_tests/`（`latency`、`status`、`status_irq`、`buffer_retained`） | `DeltaModulationChannel.cpp:268`："Allows behavior to match dmc_dma_start_test" | DMC 延迟与状态 |
+| `dmc_dma_during_read4/` | — | DMC 取数落在某次读的最后一个周期 |
+| `cpu_dummy_reads/`、`cpu_dummy_writes/`、`cpu_exec_space/`、`cpu_reset/` | — | CPU 的周期模型：丢弃读、复位后的 `SP` |
+| `vbl_nmi_timing/`、`nmi_sync/`、`scanline/` | — | `ppu_vbl_nmi` 之外的 NMI 时序面 |
+| `mmc3_irq_tests/`、`exram/`、`mmc5test_v2/` | — | 卡带的 IRQ 与扩展 RAM |
+| `apu_mixer/` + `apu_mixer_recordings/` | — | 混音常数——唯一可得的音频金标准 |
+| `pal_apu_tests/`、`tvpassfail/` | — | PAL——今天一张 ROM 都没有（P5） |
+
+Mesen 点名的两张 ROM **不在**那个合集里，要另行获取：`oam_flicker_test_reenable`（`NesPpu.cpp:1177`）
+与 `dmc_dma_start_test`/`_v2`（`NesCpu.cpp:397`）。
+
+**还有一项基线根本不是缺陷。** `mmc3_test_2` 的 `6-MMC3_alt` 要的是 MMC3 **修订版 A** 的 IRQ 条件，
+而 Mesen 只在数据库说这块板的芯片是 `MMC3A` 时才用它（`MMC3.h:209`）。数据库
+（`UI/Dependencies/MesenNesDB.txt`，10,655 条，按 PRG+CHR 的 CRC32 索引）**对 blargg 的 mmc3 ROM
+一条都没有**——逐个算 CRC32 核实过——所以 Mesen 会用 rev-B 条件跑 `6-MMC3_alt`，并和本内核一样失败。
+诚实的处理是保留这一条并注明原因，而不是加一张 oracle 都没有的逐 ROM 表。
+
+### 10.7 接下来按顺序做什么
+
+1. **DMA 的逐字移植**（§10.2 的 DMA 行）。本轮给原先的诊断补上两点：DMA 周期必须采样中断线，DMC
+   取数是按奇偶 3 或 4 个周期。这一刀换回 AccuracyCoin 的 13 项加 `4-irq_and_dma`。
+2. **`$4016`/`$4017`**——open bus 掩码、PUT 周期 strobe、同周期重复读——先把 `read_joy3` 加进基线。
+   小、独立，且一次换回四项 AccuracyCoin（Open Bus 2、APU Register Activation 2、Controller
+   Clocking 2、Controller Strobing 2）。
+3. **PPU 的寄存器状态机**（`$2004`/`$2006`/`$2007`、渲染期写入），配 `ppu_read_buffer` 与 `full_palette`。
+4. **`$2002` 各标志的生命周期**与逐 dot 的 sprite 求值（含伪溢出计数）——三项 sprite 与 `$2002 flag
+   timing` 第 2 项。
+5. **APU 的边沿时序**，先把 `len_reload_timing` 放进基线。
+6. **混音常数**，用 `apu_mixer` 裁决。
+7. **CPU 复位与预热**、NES 2.0 的两个半字节、总线冲突的范围、Dendy。
+8. **Mapper**（64/158/185/115/116/176、MMC5 扩展属性、逐 CPU 周期钩子）——长尾，也是唯一以"板数"
+   而不是以"行为"计量的部分。

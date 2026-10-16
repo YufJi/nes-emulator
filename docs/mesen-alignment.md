@@ -7,7 +7,9 @@ This is the working document for the accuracy work: **the emulator core is being
 `docs/architecture.md` stays the description of what the emulator *is* today (§15.1 there is its
 summary of the known limits); this document is the plan, the measurements behind it, and what is
 still different. **Start a new session with §9's ledger** — the one-page answer to what is done,
-what is stuck and what to do next.
+what is stuck and what to do next — and with **§10, the file-by-file comparison against MesenCE's
+NES core** (2026-10-16): it lists what is still different, what is already identical (so it is not
+redone) and which ROM proves each item.
 
 Two rules, in order:
 
@@ -35,7 +37,7 @@ Two rules, in order:
 | A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
 | Per-dot rendering | `ProcessScanlineImpl`: `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ShiftTileRegisters` and `DrawPixel` every dot, coarse X stepping on the group's last dot (`(_cycle & 0x07) == 0`), all off the single `_videoRamAddr` | `PixelPipeline`: the same fetch/load/shift/draw schedule, with coarse X moving at the reload dot, off `v`/`t`/`x`, plus the sprite phase's fetches and per-dot sprite pixels and sprite-0 hit | `4-scanline_timing`, `sprite_hit` 11/11, and byte-identical frames against the whole-line renderer on `nestest` (that check cannot see the attribute fetch — see §7's last row) |
 | Open bus | A stamp per bit (`_openBusDecayStamp`), three frames of decay, `$2002`'s low five bits masked from it, and the PPU's own latch rather than the CPU's | the same: `Ppu::drive_open_bus`/`open_bus_decay_stamp`, `$2002` driving only its top three bits, `$2007`'s palette reads driving six | `ppu_open_bus` 1/1 |
-| The pre-render line | The pipeline runs for `scanline < 240`, which includes the pre-render line | `drive_ppu_bus`'s `in_vblank` excludes only 240..=260 | the same |
+| The pre-render line | The pipeline runs for `scanline < 240`, which includes the pre-render line | The pipeline's own `visible` test, `scanline < 240 \|\| scanline == pre_render` | the same |
 | The odd frame's skipped dot | Decided while processing dot 339 (`_cycle = 340`), so dot 340 is the one that goes missing | the same, carried by `NesBus::skip_odd_frame_dot` | `test_a_register_write_is_in_time_for_the_odd_frame_decision` |
 
 ## 2. What is not aligned yet
@@ -60,7 +62,8 @@ Consequences still outstanding:
 
 Landed with the per-dot background and sprites: real fetch addresses took `4-scanline_timing`
 green (the reconstructed run before the first sprite-phase fetch was a dot long), and
-`RenderTiming`, `ppu.render_v` and the whole-line renderer are gone.
+`RenderTiming` and the whole-line renderer are gone. (`ppu.render_v` is *not*: the field survives,
+unused but serialized — §10.3.)
 
 What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`, `LoadTileInfo`,
 `LoadSprite`/`LoadExtraSprites`, `ShiftTileRegisters`, `GetPixelColor`, `DrawPixel`,
@@ -573,6 +576,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | B4 | AccuracyCoin's DMA group (13 cases) | **In progress** | The mechanism is identified: the DMA's halt and dummy cycles have to be *reads at the address the CPU was about to use* (`DMA + $2007 Read` check 3 counts them). Two implementations were measured and withdrawn: both moved `4-irq_and_dma`'s table and hung AccuracyCoin's boot (the second one reaching the ROM's own trap at `$80DD`); §7 has both sets of evidence and the narrowed next step | Port Mesen's `ProcessPendingDma` **verbatim**: the parity, the two-flag handshake, `_abortDmcDma`, and the `$4016`/`$4017` skip rules — with the OAM transfer still 513/514 cycles |
 | B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
+| C1 | **The file-by-file comparison with MesenCE (§10)** | Done | The whole `Core/NES` tree was fetched and read against this core (551 files, ~275 boards). Twelve defects found, including the NES 2.0 nibble swap, `$2002` clearing the sprite flags, the CPU's reset `SP`, and the controller ports' open bus; twelve areas confirmed identical; AccuracyCoin's 34 re-read as "which check failed" (`(value >> 2) + 1`, which moves the §7/§9 labels by one) | Follow §10.7: the DMA port → `$4016`/`$4017` with `read_joy3` → the PPU's register state machines → `$2002`'s flags and per-dot sprite evaluation |
 
 **One thing to get right first**: AccuracyCoin's count is *our* baseline, not Mesen's — it is not
 part of Mesen's test suite (§5.1). Every item's oracle has to be Mesen's source, with the ROM's
@@ -585,17 +589,300 @@ unofficial `SHx` opcodes, 3 sprites, 3 APU, 2 controllers, 1 PPU); the list is i
 `docs/architecture.md` §13.1. The thirteen DMA ones fail on the same two checks, which says they
 are *one* mechanism — that is the first cut worth making.
 
-**How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the
-repository is `SourMesen/Mesen2`, whose README points at the maintained fork `nesdev-org/MesenCE`
-(same layout, and the one whose CI and tests exist — §5.1); either URL serves a file, e.g.
-`curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/APU/DeltaModulationChannel.cpp`.
-Already read and written into this document: `Core/NES/NesPpu.cpp`,
-`Core/NES/BaseNesPpu.{h,cpp}`, `Core/NES/NesCpu.cpp`, `Core/NES/NesMemoryManager.cpp`,
-`Core/NES/APU/DeltaModulationChannel.{h,cpp}`, `Core/NES/APU/ApuFrameCounter.h`, and
-`Core/NES/Mappers/` (`MMC3.h`, `Mapper4.h`, `BaseMapper.*`, `VRC6.h`). The repository root's
-`mesen_files.json` is its whole-tree manifest: look a path up by its `name` field.
+**How to get Mesen's sources**: take the whole tree rather than single files — it is 3.8 MB and one
+command (§10.1 has the recipe: a blob-filtered clone plus a sparse checkout of `Core/NES`,
+`Core/Shared`, `UI/Dependencies` and `UI/Config`). Reading files one at a time
+(`curl -sSf -O https://raw.githubusercontent.com/SourMesen/Mesen2/master/Core/NES/NesPpu.cpp`) is what
+earlier sessions did, and it is how the `SourMesen/Mesen2` and `nesdev-org/MesenCE` trees got mixed
+up: they differ by 5–100 lines per file. **`nesdev-org/MesenCE` is the one to read** (§5.1), and
+`UI/Dependencies/MesenNesDB.txt` comes with it. What has been read and written into this document is
+listed in §10.1.
 
 **Conventions to hand over**: ROMs are never committed (a suite with no `roms/` directory prints a
 skip); a document change touches both languages (`*.zh-CN.md`); each step's numbers go into its
 commit message and §7; and a regression that comes from being *more* faithful to Mesen is recorded
 in §7's withdrawn-experiment list rather than reverted.
+
+---
+
+## 10. File-by-file comparison with MesenCE's NES core (2026-10-16)
+
+§2 lists the gaps that were known; this section is the result of reading the two trees side by side,
+subsystem by subsystem, so it also catches the things nobody had looked for. It is the reference to
+take a task from: every row names both sides, and §10.4 names what is *already* identical so the
+work is not repeated.
+
+### 10.1 What was compared, and how to get the same tree
+
+Mesen's maintained fork is `nesdev-org/MesenCE` (§5.1). This pass read it as a real checkout, not as
+per-file copies:
+
+```bash
+git clone --depth 1 --filter=blob:none https://github.com/nesdev-org/MesenCE.git /tmp/MesenCE
+cd /tmp/MesenCE
+git sparse-checkout set --cone Core/NES Core/Shared UI/Dependencies UI/Config
+git checkout                      # fetches the blobs the sparse set needs
+```
+
+`HEAD` at the time was `4b8a196`. `Core/NES` is 551 files: the top-level translation units are
+10,644 lines (`NesPpu.cpp` 1,769, `BaseMapper.cpp` 1,383, `NesCpu.h` 914, `NesConsole.cpp` 775,
+`MapperFactory.cpp` 670, `NesCpu.cpp` 612, `NesTypes.h` 527, `GameDatabase.cpp` 346,
+`NesControlManager.cpp` 303, `NesHeader.cpp` 250), and `Core/NES/Mappers/` is another 296 files
+(1.3 MB), with 275 board headers included and 326 `case` labels in `MapperFactory::GetMapperFromID`.
+The files this core has an opinion about were read in full:
+`NesCpu.{h,cpp}`, `NesPpu.{h,cpp}`, `BaseNesPpu.{h,cpp}`, `DefaultNesPpu.h`, `NesConsole.{h,cpp}`,
+`NesMemoryManager.{h,cpp}`, `OpenBusHandler.h`, `InternalRamHandler.h`, `NesControlManager.{h,cpp}`,
+`Input/NesController.h`, `NesConstants.h`, `NesHeader.cpp`, `Loaders/iNesLoader.cpp`,
+`APU/*` (all eleven), `NesSoundMixer.{h,cpp}`, `Shared/Audio/SoundResampler.cpp`,
+`NesDefaultVideoFilter.cpp`, `BaseMapper.{h,cpp}`, `Mappers/Nintendo/MMC3.h`, `Mappers/A12Watcher.h`,
+`Shared/SettingTypes.h` (`NesConfig`'s defaults) and `UI/Dependencies/MesenNesDB.txt`.
+
+Two consequences of doing it this way, both worth remembering:
+
+- Earlier sessions read single files from `SourMesen/Mesen2`. The trees are close but **not
+  identical** (the same files differ by 5-100 lines: `ApuFrameCounter.h` 236 vs 256,
+  `NesPpu.cpp` 1,614 vs 1,769), so every claim has to say which fork it came from. The rows below
+  are MesenCE's.
+- `NesConfig`'s defaults are the definition of "Mesen's behaviour" (a setting that is off by default
+  is not something to match). The ones this core cares about: `EnableOamDecay = false`,
+  `EnablePpuOamRowCorruption = false`, `EnablePpu2000ScrollGlitch = false`,
+  `EnablePpu2006ScrollGlitch = false`, `DisablePpu2004Reads = false`, `DisablePaletteRead = false`,
+  `RestrictPpuAccessOnFirstFrame = false`, `RemoveSpriteLimit = false`,
+  `ForceBackgroundFirstColumn = false`, `ForceSpritesFirstColumn = false`,
+  `EnableDmcSampleDuplicationGlitch = false`, `SwapDutyCycles = false`,
+  `ReverseDpcmBitOrder = false`, `SilenceTriangleHighFreq = false`, `ReduceDmcPopping = false`,
+  `IsFullColorPalette = false`, `RandomizeCpuPpuAlignment = false`,
+  `RandomizeMapperPowerOnState = false`, **`RamPowerOnState = Random`**, `InputScanline = 241`,
+  `ConsoleType = Nes001`, `Region = Auto`, and the overclocking scanline counts at 0.
+
+Mesen's own numbers, for the arithmetic later steps need: clock 1,789,773 / 1,662,607 Hz
+(`NesConstants.h`); `cpuDivider`/`ppuDivider` 12/4 NTSC, 16/5 PAL, 15/5 Dendy (`NesCpu::Reset`,
+`NesPpu::UpdateTimings`); the CPU cycle's access split `_startClockCount`/`_endClockCount` 6/6 NTSC,
+8/8 PAL, 7/8 Dendy (`NesCpu::SetMasterClockDivider`); `_ppuOffset = 1`; `_nmiScanline` 241/241/291
+and `_vblankEnd` 260/310/310; 341 dots a line; the APU's `_stepCycles` and the DMC's period tables.
+
+### 10.2 What is still different
+
+#### Machine and CPU
+
+| | MesenCE | This core | What it costs |
+| --- | --- | --- | --- |
+| Reset | `NesCpu::Reset`: `CycleCount = -1`, a master-clock offset of `cpuDivider`, `_ppuOffset = 1`, then **eight dummy cycles** before the first instruction; power-up sets `SP = $FD`, `A/X/Y = 0`, `PS = I` and does *not* subtract 3 from SP (only a soft reset does) | `Cpu::reset` (`cpu.rs`) subtracts 3 from an SP that starts at `$FD` - so a power-up here leaves **`SP = $FA`** - sets the cycle count to 0, and runs no warm-up cycles | `cpu_reset`-style ROMs; the PPU/APU's phase when the first instruction runs |
+| The access' place inside a cycle | `_startClockCount`/`_endClockCount` per region: the access sits 5 of 12 master clocks into an NTSC cycle, 7 of 16 on PAL, 6 of 15 on Dendy | `ACCESS_DOTS = 2` dots, the same number in every region - on PAL that is 10 of 16 ticks, not 7 | NTSC is measured and deliberate (§4); PAL's position has never been measured, and there is no PAL ROM |
+| DMA | `NesCpu::ProcessPendingDma` reads `readAddress` on the halt cycle, the DMC's dummy cycle and the OAM alignment cycle; the DMC fetch is **3 or 4 cycles by parity**; DMC and sprite transfers share a two-flag handshake; `StopDmcTransfer`/`_abortDmcDma` cancel at defined points; `$4016`/`$4017` have skip rules; a DMC DMA ending next to a bit-counter reset can re-request (config-gated) | `NesBus::process_pending_dma` (`nes.rs`): a fixed 4-cycle DMC fetch, no bus read on any halt/dummy cycle, no abort path, no parity | The 13 AccuracyCoin DMA items, `4-irq_and_dma`, `Misaligned OAM DMA`, `DMC DMA + OAM DMA`, `Explicit`/`Implicit DMA Abort` |
+| Interrupt lines during DMA | DMA cycles are ordinary `StartCpuCycle`/`EndCpuCycle` pairs, so `_prevRunIrq`/`_needNmi` keep being sampled | `advance_one_cpu_cycle` is the bus's own begin/end pair, and `Cpu::end_cycle` - the only place the lines are sampled - is not called, so an interrupt arriving inside a stalled transfer is never latched | `cpu_interrupts_v2`, `DMA + Open Bus` |
+| Dendy | A third region: `cpuDivider` 15, `ppuDivider` 5, `_nmiScanline` 291, `_vblankEnd` 310, `startClockCount` 7 | No such region; a Dendy cartridge runs as NTSC | Unverifiable here (no Dendy ROM); it is the one region a header can name that the core cannot represent |
+| Unofficial `KIL`/`JAM` | `NesCpu::HLT` parks the CPU *and* clears the interrupt samples, so a hang cannot be interrupted | The CPU parks but stays interruptible (`Cpu::jam`), so a host can report and recover the hang | Deliberate (§4) |
+| `cpu/addressing.rs` | - | 760 lines of addressing plus a whole test module that **no longer runs**: `instructions.rs::fetch_operand` is the live implementation and nothing outside the module references `addressing::` | Not a fidelity gap, a trap: those tests pin a model the machine does not use, and one of them pinned the wrong SHx behaviour before it was replaced |
+
+#### PPU
+
+| | MesenCE | This core | What it costs |
+| --- | --- | --- | --- |
+| `$2002` read | Clears **only** the VBlank flag and the CPU's NMI latch (`UpdateStatusFlag`); sprite overflow and sprite 0 hit are cleared at pre-render cycle 0 | `ppu.rs` clears VBlank **and** sprite overflow **and** sprite 0 hit on every read | Any ROM that reads `$2002` before it is done with the other two flags; AccuracyCoin reads bit 5 and then expects the flag's state to still mean something |
+| `$2002` bits 0-4 | Open bus, `openBusMask = 0x1F`, plus the 2C05 variants (`ProcessStatusRegOpenBus`) | The same five bits from the PPU's own latch | Aligned; the 2C05 variants only matter to VS System games |
+| `$2004` | Reads while rendering return `_oamCopybuffer`, refilled from secondary OAM on dots 257-340 and 0; writes while rendering are *dropped* and bump OAMADDR's high six bits (`+4 & 0xFC`); attribute bytes read back masked `& 0xE3`; the increment has PAL parity rules | A plain OAM read/write with an unconditional increment | OAM traffic inside a line; `Misaligned OAM DMA` (Mesen's transfer writes go through `$2004` and inherit these rules) |
+| `$2007` read | Returns the buffer, and the buffer refills **five PPU cycles later** (`_ppuMemoryDataReadStateMachine = 5`); `v` increments one cycle after that (`_needVideoRamIncrement`); a second read within six dots returns open bus | Immediate buffer swap and immediate `v` increment; the six-dot window is modelled (`_ignoreVramRead`) | `ppu_read_buffer`, `full_palette`; the DMA items that read `$2007` |
+| `$2007` write | The value is latched and written five PPU cycles later, and **during rendering the value is thrown away and the address' low byte is written instead** | Written immediately and always with the real value | The same suites; any game that writes VRAM while rendering |
+| `$2006` | `v` is updated **three PPU cycles later** (`_updateVramAddrDelay = 3`), and `t` follows | `v = t` on the write's own cycle | Mid-frame splits that reprogram `v` just before the increment |
+| Bus address to the cartridge | `SetBusAddress` is called from every `ReadVram`/`WriteVram` **and** from non-fetch places: `UpdateVideoRamAddr` while not rendering, the start of vblank, scanline 0's first cycle, a mid-screen rendering change, the delayed `$2006` update | Only the addresses the pipeline really read (`take_bus_access`), fed once per dot | An A12 filter sees fewer transitions than Mesen's - which is why the A12 work had to be measured dot by dot (§7) |
+| Sprite evaluation | Dot by dot, 65-256: secondary OAM cleared at 1-64, `ProcessSpriteEvaluationStart` at 65 with `_sprite0Added` decided at dot 66, the OAM address bug (`spriteAddrH`/`spriteAddrL` moving together), the `_oamCopyDone` realignment and the pseudo-overflow counter | One call at dot 65 fills the next line's secondary OAM | `oam_flicker_test*`; AccuracyCoin's `$2002 flag timing` check 2 (`$55 == $60`, sprite 0 and overflow in the same read); `Arbitrary Sprite zero`; `Suddenly Resize Sprite` |
+| Sprite pixels | Eight hardware shifters plus `_dotSkipped`, with counting/active/expired modes and extra sprites for `RemoveSpriteLimit`; the odd frame's skipped dot delays every sprite by one pixel (`_spriteShifterList[i] += 1 << 4`) | Recomputed per dot from the per-line slots | The odd frame's one-pixel sprite delay is missing; the sprite-limit options do not exist |
+| Background fetches with the background off | `LoadTileInfo` is gated on `IsRenderingEnabled()` (background **or** sprites), so tiles are still fetched and shifted and `v` still advances while only sprites are on | The whole background path is gated on `SHOW_BG` | A12 while only sprites are enabled (MMC3 clocks differ); no local ROM covers it |
+| Left-column masks | Three thresholds, `_minimumDrawBgCycle`/`_minimumDrawSpriteCycle`/`_minimumDrawSpriteStandardCycle`, each 8 or 300 depending on the mask and the "force first column" settings | `x < 8` checks against the two mask bits | Equivalent for the default settings; the three thresholds are not the same number in every case |
+| Forced blank | With `v` in `$3F00-$3FFF` and rendering off, `DrawPixel` shows `paletteRam[v & 0x1F]` | Shows the backdrop | `full_palette`-style ROMs |
+| Reset state | Palette RAM takes a fixed 32-byte boot pattern (or random, since `RamPowerOnState = Random` is the default); `v` is *not* cleared by a reset, only at power-on; `_scanline = -1`, `_cycle = 340`, `_frameCount = 1` | Palette, VRAM and OAM are zeroed, `v = 0`, `scanline = 0`, `cycle = 0`, `frame = 0` | `power_up_palette` and `palette_ram` in `blargg_ppu_tests` (green today because they write what they test) |
+| Frame boundary | `SendFrame` runs at scanline 240, cycle 0, so the frontend's frame starts at vblank | The frame swaps when the pre-render line wraps | Host-visible only: our boundary is one line earlier |
+| OAM decay | `ReadSpriteRam` with per-row stamps, **off by default** (`EnableOamDecay = false`); the stamp's window is `OamDecayCycleCount = 4500` (~40 scanlines) | Not modelled | Nothing: "not done" is Mesen's default (§2.2). §2.2's "3000" is `SourMesen/Mesen2`'s value — an example of the two trees disagreeing (4500 here) |
+
+#### APU and audio
+
+| | MesenCE | This core | What it costs |
+| --- | --- | --- | --- |
+| Length counter load | `LoadLengthCounter` only records `_reloadValue`/`_previousValue`; `ReloadCounter` applies it **after the frame counter has been run for that cycle**, and only when `_counter == _previousValue`; the halt flag is applied there too | `LengthCounter::load` writes the counter immediately on the register write | Blargg's `len_reload_timing` tests 4 and 5 - the ROM Mesen's own comment cites |
+| Frame counter | Six-entry tables (`...29828, 29829, 29830` and `...37281, 37282`), a `_newValue` pending write with a 3/4-cycle delay, `_blockFrameCounterTick = 2` (a tick blocks the next two cycles' writes from clocking), and `GetIrqFlag` **auto-clears the flag at the start of the next APU cycle after it is read** | Five-entry tables with a `hold` and a three-cycle `frame_counter_irq_window` | `4-jitter`/`5-len_timing`/`6-irq_flag_timing` pass; AccuracyCoin's `Frame Counter IRQ` and `Controller Strobing` (check 3 reads the put/get transition) do not |
+| DMC | `SetEnabled` delays the effect by 2/3 cycles (`_disableDelay`) and the transfer start by 2/3 (`_transferStartDelay`), aborts a transfer that has not started, and has the sample-duplication and one-byte-sample cases (config-gated); the timer's period is stored as the table's value minus one | `set_enabled` is immediate; the period is the table's value | `dmc_dma_start_test`, `dmc_dma_start_test_v2`, AccuracyCoin's `DMC Reload Timing`, and the DMC half of the DMA group |
+| Mixer | Non-linear with its own constants: `95.88 * 5000 / (8128 / square + 100)` and `159.79 * 5000 / (22638 / tnd + 100)`, `tnd = dmc + 2.7516713261 * triangle + 1.8493587125 * noise`, all in the channels' raw 0-15 units, then a factor of 4 into blip | `95.52 / (8128 / pulse + 100)` and `163.67 / (24329 / tnd + 100)` with `tnd = dmc + 3 * triangle + 2 * noise`, in floats | A few percent of channel balance: at full volume the triangle lands at 0.2464 (Mesen) against 0.2555 (here), so the triangle is 3.7% and the noise 3.0% louder while the pulses are 0.4% quieter. `apu_mixer` and `apu_mixer_recordings` are the ROMs that can judge it |
+| Expansion audio mixing | Linear deltas with fixed weights: FDS 20, MMC5 14, N163 20, 5B 15, VRC6 5, VRC7 1 | Each expansion source has its own path | Audible only on those boards; no goldens here |
+| Resampling | blip at 96 kHz (`bass_shift = 9`), then a Hermite resampler chasing the sound card's real rate | One band-limited stage straight to the device rate | Deliberate, documented (§2.4/§7) |
+
+#### Memory, open bus and input
+
+| | MesenCE | This core | What it costs |
+| --- | --- | --- | --- |
+| Data bus | Two latches, `NesCpuBusType::Internal`/`External` (`OpenBusHandler.h`): reads update both, a `$4015` read updates the internal one *only*, and a DMA read can update one without the other | One `open_bus` latch on the bus, written on every read and every write | AccuracyCoin's `Internal Data Bus`, `Open Bus`, and the `$4015` half of `APU Register Activation` |
+| Internal RAM | `RamPowerOnState = Random` by default, and the Famicom Box's 8 KB variant exists (`InternalRamHandler<0x1FFF>`) | Zeroed 2 KB | `cpu_reset`-style ROMs that read RAM before writing it |
+| `$4016`/`$4017` read | `openBus(GetOpenBusMask(port)) \| device`, where the mask depends on the console type ($E0 for a NES-001, $E4 for port 1 of a NES-101, $F8 for an HVC-001); a read of the same address within one CPU cycle returns the previous value (`ReadDevice`); after eight reads the controller's shift register fills with 1s | `bit \| 0x40` every time, always shifting, and the register empties to 0 after eight reads | `read_joy3`; AccuracyCoin's `Open Bus` (check 2), `APU Register Activation` (check 2) and `Controller Clocking` (check 2) |
+| `$4016` write | The strobe and OUT pins are updated at the next PUT cycle (`_writePending = (masterClock & 1) ? 1 : 2`, applied from `ProcessCpuClock`) | Applied on the write's own cycle | AccuracyCoin's `Controller Strobing` |
+| Input sampling | The control devices are refreshed once a frame at PPU scanline `InputScanline = 241` | The host's button state is whatever it last set | A host that changes a button mid-frame sees it at once instead of at vblank |
+
+#### Cartridge, loaders and video
+
+| | MesenCE | This core | What it costs |
+| --- | --- | --- | --- |
+| MMC3's IRQ revision | `_forceMmc3RevAIrqs = DatabaseInfo.Chip.substr(0,5) == "MMC3A"` - per game, from the database | Neither revision: the rev-B condition only | `6-MMC3_alt` (see §10.6 - **Mesen fails it too**) and the games whose board says `MMC3A` |
+| `$C001` | `_irqCounter = 0; _irqReload = true` | `irq_counter \|= 0x80` - blargg's "pathological" behaviour, which Mesen does not implement | Nothing observable: every counted rise reloads from the latch either way |
+| MMC6 | `SubMapperID == 1` switches the work RAM to four $400-byte banks with their own read/write enables | Not modelled | mapper 4 submapper 1 games - and it needs the NES 2.0 fix below to even be visible |
+| A12 for non-MMC3 boards | `A12Watcher::UpdateVramAddress(addr, frameCycle)` with `minDelay = 10` **frame cycles** (PPU dots), used by the MMC4/VRC/FME7-style boards | `Mapper::on_ppu_bus(addr, cpu_cycles)` with a three-CPU-cycle rule | Only MMC3 has the filter here; the other boards' watchers do not exist |
+| Bus conflicts | `BaseMapper::WriteRam` ANDs **only on register addresses** (`_isWriteRegisterAddr[addr]`), and the database can force the flag per game (`BusConflictType`) | `NesBus::write_now` ANDs on every cartridge write when the board declares conflicts | PRG RAM writes on a conflict board would be corrupted here (no such board in the local set) |
+| Mapper hooks | `EnableCpuClockHook()` -> `ProcessCpuClock()` **every CPU cycle**, declared by Sunsoft FME7/3/4, IremH3001, Kaiser 202/7017, Mapper 40/42/43/50/83/106/253, Tf1201, Fk23C, Smb2j, CityFighter, T230, Yoko, DripGame and Rainbow | `on_cpu_cycles(cycles)` once per instruction, plus `on_scanline` | A mapper IRQ that should fire mid-instruction fires up to six cycles late (mappers 21/24/16/18/5/69 here are the ones that use it) |
+| Board coverage | 296 mapper files, ~275 `case`s in `MapperFactory::GetMapperFromID`, plus the database overrides | 44 mapper files | Boards 64 (+158), 115, 116, 176, 185, MMC5's extended-attribute mode, VRC7, Namco 163, FDS, EPSM, VS System, NSF, HD packs - the long tail, deliberately after the CPU/PPU work |
+| NES 2.0 header | `GetMapperID()` takes the mapper's high nibble from byte 8's **low** nibble and `GetSubMapper()` byte 8's **high** nibble; exponent-multiplier sizes implemented; byte 13's console/VS/PPU model and byte 15's input type parsed | **The two nibbles are swapped** (`nes.rs`): the mapper takes byte 8's high nibble and the "submapper" is the low one - a NES 2.0 file with submapper 1 loads as mapper 260, and the submapper reads 0 | No local ROM has a NES 2.0 header, so nothing moved; any NES 2.0 file with a nonzero submapper does |
+| Game database | `UI/Dependencies/MesenNesDB.txt`: 10,655 entries keyed by PRG+CHR CRC32, 18 fields (board, PCB, chip, mapper, sizes, mirroring, input, bus conflicts, submapper, VS type...). This is where "MMC3A" and mirroring overrides come from | Nothing | Commercial-game quirks; **none of the 82 ROMs under `roms/` is in the database** (checked by CRC), so no override applies to this baseline (§10.6) |
+| Video | 2C02/2C03/2C04-A-D/2C05-1-5 palettes, a user palette, the emphasis generation, and optional NTSC composite filters (`NesNtscFilter`, `BisqwitNtscFilter`) | The 2C02 table, the emphasis generation, `nes_color` | The palette and emphasis are **identical** (§10.4); the RGB-PPU palettes and the composite filters do not exist here |
+
+### 10.3 The defects this pass found (each with its fix)
+
+1. **NES 2.0's mapper and submapper nibbles are swapped** (`crates/nes-core/src/nes.rs`, the
+   `RomHeader` parse). Mesen: `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)` and
+   `SubMapper = (Byte8 & 0xF0) >> 4`; here the mapper takes `(flags8 & 0xF0) << 4` and the submapper
+   `flags8 & 0x0F`. Nothing in `roms/` carries a NES 2.0 header, which is how six suites of ROMs
+   never noticed.
+2. **`$2002` clears sprite overflow and sprite 0 hit** (`ppu.rs`, the `0x2002` arm). Mesen clears
+   only VBlank there, and the other two at pre-render cycle 0. A read in the middle of a frame takes
+   those two flags away here and leaves them there.
+3. **CPU reset**: `SP -= 3` runs on power-up too (a fresh machine has `SP = $FA`, not `$FD`), the
+   cycle count starts at 0 rather than -1, and the eight dummy cycles are missing.
+4. **The controller ports answer `bit | 0x40`** (`nes.rs`, `ControllerState::read`): no console
+   open-bus mask, no "same address twice in a cycle" rule, and the shift register empties to 0
+   instead of filling with 1s.
+5. **The `$4016` write reaches the controllers immediately** instead of at the next PUT cycle.
+6. **The PPU's register state machines do not exist**: `$2007`'s delayed read buffer and delayed
+   write (including the rendering-time "write the address' low byte"), `$2006`'s three-cycle delay,
+   `$2004`'s rendering-time behaviour, and the forced-blank `palette[v & 0x1F]` path.
+7. **DMA's shape** (§2.3/B4): the halt and dummy cycles make no bus access, the DMC fetch is always
+   four cycles, there is no abort path, and the cycles do not sample the interrupt lines.
+8. **The APU's edge timings**: the length counter's deferred reload, the frame IRQ flag's real
+   lifetime, and the DMC's 2/3-cycle enable and disable delays.
+9. **The mixer's constants** are the wiki's, not Mesen's (§10.2's numbers).
+10. **`cpu/addressing.rs` is dead code** - 760 lines and its whole test module. Either delete it or
+    make it the one implementation; leaving it is how a future session "fixes" a model that is not
+    running.
+11. **`ppu.render_v` still exists** (`ppu.rs`, and it is in `state_fields!`, so it is serialized)
+    although §2.1 says it was deleted.
+12. **§1 still credits `NesBus::drive_ppu_bus`** in the pre-render row; the function is gone.
+
+### 10.4 Verified identical - do not re-open these
+
+Read on both sides, same answer:
+
+- The 2C02 palette table and the emphasis generation: extracting MesenCE's `_ppuPaletteArgb[0]` row
+  and this core's 64-entry table and comparing them mechanically gives *identical* - and
+  `GenerateFullColorPalette` multiplies the other two channels by **0.84** with truncation and skips
+  columns `$xE`/`$xF`, exactly what §7's nine-bit row recorded.
+- Palette reads: six bits from palette RAM, high two from open bus, the grayscale mask applied on the
+  way out (`_paletteRamMask`), and the `$3F00/04/08/0C` <-> `$3F10/14/18/1C` aliasing.
+- Open bus on the PPU side: `_openBusDecayStamp` per bit, cleared after **3 frames**, `$2002`
+  driving only three bits, `$2007` driving the byte it returns.
+- `_ignoreVramRead = 6` for a second `$2007` access, and the `>= $3F00` palette path.
+- The odd frame's skipped dot: decided at the pre-render line's dot 339, the skipped dot being 340,
+  NTSC-only and 2C02-only.
+- OAM decay being off by default in Mesen (4500 cycles per row *when enabled*) - not modelling it is
+  matching Mesen's default.
+- MMC3's A12 filter: `_a12LowClock > 0 && GetMasterClock() - _a12LowClock >= 3`, with `GetMasterClock()`
+  being the CPU's cycle count and every rise clearing the low run (`NotifyVramAddressChange`) - which
+  is what `mapper4.rs` does. `5-MMC3` is green on both sides.
+- Bus conflict semantics (the AND itself; the register-address restriction is the one difference
+  above).
+- blip's `bass_shift = 9`; the DMC's byte-at-fetch, held-buffer and silence-flag shape; the DMC's
+  NTSC and PAL period tables, value for value.
+- `SetBusAddress` on every `ReadVram` (the per-fetch half of the bus-address row above).
+- The `$2002`-read VBlank suppression window: AccuracyCoin's `$2002 flag timing` check 1 (the
+  `$E0 $E0 $80 $00` answer key) passes with `ACCESS_DOTS = 2`, which is independent evidence for
+  §4's deliberate deviation.
+- `UpdateStatusFlag`'s special case (`_preventVblFlag` on the NMI scanline's cycle 0) is the same race
+  the suppression window models.
+
+### 10.5 AccuracyCoin's 34, and what each one actually demands
+
+The harness prints the byte the ROM stores, which is `(ErrorCode << 2) | 2` (`TEST_Fail` in
+`AccuracyCoin.asm`). **The failing check is therefore `(value >> 2) + 1`**, one less than the
+`value / 2` that §7's and §9's rows for the `SHx` group and the DMA group used. Measured on this
+checkout (`cargo test -p nes-core --test rom_tests accuracy -- --nocapture`: 140 ran, 94 passed,
+34 failing):
+
+| Address | Test | Failing check | What the check wants |
+| --- | --- | --- | --- |
+| `$0408` | Open Bus | 2 | Reading open bus with `LDA absolute` returns the operand's high byte |
+| `$0446`-`$044A` | `UnOp_SHA_93`, `_SHA_9F`, `_SHS_9B`, `_SHY_9C`, `_SHX_9E` | 8 | The `SHx` stores inside the tests' DMA section (their address corruption is in, §7) |
+| `$044C` | DMA + `$2007` Read | 3 | The halt/alignment cycles must increment `v` enough times |
+| `$044F` | DMA + `$2007` Write | 2 | The DMA must be delayed by the write cycle |
+| `$0458` | Arbitrary Sprite zero | 3 | Sprite 0 from a non-zero OAM address |
+| `$0459` | Sprite overflow behavior | 2 | Nine sprites on a line leave bit 5 of `$2002` set when read after `CLV` |
+| `$045C` | APU Register Activation | 2 | No unexpected bits when reading a controller port |
+| `$045D` | DMA + `$4015` Read | 3 | - |
+| `$045E` | DMA + `$4016` Read | 2 | - |
+| `$045F` | Controller Strobing | 2 | Any value with bit 0 set written to `$4016` strobes |
+| `$0460` | Instruction Timing | 2 | The DMA timing is accurate enough to sync against it |
+| `$0461` | Interrupt flag latency | 11 | - |
+| `$0467` | Frame Counter IRQ | 8 | Switching to 5-step mode after the flag was set must not clear it |
+| `$046A` | Delta Modulation Channel | 20 | - |
+| `$046B` | DMC DMA Bus Conflicts | 2 | The DMC DMA's bus conflict with the APU registers |
+| `$046C` | DMA + Open Bus | 3 | - |
+| `$046D` | Implied Dummy Reads | 4 | Open bus (or `JSR`'s cycles are out of order) |
+| `$0477` | DMC DMA + OAM DMA | 2 | The overlapping DMAs' cycle count |
+| `$0478`/`$0479` | Implicit/Explicit DMA Abort | 2 | The aborted DMA's cycle count |
+| `$047A` | Controller Clocking | 2 | A read while strobed must not disturb the shift register |
+| `$047C` | JSR Edge Cases | 3 | Open bus |
+| `$0488` | DMA + `$2002` Read | 3 | - |
+| `$0489` | Suddenly Resize Sprite | 2 | A `$2000` write at the start of HBlank resizing an in-range sprite |
+| `$048B` | Branch Dummy Reads | 6 | - |
+| `$048D` | `$2002` flag timing | 2 | Sprite 0 and overflow must be set in the same read (`$55 == $60`) |
+| `$0490` | Internal Data Bus | 2 | A `$4015` read must not touch the external bus |
+| `$0494` | Misaligned OAM DMA | 2 | The transfer starts at the OAM address that is set |
+| `$0496` | DMA Landing on Write | 3 | A DMC DMA must not land on a write cycle - it waits for a read |
+| `$0497` | DMC Reload Timing | 2 | - |
+
+Every "DMA + ..." row is the same missing mechanism (§10.2's DMA row); the two controller groups,
+`Internal Data Bus` and `Open Bus` are the `$4016`/`$4015` open-bus work. Nothing here needs
+AccuracyCoin to be right - it is a checklist that happens to be free.
+
+### 10.6 Baseline suites: the ones Mesen's own source develops against
+
+Mesen names its oracles in comments, which makes the missing suites easy to choose. All of these are
+in the `christopherpow/nes-test-roms` collection (checked out at `/tmp/nes-test-roms` here) and none
+is in `crates/nes-core/tests/rom_tests.rs` today:
+
+| Suite | Cited by | Pins down |
+| --- | --- | --- |
+| `blargg_apu_2005.07.30/11.len_reload_timing.nes` (also `pal_apu_tests/`) | `APU/NesApu.cpp:166`, "This fixes the test len_reload_timing (tests 4 & 5)" | The length counter's deferred reload |
+| `full_palette/` | `NesPpu.cpp:1589`, "This allows the full_palette tests to properly display single-pixel glitches" | `v`'s increment lagging a `$2007` access by a dot |
+| `ppu_read_buffer/` | - | `$2007`'s read buffer and its delay |
+| `read_joy3/` | - | `$4016`: the strobe, the double read, bit deletion, the post-8-read 1s |
+| `sprdma_and_dmc_dma/` (+ `_512`) | `NesCpu.cpp:397`, "Fixes dmc_dma_start_test_v2 case C" | Overlapping sprite and DMC DMA |
+| `dmc_tests/` (`latency`, `status`, `status_irq`, `buffer_retained`) | `DeltaModulationChannel.cpp:268`, "Allows behavior to match dmc_dma_start_test" | DMC latency and status |
+| `dmc_dma_during_read4/` | - | The DMC fetch landing in a read's last cycle |
+| `cpu_dummy_reads/`, `cpu_dummy_writes/`, `cpu_exec_space/`, `cpu_reset/` | - | The CPU's cycle model: dummy reads, `SP` after reset |
+| `vbl_nmi_timing/`, `nmi_sync/`, `scanline/` | - | NMI timing breadth beyond `ppu_vbl_nmi` |
+| `mmc3_irq_tests/`, `exram/`, `mmc5test_v2/` | - | The cartridge's IRQ and expansion RAM |
+| `apu_mixer/` + `apu_mixer_recordings/` | - | The mixer's constants - the only audio goldens available |
+| `pal_apu_tests/`, `tvpassfail/` | - | PAL, which has no ROM at all today (P5) |
+
+Two ROMs Mesen cites are **not** in that collection and would have to be fetched separately:
+`oam_flicker_test_reenable` (`NesPpu.cpp:1177`) and `dmc_dma_start_test`/`_v2` (`NesCpu.cpp:397`).
+
+**And one baseline item is not a defect at all.** `mmc3_test_2`'s `6-MMC3_alt` asks for the MMC3
+**revision A** IRQ condition, which Mesen only applies when its database says the board's chip is an
+`MMC3A` (`MMC3.h:209`). The database (`UI/Dependencies/MesenNesDB.txt`, 10,655 entries keyed by
+PRG+CHR CRC32) has **no entry for any of the blargg MMC3 ROMs** - verified by computing each ROM's
+CRC32 - so Mesen runs `6-MMC3_alt` with the rev-B condition and fails it exactly as this core does.
+The honest handling is to keep the entry with a comment saying so, rather than to add a per-ROM table
+the oracle does not have.
+
+### 10.7 What to do next, in order
+
+1. **The DMA port** (`ProcessPendingDma` verbatim, §10.2's DMA row) with the two things this pass
+   added to the diagnosis: the DMA cycles must sample the interrupt lines, and the DMC's fetch is 3
+   or 4 cycles by parity. That is the 13 AccuracyCoin items plus `4-irq_and_dma`.
+2. **`$4016`/`$4017`** - the open-bus masks, the PUT-cycle strobe, the same-cycle double read - with
+   `read_joy3` added first. Small, self-contained, and it moves four AccuracyCoin items (Open Bus 2,
+   APU Register Activation 2, Controller Clocking 2, Controller Strobing 2).
+3. **The PPU's register state machines** (`$2004`/`$2006`/`$2007`, the rendering-time write) with
+   `ppu_read_buffer` and `full_palette`.
+4. **`$2002`'s flag lifetimes** and the sprite evaluation at dot granularity (with its overflow-bug
+   counter) - the three sprite items and `$2002 flag timing` check 2.
+5. **The APU's edge timings**, with `len_reload_timing` in the baseline first.
+6. **The mixer's constants**, judged against `apu_mixer`.
+7. **CPU reset and warm-up**, the NES 2.0 nibbles, the bus-conflict scope, Dendy.
+8. **Mappers** (64/158/185/115/116/176, MMC5's extended attributes, per-CPU-cycle hooks) - the long
+   tail, and the only part where the gap is counted in boards rather than in behaviour.
