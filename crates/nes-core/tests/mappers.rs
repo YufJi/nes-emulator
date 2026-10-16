@@ -1111,16 +1111,21 @@ fn upload_byte_through_ppu(mapper: &mut (dyn Mapper + 'static), addr: u16, value
 
     ppu.write_register_with(0x2006, (addr >> 8) as u8, no_chr());
     ppu.write_register_with(0x2006, addr as u8, no_chr());
-    ppu.write_register_with(
-        0x2007,
-        value,
-        PpuMemory::System {
-            chr: Some(mapper),
+    // `$2006` moves `v` three dots after the second write, and the `$2007`
+    // write that follows only reaches the cartridge five dots after *that*, so
+    // the chip has to run before the byte is anywhere.
+    for _ in 0..4 {
+        ppu.tick_delayed_state(&mut no_chr());
+    }
+    ppu.write_register_with(0x2007, value, no_chr());
+    for _ in 0..6 {
+        ppu.tick_delayed_state(&mut PpuMemory::System {
+            chr: Some(&mut *mapper),
             mirroring: Mirroring::Horizontal,
             drawing_line: false,
             open_bus: 0,
-        },
-    );
+        });
+    }
 }
 
 #[test]

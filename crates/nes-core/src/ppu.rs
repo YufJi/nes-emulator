@@ -42,6 +42,25 @@ pub enum PpuMemory<'a> {
     },
 }
 
+impl PpuMemory<'_> {
+    /// Whether the PPU is on a line it draws.
+    ///
+    /// The register logic reads it twice: a `$2007` access on such a line (with
+    /// rendering on) advances the *scroll* instead of the address, and a
+    /// `$2007` write stores the address' low byte instead of the value. Both
+    /// decisions belong to the dot the access actually lands on, which is five
+    /// dots after the CPU's cycle — so the flag travels with the memory source
+    /// rather than being latched by the register write (Mesen reads
+    /// `_scanline`/`IsRenderingEnabled()` at the delayed update, not at the
+    /// write).
+    pub fn drawing_line(&self) -> bool {
+        match self {
+            PpuMemory::System { drawing_line, .. } => *drawing_line,
+            PpuMemory::Internal => false,
+        }
+    }
+}
+
 bitflags! {
     /// PPU Control Register ($2000)
     ///
@@ -213,6 +232,43 @@ pub struct Ppu {
     /// Set when a $2002 read wins the race against the VBlank flag, so the flag
     /// and its NMI are skipped for this frame
     suppress_vblank: bool,
+    /// Dots left before a `$2007` read's buffer refills, and the address it
+    /// refills from.
+    ///
+    /// The byte a `$2007` read hands back is the buffer as it stands; the chip
+    /// does not read memory to replace it until five dots later (Mesen's
+    /// `_ppuMemoryDataReadStateMachine`). The address is *not* `v` when the
+    /// refill runs: `v` moves a dot after the refill, so latching it here is
+    /// what makes a read return the byte the address held at the access.
+    ppudata_read_delay: u8,
+    ppudata_read_address: u16,
+    /// Dots left before a `$2007` write lands, the byte waiting for them, and
+    /// the address it lands on (Mesen's `_ppuMemoryDataWriteStateMachine`,
+    /// `_ppuMemoryDataWriteLatch`).
+    ppudata_write_delay: u8,
+    ppudata_write_latch: u8,
+    ppudata_write_address: u16,
+    /// Set when a delayed `$2007` access wants `v` moved on the *next* dot
+    /// (Mesen's `_needVideoRamIncrement`).
+    ///
+    /// This is why a `$2007` access is not simply "write, then increment": the
+    /// chip shows the byte at the address being touched for one dot before the
+    /// address moves, which `full_palette` draws as a one-pixel glitch.
+    need_vram_increment: bool,
+    /// Dots left before a `$2006` write moves `v`, and the address it moves it
+    /// to (Mesen's `_updateVramAddrDelay`/`_updateVramAddr`).
+    ///
+    /// Only the *second* write to `$2006` updates the address `$2007` uses, and
+    /// it does so three dots later — which is what moves the instant A12 rises
+    /// for a scanline counter (blargg's `3-A12_clocking`).
+    vram_addr_delay: u8,
+    vram_addr_update: u16,
+    /// The bus address a delayed access wants to put in front of the cartridge
+    /// on the dot it lands on (Mesen's `SetBusAddress`).
+    ///
+    /// Transient by construction: the machine takes it on the same dot it is
+    /// set and hands it to the mapper, so it never survives into a save state.
+    pending_bus_address: Option<u16>,
 }
 
 crate::state::state_fields!(Ppu {
@@ -237,6 +293,14 @@ crate::state::state_fields!(Ppu {
     ignore_vram_read,
     open_bus_decay_stamp,
     suppress_vblank,
+    ppudata_read_delay,
+    ppudata_read_address,
+    ppudata_write_delay,
+    ppudata_write_latch,
+    ppudata_write_address,
+    need_vram_increment,
+    vram_addr_delay,
+    vram_addr_update,
 });
 
 impl Default for Ppu {
@@ -278,6 +342,15 @@ impl Ppu {
             open_bus_latch: 0,
             ignore_vram_read: 0,
             open_bus_decay_stamp: [0; 8],
+            ppudata_read_delay: 0,
+            ppudata_read_address: 0,
+            ppudata_write_delay: 0,
+            ppudata_write_latch: 0,
+            ppudata_write_address: 0,
+            need_vram_increment: false,
+            vram_addr_delay: 0,
+            vram_addr_update: 0,
+            pending_bus_address: None,
             suppress_vblank: false,
         }
     }
@@ -314,6 +387,21 @@ impl Ppu {
         self.open_bus_latch = 0;
         self.ignore_vram_read = 0;
         self.open_bus_decay_stamp = [0; 8];
+        self.clear_delayed_state();
+    }
+
+    /// Drop the `$2007`/`$2006` delays and anything they were about to do.
+    ///
+    /// A reset takes the chip's pending work with it: a `$2007` write that had
+    /// not landed yet does not land after the reset, which is what Mesen's
+    /// `Reset` does by zeroing the same counters.
+    fn clear_delayed_state(&mut self) {
+        self.ppudata_read_delay = 0;
+        self.ppudata_write_delay = 0;
+        self.ppudata_write_latch = 0;
+        self.need_vram_increment = false;
+        self.vram_addr_delay = 0;
+        self.pending_bus_address = None;
     }
 
     /// A soft reset — the reset button (`NesPpu::Reset(true)`).
@@ -341,9 +429,18 @@ impl Ppu {
         self.open_bus_latch = 0;
         self.ignore_vram_read = 0;
         self.open_bus_decay_stamp = [0; 8];
+        self.clear_delayed_state();
     }
 
     /// Read from a PPU register ($2000-$2007)
+    ///
+    /// This is the standalone form, for the unit tests: it runs the chip's
+    /// delayed state machines to completion before returning (`$2006`'s three
+    /// dots and `$2007`'s five, plus the increment behind them), so a caller can
+    /// touch a register and read back what it did without driving dots itself.
+    /// The machine uses [`Ppu::read_register_with`] and leaves the delays to the
+    /// dots — `NesBus` ticks them once per dot, as the chip does. The six-dot
+    /// `$2007` window is *not* run down here, so a test can still watch it.
     ///
     /// # Arguments
     /// * `addr` - Register address (should be in $2000-$2007 range)
@@ -351,7 +448,9 @@ impl Ppu {
     /// # Returns
     /// The value read from the register
     pub fn read_register(&mut self, addr: u16) -> u8 {
-        self.read_register_with(addr, PpuMemory::Internal)
+        let value = self.read_register_with(addr, PpuMemory::Internal);
+        self.settle_delayed_state();
+        value
     }
 
     /// Read from a PPU register using an explicit memory source.
@@ -422,18 +521,40 @@ impl Ppu {
 
     /// Write to a PPU register ($2000-$2007)
     ///
+    /// The standalone form, with the same convenience as
+    /// [`Ppu::read_register`]: the delays are run to completion before it
+    /// returns.
+    ///
     /// # Arguments
     /// * `addr` - Register address (should be in $2000-$2007 range)
     /// * `value` - Value to write
     pub fn write_register(&mut self, addr: u16, value: u8) {
-        self.write_register_with(addr, value, PpuMemory::Internal)
+        self.write_register_with(addr, value, PpuMemory::Internal);
+        self.settle_delayed_state();
+    }
+
+    /// Run the delayed register state machines to completion.
+    ///
+    /// Long enough for the longest chain: a `$2007` write lands five dots in
+    /// and asks for the increment a dot later.
+    fn settle_delayed_state(&mut self) {
+        let window = self.ignore_vram_read;
+        for _ in 0..8 {
+            self.tick_delayed_state(&mut PpuMemory::Internal);
+        }
+        // The delay runs out here; the six-dot back-to-back window does not, so
+        // a test can still walk it.
+        self.ignore_vram_read = window;
+        self.pending_bus_address = None;
     }
 
     /// Write to a PPU register using an explicit memory source.
     ///
-    /// See [`Ppu::read_register_with`] for why the memory source is a
-    /// parameter rather than state owned by the PPU.
-    pub fn write_register_with(&mut self, addr: u16, value: u8, mut memory: PpuMemory<'_>) {
+    /// No register write touches memory any more: `$2007`'s write is latched
+    /// here and lands five dots later, in [`Ppu::tick_delayed_state`], which is
+    /// where the memory source is needed. Kept as a `_with` twin of
+    /// [`Ppu::read_register_with`] so the two entry points stay symmetrical.
+    pub fn write_register_with(&mut self, addr: u16, value: u8, _memory: PpuMemory<'_>) {
         // Every write has the chip drive the data bus, which is what puts the
         // value there for a later open-bus read.
         self.drive_open_bus(value);
@@ -469,7 +590,7 @@ impl Ppu {
             }
             0x2007 => {
                 // $2007: PPUDATA
-                self.write_ppudata(value, &mut memory);
+                self.write_ppudata(value);
             }
             _ => {
                 // Should not happen due to mask
@@ -536,11 +657,15 @@ impl Ppu {
         } else {
             // Second write: low byte
             // t: ........ HGFEDCBA = d: HGFEDCBA
-            // v                    = t
             // w:                   = 0
             self.t = (self.t & !0x00FF) | (value as u16);
-            self.v = self.t;
             self.w = false;
+            // `v` follows `t` three dots later, not here (`_updateVramAddrDelay`).
+            // The gap is visible: an access the program slips into it still
+            // reads the previous address, and a scanline counter watching A12
+            // sees the address arrive three dots late.
+            self.vram_addr_update = self.t;
+            self.vram_addr_delay = Self::VRAM_ADDR_DELAY_DOTS;
         }
     }
 
@@ -557,31 +682,36 @@ impl Ppu {
         let addr = self.v & 0x3FFF;
         let result;
 
+        // What the read hands back is the buffer; the memory read that replaces
+        // it does not begin until the CPU's cycle has ended and two more PPU
+        // dots have gone by, and the address it uses is this one — `v` only
+        // moves after the refill (Mesen's `_ppuMemoryDataReadStateMachine` and
+        // `_needVideoRamIncrement`). Reading memory here instead would be the
+        // same answer in a non-rendering loop and a different one whenever the
+        // program touches `v` or the cartridge's CHR in the gap.
+        self.ppudata_read_address = addr;
+        self.ppudata_read_delay = Self::PPUDATA_DELAY_DOTS;
+
         if addr < 0x3F00 {
-            // Pattern tables and nametables: buffered read
             result = self.read_buffer;
-            self.read_buffer = self.read_vram(addr, memory);
             // The chip drives the byte it hands back.
             self.drive_open_bus(result);
         } else {
-            // Palette RAM: returned immediately, but the buffer still picks up
-            // the nametable data "behind" the palette. Palette entries are six
-            // bits wide, so the top two bits of the byte the read returns are
-            // not driven at all — they are whatever the data bus was holding.
-            // "Note: When grayscale is turned on, the read values also have the
-            // grayscale mask applied to them" (Mesen's `ReadRegister`), so the
-            // palette read runs through the same mask the drawn pixels do.
+            // Palette RAM: returned immediately, while the buffer's refill — the
+            // nametable data "behind" the palette — waits with every other read.
+            // Palette entries are six bits wide, so the top two bits of the byte
+            // the read returns are not driven at all: they are whatever the data
+            // bus was holding. "Note: When grayscale is turned on, the read
+            // values also have the grayscale mask applied to them" (Mesen's
+            // `ReadRegister`), so the palette read runs through the same mask
+            // the drawn pixels do.
             result = (self.palette[Self::palette_index(addr)] & self.palette_ram_mask())
                 | (self.open_bus(memory) & 0xC0);
-            self.read_buffer = self.read_vram(addr & 0x2FFF, memory);
             self.drive_open_bus_bits(result, 0x3F);
         }
 
         // Back-to-back accesses from here on are one too many.
         self.ignore_vram_read = Self::IGNORE_VRAM_READ_DOTS;
-
-        // Increment VRAM address
-        self.increment_vram_addr(memory);
         result
     }
 
@@ -599,31 +729,133 @@ impl Ppu {
     /// PPU dots a second `$2007` access is ignored for.
     const IGNORE_VRAM_READ_DOTS: u8 = 6;
 
+    /// PPU dots a `$2007` access spends waiting for its memory access (Mesen's
+    /// `_ppuMemoryDataReadStateMachine`/`_ppuMemoryDataWriteStateMachine`, both
+    /// five).
+    const PPUDATA_DELAY_DOTS: u8 = 5;
+
+    /// PPU dots a `$2006` write spends before it moves `v` (Mesen's
+    /// `_updateVramAddrDelay`).
+    const VRAM_ADDR_DELAY_DOTS: u8 = 3;
+
     /// Count one PPU dot off the `$2007`-access window, which the machine calls
     /// once per dot.
     pub fn tick_vram_access_window(&mut self) {
         self.ignore_vram_read = self.ignore_vram_read.saturating_sub(1);
     }
 
-    /// Write to PPUDATA ($2007)
-    fn write_ppudata(&mut self, value: u8, memory: &mut PpuMemory<'_>) {
-        let addr = self.v & 0x3FFF;
+    /// One dot's worth of the register state machines (Mesen's `UpdateState`,
+    /// which runs at the tail of every dot).
+    ///
+    /// The order is Mesen's, and it matters: a `$2006` update lands first, then
+    /// an increment a previous access asked for, then a read's buffer refill,
+    /// then a write. An increment and a refill can both be due on the same dot,
+    /// and the refill must read the address the increment has just left behind.
+    pub fn tick_delayed_state(&mut self, memory: &mut PpuMemory<'_>) {
+        if self.vram_addr_delay > 0 {
+            self.vram_addr_delay -= 1;
+            if self.vram_addr_delay == 0 {
+                self.v = self.vram_addr_update;
+                // The bugs a straddled increment produces corrupt both
+                // registers, which is Mesen's "the new value of V back into T".
+                self.t = self.v;
+                if !memory.drawing_line() || !self.is_rendering() {
+                    // The address only reaches the cartridge when the fetches
+                    // are not already holding the bus, which is why a `$2006`
+                    // write during rendering does not clock a scanline counter.
+                    self.pending_bus_address = Some(self.v & 0x3FFF);
+                }
+            }
+        }
+
+        // Mesen counts the `$2007` window down between the `$2006` update and
+        // the increment; the position only matters in that the dot an access
+        // happens on counts, so a second access on the dot after it is still
+        // inside the window.
+        self.ignore_vram_read = self.ignore_vram_read.saturating_sub(1);
+
+        if self.need_vram_increment {
+            self.need_vram_increment = false;
+            self.increment_vram_addr(memory);
+        }
+
+        if self.ppudata_read_delay > 0 {
+            self.ppudata_read_delay -= 1;
+            if self.ppudata_read_delay == 0 {
+                // A palette read buffers the nametable data behind the palette.
+                let addr = self.ppudata_read_address;
+                let addr = if addr >= 0x3F00 { addr & 0x2FFF } else { addr };
+                self.read_buffer = self.read_vram(addr, memory);
+                // The chip's memory read drives its address bus (`SetBusAddress`
+                // inside `ReadVram`), which is the other half of what a scanline
+                // counter watches for.
+                self.pending_bus_address = Some(self.ppudata_read_address);
+                self.need_vram_increment = true;
+            }
+        }
+
+        if self.ppudata_write_delay > 0 {
+            self.ppudata_write_delay -= 1;
+            if self.ppudata_write_delay == 0 {
+                self.land_ppudata_write(memory);
+                self.need_vram_increment = true;
+            }
+        }
+    }
+
+    /// Take the address a delayed access wants to show the cartridge.
+    ///
+    /// The machine calls this on every dot and hands what it finds to the
+    /// mapper, which is where a scanline counter's A12 comes from.
+    pub fn take_pending_bus_address(&mut self) -> Option<u16> {
+        self.pending_bus_address.take()
+    }
+
+    /// Whether either rendering unit is on (Mesen's `IsRenderingEnabled`).
+    fn is_rendering(&self) -> bool {
+        self.mask
+            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES)
+    }
+
+    /// Put a `$2007` write where it belongs (Mesen's `UpdateState` branch).
+    fn land_ppudata_write(&mut self, memory: &mut PpuMemory<'_>) {
+        let addr = self.ppudata_write_address;
 
         if addr >= 0x3F00 {
             // Palette RAM stores 6 bits. The four sprite backdrop entries
             // ($3F10/$3F14/$3F18/$3F1C) alias the background ones, so they
             // share storage.
             let palette_addr = Self::palette_index(addr);
-            self.palette[palette_addr] = value & 0x3F;
+            let value = self.ppudata_write_latch & 0x3F;
+            self.palette[palette_addr] = value;
             if palette_addr % 4 == 0 {
-                self.palette[palette_addr + 0x10] = value & 0x3F;
+                self.palette[palette_addr + 0x10] = value;
             }
+        } else if memory.drawing_line() && self.is_rendering() {
+            // "During rendering, the value written is ignored, and instead the
+            // address' LSB is used (not confirmed, based on Visual NES)."
+            let low = (addr & 0x00FF) as u8;
+            self.write_vram(addr, low, memory);
+            self.pending_bus_address = Some(addr);
         } else {
+            let value = self.ppudata_write_latch;
             self.write_vram(addr, value, memory);
+            self.pending_bus_address = Some(addr);
         }
+    }
 
-        // Increment VRAM address
-        self.increment_vram_addr(memory);
+    /// Write to PPUDATA ($2007)
+    fn write_ppudata(&mut self, value: u8) {
+        // The byte is latched, not stored: the VRAM write happens five dots
+        // later, and it is *that* write the cartridge's CHR sees — so a bank
+        // switch in the gap changes where the byte lands. Both of the write's
+        // oddities (the palette going to its six-bit storage, and the rendering
+        // time replacement of the value with the address' low byte) belong to
+        // the delayed write too, which is why they live in
+        // `Ppu::land_ppudata_write` and read `memory` when they run.
+        self.ppudata_write_address = self.v & 0x3FFF;
+        self.ppudata_write_latch = value;
+        self.ppudata_write_delay = Self::PPUDATA_DELAY_DOTS;
     }
 
     /// Map a palette RAM address ($3F00-$3F1F) to its storage index.
@@ -637,6 +869,14 @@ impl Ppu {
         } else {
             index
         }
+    }
+
+    /// The palette entry an address resolves to, mirrors included.
+    ///
+    /// Every address in $3F00-$3FFF names one: the storage is 32 bytes and the
+    /// whole page repeats it eight times.
+    pub fn palette_at(&self, addr: u16) -> u8 {
+        self.palette[Self::palette_index(addr & 0x3FFF)]
     }
 
     /// Bits of the open bus the chip drove too long ago to still be there.
@@ -792,6 +1032,12 @@ impl Ppu {
             1
         };
         self.v = self.v.wrapping_add(increment) & 0x7FFF;
+        // The address the increment lands on is the one the cartridge sees
+        // ("Trigger memory read when setting the vram address - needed by MMC3
+        // IRQ counter: should be clocked when A12 changes to 1 via $2007
+        // read/write"). While the picture is being drawn the fetches own the
+        // bus, so nothing is shown.
+        self.pending_bus_address = Some(self.v & 0x3FFF);
     }
 
     /// Check if NMI is pending
@@ -1027,19 +1273,23 @@ mod tests {
     #[test]
     fn test_ppudata_advances_the_scroll_on_a_drawing_line() {
         // Rendering on, and the PPU standing on a visible line.
+        let drawing = || PpuMemory::System {
+            chr: None,
+            mirroring: Mirroring::Horizontal,
+            open_bus: 0,
+            drawing_line: true,
+        };
         let mut ppu = Ppu::new();
         ppu.mask = PpuMask::SHOW_BG;
         ppu.v = 0x0000;
-        ppu.write_register_with(
-            0x2007,
-            0x11,
-            PpuMemory::System {
-                chr: None,
-                mirroring: Mirroring::Horizontal,
-                open_bus: 0,
-                drawing_line: true,
-            },
-        );
+        ppu.write_register_with(0x2007, 0x11, drawing());
+        // The write lands five dots later and `v` moves a dot after *that*, so
+        // the increment needs six dots' worth of ticks — and both decisions
+        // read the line the PPU is standing on when they run, not the one it
+        // was on when the CPU wrote.
+        for _ in 0..6 {
+            ppu.tick_delayed_state(&mut drawing());
+        }
         // Coarse X went up by one and fine Y went up by one: neither the 1 nor
         // the 32 the control register would have picked.
         assert_eq!(ppu.v & 0x001F, 1, "coarse X advanced");
@@ -1049,16 +1299,10 @@ mod tests {
         let mut ppu = Ppu::new();
         ppu.mask = PpuMask::empty();
         ppu.v = 0x0000;
-        ppu.write_register_with(
-            0x2007,
-            0x11,
-            PpuMemory::System {
-                chr: None,
-                mirroring: Mirroring::Horizontal,
-                open_bus: 0,
-                drawing_line: true,
-            },
-        );
+        ppu.write_register_with(0x2007, 0x11, drawing());
+        for _ in 0..6 {
+            ppu.tick_delayed_state(&mut drawing());
+        }
         assert_eq!(ppu.v, 1, "with rendering off, v just increments");
     }
 
@@ -1145,5 +1389,123 @@ mod tests {
         ppu.write_register(0x2003, 0x02);
         let val = ppu.read_register(0x2004);
         assert_eq!(val, 0xE3); // 0xFF & 0xE3
+    }
+
+    /// A `$2007` read hands back the buffer at once, but the read that replaces
+    /// the buffer — and the `v` increment behind it — belong to dots that have
+    /// not happened yet. Five dots for the refill, one more for the address
+    /// (Mesen's `_ppuMemoryDataReadStateMachine` and `_needVideoRamIncrement`).
+    #[test]
+    fn test_ppudata_read_refills_the_buffer_five_dots_later() {
+        let mut ppu = Ppu::new();
+        ppu.vram[0x2000] = 0x33;
+        ppu.vram[0x2001] = 0x44;
+        ppu.v = 0x2000;
+        ppu.ignore_vram_read = 0;
+
+        // The first read returns the empty buffer and starts the refill.
+        assert_eq!(ppu.read_register_with(0x2007, PpuMemory::Internal), 0);
+
+        // Nothing has landed yet, and `v` has not moved either.
+        for dot in 1..=4 {
+            ppu.tick_delayed_state(&mut PpuMemory::Internal);
+            assert_eq!(ppu.read_buffer, 0, "buffer filled on dot {dot}");
+            assert_eq!(ppu.v, 0x2000, "v moved on dot {dot}");
+        }
+
+        // Dot 5 is the refill; the address follows on dot 6, from the address
+        // the *access* used, not from wherever `v` has got to.
+        ppu.tick_delayed_state(&mut PpuMemory::Internal);
+        assert_eq!(
+            ppu.read_buffer, 0x33,
+            "the refill reads the access' address"
+        );
+        assert_eq!(
+            ppu.v, 0x2000,
+            "the increment waits one dot behind the refill"
+        );
+        ppu.tick_delayed_state(&mut PpuMemory::Internal);
+        assert_eq!(ppu.v, 0x2001, "the increment lands a dot after the refill");
+        assert_eq!(ppu.read_buffer, 0x33, "and does not re-read memory");
+    }
+
+    /// A `$2007` write is latched for five dots before it lands, so a bank
+    /// switch, a scroll change or an `$2006` write inside the gap changes where
+    /// the byte goes.
+    #[test]
+    fn test_ppudata_write_lands_five_dots_later() {
+        let mut ppu = Ppu::new();
+        ppu.v = 0x2000;
+
+        ppu.write_register_with(0x2007, 0x5A, PpuMemory::Internal);
+        for dot in 1..=4 {
+            ppu.tick_delayed_state(&mut PpuMemory::Internal);
+            assert_eq!(ppu.vram[0x2000], 0, "the write landed on dot {dot}");
+        }
+        ppu.tick_delayed_state(&mut PpuMemory::Internal);
+        assert_eq!(ppu.vram[0x2000], 0x5A, "the write lands on the fifth dot");
+        assert_eq!(ppu.v, 0x2000, "the increment trails the write by a dot");
+        ppu.tick_delayed_state(&mut PpuMemory::Internal);
+        assert_eq!(ppu.v, 0x2001);
+    }
+
+    /// Only the *second* write to `$2006` moves `v`, and it does so three dots
+    /// later (Mesen's `_updateVramAddrDelay`) — the gap is long enough for a
+    /// `$2007` access in between to still see the old address.
+    #[test]
+    fn test_ppuaddr_second_write_moves_v_three_dots_later() {
+        let mut ppu = Ppu::new();
+        ppu.write_register(0x2006, 0x20);
+        assert_eq!(ppu.v, 0, "the first write only touches t");
+
+        ppu.write_register_with(0x2006, 0x00, PpuMemory::Internal);
+        assert_eq!(ppu.t, 0x2000, "t is set at once");
+        for dot in 1..=2 {
+            ppu.tick_delayed_state(&mut PpuMemory::Internal);
+            assert_eq!(ppu.v, 0, "v moved on dot {dot}");
+        }
+        ppu.tick_delayed_state(&mut PpuMemory::Internal);
+        assert_eq!(ppu.v, 0x2000, "v follows t on the third dot");
+        assert_eq!(ppu.t, 0x2000, "and t follows it back");
+    }
+
+    /// During rendering the written value is thrown away and the address' low
+    /// byte is stored in its place (Mesen: "the value written is ignored, and
+    /// instead the address' LSB is used").
+    #[test]
+    fn test_ppudata_write_during_rendering_stores_the_address_low_byte() {
+        let mut ppu = Ppu::new();
+        ppu.mask = PpuMask::SHOW_BG;
+        ppu.v = 0x2345;
+        let drawing = || PpuMemory::System {
+            chr: None,
+            mirroring: Mirroring::Horizontal,
+            open_bus: 0,
+            drawing_line: true,
+        };
+
+        ppu.write_register_with(0x2007, 0x5A, drawing());
+        for _ in 0..5 {
+            ppu.tick_delayed_state(&mut drawing());
+        }
+        assert_eq!(
+            ppu.vram[0x2345], 0x45,
+            "the low byte of the address was stored, not the value"
+        );
+    }
+
+    /// With rendering off, an address in $3F00-$3FFF puts *that* palette entry
+    /// on the wire instead of the backdrop — the rule `full_palette` draws its
+    /// grid with.
+    #[test]
+    fn test_palette_at_resolves_the_mirrors() {
+        let mut ppu = Ppu::new();
+        ppu.palette[0x00] = 0x0F;
+        ppu.palette[0x11] = 0x21;
+
+        assert_eq!(ppu.palette_at(0x3F00), 0x0F);
+        assert_eq!(ppu.palette_at(0x3F20), 0x0F, "the page repeats");
+        assert_eq!(ppu.palette_at(0x3F11), 0x21);
+        assert_eq!(ppu.palette_at(0x3F10), 0x0F, "$3F10 mirrors $3F00");
     }
 }

@@ -30,7 +30,8 @@
 | 中断时序 | 每周期采样；判决读上一周期的采样（`_prevRunIrq`/`_prevNeedNmi`） | `Cpu::end_cycle` 保持同样的滞后；`execute_instruction` 在指令结束后判决 | `cpu_interrupts_v2` 5/5、`ppu_vbl_nmi` 10/10 |
 | 芯片落在周期里的位置 | `StartCpuCycle` 先跑到访问点的 PPU dot，再跑 `ProcessCpuClock`（APU 与卡带）；`EndCpuCycle` 跑剩下的 dot，由 CPU 采样中断线 | `NesBus::begin_cpu_cycle` 跑完 dot 后、在访问之前给 APU 打点；`end_cpu_cycle` 跑剩下的 dot | `test_the_apu_clocks_before_the_cycles_access`，以及 `cpu_interrupts_v2` 5/5——它最后三张表读的就是这一个周期 |
 | 向量选择 | 在压状态字节那一刻选定；此前到达的 NMI 接管（`IRQ()`、`BRK()`） | `Cpu::take_interrupt`/`Cpu::brk` 相同，含 BRK 的 `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`、`test_nmi_takes_brks_vector_over` |
-| A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
+| A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入，也由寄存器状态机在延迟访问落地的那一个 dot 喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
+| `$2006`/`$2007` | 寄存器逻辑是每个 dot 末尾打一拍的状态机（`UpdateState`）：读回的是缓冲、五 dot 后才回填、`v` 再晚一个 dot 才动；写在五 dot 后落地（绘制期存的是地址低字节）；`$2006` 第二次写在三 dot 后移动 `v`；每一处放出的地址都在那一刻 `SetBusAddress` | `Ppu::tick_delayed_state`，由 `NesBus::tick_ppu_register_state` 在该 dot 取指之后调用；同样的三个延迟、同样的绘制期规则、同样在延迟访问运行时读 `drawing_line`/`IsRenderingEnabled()`；`PpuMemory::drawing_line()` 带着"访问落地时 PPU 站在哪一行" | `test_ppudata_read_refills_the_buffer_five_dots_later`、`test_ppudata_write_lands_five_dots_later`、`test_ppuaddr_second_write_moves_v_three_dots_later`、`test_a_delayed_register_access_drives_the_bus_on_its_own_dot`；`ppu_read_buffer` 与 `full_palette` 的色块网格 |
 | 逐 dot 渲染 | `ProcessScanlineImpl`：`cycle % 8 == 1/3/5/7` 取指，每 dot `ShiftTileRegisters` 与 `DrawPixel`，粗 X 在每组最后一个 dot 推进（`(_cycle & 0x07) == 0`），全程用同一个 `_videoRamAddr` | `PixelPipeline`：同样的取指/装载/移位/绘制节奏，粗 X 在装载那个 dot 推进，滚动取 `v`/`t`/`x`；sprite 阶段的取指、逐 dot sprite 像素与 sprite 0 命中都在这里 | `4-scanline_timing`、`sprite_hit` 11/11，且 `nestest` 的帧与整行渲染器逐字节相同（那一份检查看不见属性取指，见 §7 末行） |
 | open bus | 每位一个时间戳（`_openBusDecayStamp`）、三帧衰减、`$2002` 低五位从中取，且用 PPU 自己的锁存而非 CPU 的 | 相同：`Ppu::drive_open_bus`/`open_bus_decay_stamp`，`$2002` 只驱动高三位，`$2007` 的调色板读只驱动六位 | `ppu_open_bus` 1/1 |
 | 预渲染行 | 流水线条件 `scanline < 240`，对预渲染行（-1）成立 | 流水线自己的 `visible` 判断，`scanline < 240 \|\| scanline == pre_render` | 同上 |
@@ -69,10 +70,21 @@ Mesen 有而此处缺的：`_lowBitShift`/`_highBitShift`、`TileInfo`、`LoadTi
 - ~~**OAM 衰减**~~ 不算差距：Mesen 把它放在 `EnableOamDecay` 这个设置后面，而该设置**默认关闭**
   （`BaseNesPpu.h` 里 `_enableOamDecay = false`）；规则本身是"每八个字节一行一个 3000 周期时间戳，
   衰减后的值就是该行自己的地址"（`NesPpu::ReadSpriteRam`）。不做它正合 Mesen 的默认。
-- ~~**渲染期的 `$2007`**~~ 已按 `UpdateVideoRamAddr` 与 `ReadRegister` 建模：在绘制行上且渲染开启时，
-  `$2007` 的访问推进的是**滚动**——粗 X 自增与 Y 自增同时发生——而不是地址；同一 `$2007` 的第二次
-  访问若落在六个 PPU dot 内会被忽略并读回 open bus（`_ignoreVramRead = 6`）。不在绘制行上（或渲染
-  关闭时）仍是文档里的 1/32 自增。
+- **`$2006`/`$2007`：寄存器状态机已进**。逐 dot 对齐 `NesPpu::ReadRam`/`WriteRam` 与 `UpdateState`
+  的尾部：`$2007` 读回的是缓冲，回填要等五个 dot，`v` 又比回填晚一个 dot 才动
+  （`_ppuMemoryDataReadStateMachine`、`_needVideoRamIncrement`）；`$2007` 写先被锁存，五个 dot 后
+  落地，而且**绘制期写下去的值会被丢掉、改存地址低字节**；`$2006` 第二次写在三个 dot 后才移动 `v`
+  （`_updateVramAddrDelay`），并把结果写回 `t`。这几处放出的地址是在**延迟访问真正跑的那个 dot**
+  出现在卡带面前的，而不是 CPU 自己那个周期（`SetBusAddress`，也即行计数器所看的 A12）
+  ——`NesBus` 现在每个 dot 在该 dot 取指之后打一拍状态机，与 `Exec` 相同。另有两条规则一并生效：在
+  绘制行上且渲染开启时，`$2007` 的访问推进的是**滚动**——粗 X 自增与 Y 自增同时发生——而不是地址；
+  同一 `$2007` 的第二次访问若落在六个 PPU dot 内会被忽略并读回 open bus（`_ignoreVramRead = 6`）。
+  不在绘制行上（或渲染关闭时）仍是文档里的 1/32 自增。
+- ~~**强制消隐时线上输出的颜色**~~ 已对齐 `DefaultNesPpu::DrawPixel`：渲染关闭且 `v` 落在
+  `$3F00-$3FFF` 时，像素是 `palette[v & 0x1F]` 而不是 backdrop。`full_palette`、
+  `full_palette_smooth` 与 `flowing_palette` 三张 ROM 都是照这条规则写的（"关闭 PPU 渲染，这样当前
+  扫描线的颜色就能由 VRAM 地址直接给出"），现在画出它们要的调色板网格，而此前三张都是清一色的横向
+  色条。
 - ~~**强调色/灰阶**~~ 已对齐 `UpdateColorBitMasks`：灰阶位不仅在送往屏幕时、在 `$2007` 读出时也用
   $30 掩蔽调色板值；PAL 与 Dendy 的强调位含义互换。
 - ~~**这九位颜色解出的 RGB**~~ 已对齐 Mesen 的默认视频滤镜（`NesDefaultVideoFilter.cpp`）：像素值
@@ -289,7 +301,7 @@ cargo test --workspace
 
 - **对齐期间 ROM 套件不在树里**（2026-10-16 移除，见 §10.6）：跑满一轮要几分钟，而这轮工作需要
   以秒计的循环。ROM 本体留在 `roms/` 下，套件在收尾时从 git 取回；在此之前，验收就是
-  `cargo test --workspace`（604 个单元测试）加上 `tests/cycle_trace.rs` 里那些 `#[ignore]` 的
+  `cargo test --workspace`（613 个单元测试）加上 `tests/cycle_trace.rs` 里那些 `#[ignore]` 的
   诊断工具。改动想推动的那张 ROM，应当用 `NES_STATUS_ROM` 与 `NES_DUMP_ROM` 做点测。
 - 套件放回去之后，它们原先的规则照旧：ROM 不入库（布局与下载来源见 `docs/architecture.md` §13.1）；
   清单里"开始通过"的项必须从里面删掉；清单之外出现失败会直接红；凡因更忠实于 Mesen 而产生的回退，
@@ -345,7 +357,9 @@ cargo test --workspace
 
 | DMA 移植带出的三处回退（同日） | 两处修正，都是回去读 Mesen 源码而不是看 ROM 得来的。**取数请求有 `_bufferEmpty` 守卫**（`StartDmcTransfer` 自己的条件）：缓冲里已经有一个字节时不再去取，于是重新使能会等上一个样本最后一个字节的边界。**周期奇偶变成一个有名有姓的约定**：我们的计数器是"已完成周期数"，Mesen 的 `CycleCount` 在周期**开始**时自增，所以凡是在周期**内**读到的奇偶都要按当前周期算（`NesBus::in_an_odd_cpu_cycle`）——`$4017` 重启延迟、`$4016` 的 `_writePending`、DMC 的使能/禁用延迟读的都是它；DMA 循环的奇偶是在周期**之间**读的，仍用普通计数器 | **三处回退全部消失**：`7-dmc_basics`、`8-dmc_rates` 回到 `$6000 = 0`，`Controller Strobing` 转绿，AccuracyCoin 18 → **17**。所有会自报结果的 ROM 复测通过，只剩两项已知的（`6-MMC3_alt`、`cpu_exec_space/apu`）。此前卡在空白画面的 `dmc_dma_during_read4` 五张现在都能跑并打印：`dma_2007_write` 与 `read_write_2007` 报 "Passed"，`double_2007_read` 打印出它四个可接受校验和之一，`dma_2007_read`（0FED8C78 对 159A7A8F/5E3DF9C4）与 `dma_4016_read`（08 08 09 07 08 对 08 08 07 08 08）各差一个周期的相位——和 `sprdma_and_dmc_dma` 同一个形状，后者现在能收尾并报失败码 1，而不再是永远空转 |
 
-| PPU 寄存器状态机（§10.3 第 6 条）——**试过、量过、撤回** | 先读 `NesPpu.cpp`：`$2007` 读交还的是缓冲，缓冲要五 dot 后才重新装入（`_ppuMemoryDataReadStateMachine`），`v` 再晚一 dot 动（`_needVideoRamIncrement`）；`$2007` 写会先锁存、五 dot 后落地，而且**渲染期间写入的值被丢弃、存进去的是地址低字节**；`$2006` 的第二次写要三 dot 后才移动 `v`（`_updateVramAddrDelay`）；渲染关闭且 `v` 落在 `$3F00-$3FFF` 时，画出来的是 `palette[v & 0x1F]` 而不是 backdrop。四件都实现了，延迟由逐 dot 的循环驱动（Mesen 的 `UpdateState`） | **撤回，各piece 分别量过。** 只做"读缓冲延迟"就会让 AccuracyCoin **17 → 20**（`DMA + $2007 Write` 与 `$0476`/`$047E` 两项回来），并让 `cpu_dummy_writes_ppumem` **0x00 → 0x07**；而它真正针对的两张 ROM 根本不通过 `$6000` 上报（`ppu_read_buffer`、`full_palette`：没有 `$80`，判决在屏幕上）——也就是说这项改动拿不出能支撑它的实测。写的"渲染期写地址低字节"正是 `cpu_dummy_writes_ppumem` 第 7 项反对的（它要 RMW 的两次 `$2007` 写按序到达），而 `$2006` 的延迟正是 `mmc3_test_2/3-A12_clocking` 第 6 项（"通过 PPUDATA 写让 A12 变 1 时应被计数"）在量的东西——延迟的 `$2006` 改变了地址到达卡带总线的**时机**。这一版留在 `/tmp/ppu-statemachine-attempt.rs` 与本会话记录里；工作树已回到它之前的状态 | 下次按"ROM 能量到的顺序"做：先 `$2007` 读缓冲，用**帧导出**对照 ROM 自己打印的数字清单；再是写的地址低字节；再是 `$2006`，每一步都复测 `3-A12_clocking` 与 `cpu_dummy_writes_ppumem`。最需要小心的是总线地址的管线：Mesen 是在**延迟后的访问**真正发生时把被访问地址放上总线，而我们现在是在 CPU 那个周期就放上去了 |
+| PPU 寄存器状态机（§10.3 第 6 条）——**试过、量过、撤回** | 先读 `NesPpu.cpp`：`$2007` 读交还的是缓冲，缓冲要五 dot 后才重新装入（`_ppuMemoryDataReadStateMachine`），`v` 再晚一 dot 动（`_needVideoRamIncrement`）；`$2007` 写会先锁存、五 dot 后落地，而且**渲染期间写入的值被丢弃、存进去的是地址低字节**；`$2006` 的第二次写要三 dot 后才移动 `v`（`_updateVramAddrDelay`）；渲染关闭且 `v` 落在 `$3F00-$3FFF` 时，画出来的是 `palette[v & 0x1F]` 而不是 backdrop。四件都实现了，延迟由逐 dot 的循环驱动（Mesen 的 `UpdateState`） | **撤回，各piece 分别量过。** 只做"读缓冲延迟"就会让 AccuracyCoin **17 → 20**（`DMA + $2007 Write` 与 `$0476`/`$047E` 两项回来），并让 `cpu_dummy_writes_ppumem` **0x00 → 0x07**；而它真正针对的两张 ROM 根本不通过 `$6000` 上报（`ppu_read_buffer`、`full_palette`：没有 `$80`，判决在屏幕上）——也就是说这项改动拿不出能支撑它的实测。写的"渲染期写地址低字节"正是 `cpu_dummy_writes_ppumem` 第 7 项反对的（它要 RMW 的两次 `$2007` 写按序到达），而 `$2006` 的延迟正是 `mmc3_test_2/3-A12_clocking` 第 6 项（"通过 PPUDATA 写让 A12 变 1 时应被计数"）在量的东西——延迟的 `$2006` 改变了地址到达卡带总线的**时机**。这一版留在 `/tmp/ppu-statemachine-attempt.rs` 与本会话记录里；工作树已回到它之前的状态（**已在下一行做成**）| 下次按"ROM 能量到的顺序"做：先 `$2007` 读缓冲，用**帧导出**对照 ROM 自己打印的数字清单；再是写的地址低字节；再是 `$2006`，每一步都复测 `3-A12_clocking` 与 `cpu_dummy_writes_ppumem`。最需要小心的是总线地址的管线：Mesen 是在**延迟后的访问**真正发生时把被访问地址放上总线，而我们现在是在 CPU 那个周期就放上去了 |
+
+| 寄存器状态机，**做成了**（第二次尝试） | 同样是那四件，但把撤回时点出的"管线"补对了。**每次访问只自增一次 `v`，不是两次**：第一版在 CPU 那个周期自增了一次，延迟回填触发时又自增一次，于是每次 `$2007` 访问都把地址多走一步——真正让 `$0476`/`$047E`/`$044F` 回退、让 `cpu_dummy_writes_ppumem` 从 0x00 变 0x07 的是这个，不是延迟本身。**总线地址跟着延迟访问走**：`NesBus` 在该 dot 自己取指**之后**打一拍状态机（即 `Exec` 尾部的 `UpdateState`），而 `$2007` 读的回填、`$2007` 写的落地、`$2006` 的更新放进总线地址的那一 dot，才把地址喂给 mapper——与 Mesen 的 `SetBusAddress` 调 `NotifyVramAddressChange` 的位置相同。判定规则在延迟访问运行时读 `PpuMemory::drawing_line()` 与当前 mask，也正是 Mesen 读 `_scanline`/`IsRenderingEnabled()` 的时机。强制消隐的调色板规则落在渲染器里（`DefaultNesPpu::DrawPixel`），本质是像素规则而非寄存器规则，但同属那次撤回的一揽子 | **全项无回退，而且唯一"判决就是画面"的那组 ROM 现在真的画出了它该画的东西。** AccuracyCoin **17 → 17**：同样 111 通过、17 失败，失败清单逐字节相同（第一版的 17 → 20 不复现）。所有会自报结果的 ROM 不变，含两个已记录的失败（`6-MMC3_alt`、`cpu_exec_space/apu`）；`cpu_dummy_writes_ppumem` 保持 `$6000 = 0x00`（第一版把它弄成 `0x07`）；`mmc3_test_2/3-A12_clocking` 仍绿；`blargg_ppu_tests_2005.09.15b` 五张、`sprite_hit_tests` 十一张、`sprite_overflow_tests` 五张与 `oam_stress` 全是 `0x00`。`ppu_read_buffer` 仍打印 "Passed"，帧导出**逐字节相同**。三张 `full_palette` ROM 就是撤回那一行要求的实测：`full_palette`、`full_palette_smooth`、`flowing_palette` 全部从清一色横向色条变成它们本来要画的 400 色**网格**——因为它们正是照"强制消隐期由 VRAM 地址直接给出颜色"这条规则写的（源码原话："关闭 PPU 渲染，这样当前扫描线的颜色就能由 VRAM 地址直接给出"）。单元测试 605 → 613（读回填的五 dot 与紧随其后的自增、写的五 dot、`$2006` 的三 dot、渲染期存地址低字节、`palette_at` 的镜像，以及一个逐 dot 走总线地址的测试）；存档版本 13 → 14 |
 
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
@@ -472,7 +486,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 证据的变化不要写进本文档。
 
 **套件目前（2026-10-16）被有意移出树了。** 跑满一轮要几分钟，而 §10 的对齐工作需要以秒计的循环：
-`cargo test --workspace` 现在约 11 s（604 个单元测试全绿）。ROM 留在 `roms/` 下，套件都能从 git
+`cargo test --workspace` 现在约 11 s（613 个单元测试全绿）。ROM 留在 `roms/` 下，套件都能从 git
 取回——连同它们原来的规则：ROM 报不出结果时**失败**而不是跳过（ROM 根本没跑起来正是启动期卡死的
 样子，DMC 的双重收费就是这样在这儿藏了好几步，§7）。收尾时把它们放回去，连同 §10.6 列出的那些。
 
@@ -509,6 +523,7 @@ DMA 那一刀带使能延迟是 20、去掉是 18；逐项清单见 §10.5）。
 | C2 | **为对齐让路而移除 ROM 套件**（§6/§9） | 完成 | 10-16 删除 `tests/rom_tests.rs`、`tests/common/`、`tests/golden/`（可从 git 取回：`b6c06a1` 及更早；另有一份在 `/tmp/nes-baseline-snapshot-20261016`）。`cargo test --workspace` 130 s → 约 11 s，604 个单元测试全绿。§10.6 列出的套件已放到 `roms/nes-test-roms/`（37 张 ROM，已 gitignore）并各自量过一次 | 对齐收尾时全部放回，连同 §10.6 的那些：那次实测里 `cpu_dummy_writes`（2/2）与 `cpu_exec_space` 的 `ppuio` 已经报 "Passed"，`cpu_exec_space_apu` 失败在 open bus 第 2 项，`cpu_reset/registers` 失败在第 2 项并打印 `SP=$F7`（ROM 要的是 `$FD`）——正是 §10.3 第 3 条要修的缺陷 |
 | C3 | §10.3 的前五项：NES 2.0 半字节、`$2002` 标志寿命、Mesen 混音、复位分成两种加八个预热周期、奇数帧跳点读慢一个 dot 的渲染状态 | **完成** | 实测整行见 §7。`ppu_vbl_nmi` 10/10、AccuracyCoin 32 项失败、`cpu_reset/registers` 越过第 2 项并打出期望的 `S=$FD`；所有会自报结果的 ROM 复测无回退；单元测试 605 | §10.3 剩下的，按 §10.7 的顺序：手柄口与 `$4016` 写入延迟（第 4/5 条），再是 PPU 寄存器状态机（第 6 条），再是 DMA（第 7 条）——APU 边沿时序（第 8 条）与死代码 `addressing.rs`（第 10 条）作为侧刀 |
 | C6 | PPU 寄存器状态机（§10.3 第 6 条） | **试过并撤回** | §7 那一行：四件都做了并分别量过；只做读缓冲延迟就会让 AccuracyCoin 17 → 20、`cpu_dummy_writes_ppumem` 0x00 → 0x07，而它针对的两张 ROM（`ppu_read_buffer`、`full_palette`）根本不通过 `$6000` 上报 | 按可测量的步骤重做，那两张 ROM 用帧导出对照；总线地址的管线要挪到「延迟后的访问」（Mesen 的 `SetBusAddress`）而不是 CPU 的那个周期 |
+| C7 | **PPU 寄存器状态机重做（§10.3 第 6 条）** | **完成** | §7 的新行：撤回那版真正的 bug 是**每次访问自增了两次 `v`**（CPU 周期一次、延迟回填又一次）；改对之后 AccuracyCoin **17 → 17**（清单逐字节相同）、所有会自报结果的 ROM 无回退、`cpu_dummy_writes_ppumem` 保持 0x00，`ppu_read_buffer` 帧逐字节相同，而 `full_palette`/`full_palette_smooth`/`flowing_palette` 三张从横向色条变成该画的调色板**网格**；单元测试 605 → 613、存档版本 13 → 14 | `$2004` 的渲染期行为（读返回 OAM 拷贝缓冲、写的抖动自增）留着，属于 §2.1 的逐 dot OAM |
 | C5 | **DMA 逐字移植（§10.3 第 7 条）** | **完成** | §7 的两行：AccuracyCoin 31 → 18 → **17** 项失败且 146 项全部跑到结果、`dmc_tests` 4/4 转绿、DMA 状态机与内部寄存器合并、DMC 的状态规则与 `_bufferEmpty` 守卫、以及把周期奇偶写成有名约定而不是各处翻转。它带出的四处回退全部关闭；除两项已知项外，所有会自报结果的 ROM 复测通过 | `dmc_dma_during_read4` 那五张只差一个周期（五张里三张已打印可接受输出）；`sprdma_and_dmc_dma` 报失败码 1——sprite/DMC 重叠相位，现在是可测的而不是卡死 |
 | C4 | 手柄口（§10.3 第 4/5 条） | 完成（端口自己这一侧） | 见 §7 那一行：Mesen 的 strobe 沿、补 1 的移位、open bus 掩码、同周期重复读、写入的两周期延迟。AccuracyCoin 32 → 31（`Controller Strobing` 转绿，`Controller Clocking` 由第 2 项推进到第 7 项） | 这一组剩下的是"DMA 的 put/halt 周期走手柄口"，属于 DMA 那一刀（第 7 条） |
 
@@ -663,6 +678,11 @@ CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 
 "DMA 的 put/halt 周期去走手柄口"，属于第 7 条。其余未做的是第 6 条（PPU 寄存器状态机）、
 第 7 条（DMA）与第 8 条（APU 边沿时序），外加第 10、11 两条清理。
 
+**再更新：**第 7 条（Mesen 的 `ProcessPendingDma`）已做完，第 6 条也做完了——`$2006` 的三 dot
+延迟、`$2007` 的五 dot 读与写（写含渲染期"存地址低字节"）、总线地址跟着延迟访问落地，以及渲染器里
+强制消隐的 `palette[v & 0x1F]` 路径（§7，第二次尝试）。这一条剩下的是 `$2004` 的渲染期行为，属于
+§2.1 的逐 dot OAM 工作。
+
 1. **NES 2.0 的 mapper 与 submapper 半字节对调**（`crates/nes-core/src/nes.rs` 的 `RomHeader` 解析）。
    Mesen 是 `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)`、`SubMapper = (Byte8 & 0xF0) >> 4`；
    这里 mapper 取 `(flags8 & 0xF0) << 4`、submapper 取 `flags8 & 0x0F`。`roms/` 里没有一个带 NES 2.0
@@ -674,8 +694,10 @@ CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 
 4. **手柄口一律回答 `bit | 0x40`**（`nes.rs` 的 `ControllerState::read`）：没有按机种的 open bus 掩码、
    没有"同一周期内重复读"规则，移位寄存器读满八次后是 0 而不是补 1。
 5. **`$4016` 的写立刻传到手柄**，而不是落在下一个 PUT 周期。
-6. **PPU 的寄存器状态机不存在**：`$2007` 的延迟读缓冲与延迟写（含渲染期"写地址低字节"）、`$2006`
-   的三周期延迟、`$2004` 的渲染期行为，以及强制消隐时的 `palette[v & 0x1F]` 路径。
+6. ~~**PPU 的寄存器状态机不存在**~~ **已修**：`$2007` 的延迟读缓冲与延迟写（含渲染期"写地址低
+   字节"）、`$2006` 的三周期延迟、地址在延迟访问落地的那个 dot 才到达卡带，以及强制消隐时的
+   `palette[v & 0x1F]` 路径都已进（§7，第二次尝试）。这一条剩下的是 `$2004` 的渲染期行为，
+   属于 §2.1 的逐 dot OAM 工作。
 7. **DMA 的形状**（§2.3/B4）：halt 与 dummy 周期不做总线访问，DMC 取数永远四个周期，没有中止路径，
    这些周期也不采样中断线。
 8. **APU 的边沿时序**：长度计数器的延迟装载、帧 IRQ 标志真实的生命周期、DMC 使能/禁用的 2/3 周期延迟。
@@ -684,7 +706,8 @@ CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 
     留着它，下一个会话就会"修"一个并不在跑的模型。
 11. **`ppu.render_v` 仍然存在**（`ppu.rs`，而且在 `state_fields!` 里，会被存档序列化），尽管 §2.1
     写它已删除。
-12. **§1 的预渲染行仍在归功于 `NesBus::drive_ppu_bus`**，而那个函数早已不在。
+12. ~~**§1 的预渲染行仍在归功于 `NesBus::drive_ppu_bus`**~~ §1 已不再提它，函数本身也早已不在
+    （流水线的取指直接喂 `bus_address`）。
 
 ### 10.4 已核实一致——不要重开这些
 
@@ -811,7 +834,11 @@ harness 被移除之前（§6）各跑了一次——下面就是那次的结果
 2. **`$4016`/`$4017`**——open bus 掩码、PUT 周期 strobe、同周期重复读——先把 `read_joy3` 加进基线。
    小、独立，且一次换回四项 AccuracyCoin（Open Bus 2、APU Register Activation 2、Controller
    Clocking 2、Controller Strobing 2）。
-3. **PPU 的寄存器状态机**（`$2004`/`$2006`/`$2007`、渲染期写入），配 `ppu_read_buffer` 与 `full_palette`。
+3. ~~**PPU 的寄存器状态机**（`$2004`/`$2006`/`$2007`、渲染期写入），配 `ppu_read_buffer` 与
+   `full_palette`。~~ **已完成**（§7，第二次尝试）：`$2006` 的三 dot 与 `$2007` 的五 dot 延迟、
+   渲染期写入、总线地址跟着延迟访问落地、强制消隐的调色板路径——`ppu_read_buffer` 逐字节不变，
+   三张 `full_palette` ROM 现在画出网格。这里剩下的是 `$2004`：渲染期的读返回 OAM 拷贝缓冲、
+   写只做"只动高六位"的 OAMADDR 抖动。
 4. **`$2002` 各标志的生命周期**与逐 dot 的 sprite 求值（含伪溢出计数）——三项 sprite 与 `$2002 flag
    timing` 第 2 项。
 5. **APU 的边沿时序**，先把 `len_reload_timing` 放进基线。

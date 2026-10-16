@@ -74,7 +74,11 @@ const STATE_MAGIC: &[u8; 5] = b"NESST";
 /// into them.
 /// 12: the audio path became a band-limited resampler, so the sample
 /// accumulator gave way to the resampler's own phase, ring and integrator.
-const STATE_VERSION: u8 = 13;
+/// 13: the controller ports took Mesen's shape, so the polled bit gave way to
+/// the strobe latch, the shift register and the pending `$4016` write.
+/// 14: `$2006`/`$2007` became Mesen's register state machines, so the fields a
+/// version-13 state wrote no longer describe when an access lands.
+const STATE_VERSION: u8 = 14;
 
 /// How far into a CPU cycle the chip performs a bus access: after the cycle's
 /// first two PPU dots.
@@ -878,11 +882,7 @@ impl NesBus {
             open_bus: self.open_bus,
             drawing_line,
         };
-        let value = self.ppu.read_register_with(addr, memory);
-        if addr & 0x2007 == 0x2007 {
-            self.feed_ppu_vram_access();
-        }
-        value
+        self.ppu.read_register_with(addr, memory)
     }
 
     /// Write to PPU register
@@ -896,25 +896,6 @@ impl NesBus {
             drawing_line,
         };
         self.ppu.write_register_with(addr, value, memory);
-        // $2006 sets the VRAM address, $2007 moves it: both drive the PPU's
-        // address bus, which is what A12 is taken from when nothing is being
-        // rendered.
-        match addr & 0x2007 {
-            0x2006 | 0x2007 => self.feed_ppu_vram_access(),
-            _ => {}
-        }
-    }
-
-    /// Hand the cartridge the address a VRAM access just put on the PPU bus.
-    ///
-    /// MMC3 counts A12 rises, and a game can raise A12 with an ordinary $2007
-    /// access to the pattern tables, with no rendering involved at all.
-    fn feed_ppu_vram_access(&mut self) {
-        // A CPU access through `$2006`/`$2007` drives the bus too, and the
-        // address it leaves there is the one that stays: Mesen's `SetBusAddress`
-        // on the `ReadVram`/`WriteVram` a register access makes.
-        self.bus_address = self.ppu.v;
-        self.feed_ppu_bus();
     }
 
     /// A controller port read.
@@ -1299,6 +1280,37 @@ impl NesBus {
             self.bus_address = addr;
         }
         let addr = self.bus_address;
+        self.notify_ppu_bus(addr);
+    }
+
+    /// One PPU dot's worth of the register state machines.
+    ///
+    /// A `$2007` read's buffer refill, a `$2007` write landing and a `$2006`
+    /// write moving `v` all happen here rather than on the CPU's cycle, and each
+    /// of them can put a new address in front of the cartridge — which is what
+    /// a scanline counter's A12 is taken from. The state machines need the
+    /// cartridge to do their memory access, so the memory source is built here.
+    fn tick_ppu_register_state(&mut self) {
+        let drawing_line =
+            self.ppu.scanline < 240 || self.ppu.scanline == self.region.last_scanline();
+        {
+            let mut memory = PpuMemory::System {
+                chr: self.mapper.as_deref_mut(),
+                mirroring: self.mirroring,
+                open_bus: self.open_bus,
+                drawing_line,
+            };
+            self.ppu.tick_delayed_state(&mut memory);
+        }
+        if let Some(addr) = self.ppu.take_pending_bus_address() {
+            self.bus_address = addr;
+            self.notify_ppu_bus(addr);
+        }
+    }
+
+    /// Tell the cartridge the PPU's address bus moved (Mesen's `SetBusAddress`
+    /// calling `NotifyVramAddressChange`).
+    fn notify_ppu_bus(&mut self, addr: u16) {
         let cycles = self.cpu_cycles;
         if let Some(ref mut mapper) = self.mapper {
             mapper.on_ppu_bus(addr, cycles);
@@ -1844,9 +1856,11 @@ impl NesBus {
                 }
             }
         }
-        self.ppu.tick_vram_access_window();
         self.ppu_step();
         self.feed_ppu_bus();
+        // The register state machines run at the tail of the dot, after its own
+        // fetches — Mesen's `UpdateState`, at the end of `Exec`.
+        self.tick_ppu_register_state();
         self.record_ppu_bus_sample();
 
         // The rendering state every dot leaves behind for the next one to read
@@ -2381,10 +2395,15 @@ mod tests {
         // Mapper 0 with an empty CHR image is a CHR-RAM cartridge.
         bus.mapper = Some(create_mapper(0, vec![0u8; 0x4000], vec![]).unwrap());
 
-        // Point v at $0000 and upload a CHR byte through $2007.
+        // Point v at $0000 and upload a CHR byte through $2007. Both registers
+        // are delayed — `$2006` moves `v` three dots later, and the `$2007`
+        // write lands five dots after that — so the machine has to run before
+        // the byte is anywhere.
         bus.write(0x2006, 0x00);
         bus.write(0x2006, 0x00);
+        bus.advance_cycles(2);
         bus.write(0x2007, 0x5A);
+        bus.advance_cycles(2);
 
         // The write reached the cartridge, not the PPU's own VRAM.
         assert_eq!(bus.mapper.as_mut().unwrap().read(0x0000), 0x5A);
@@ -2395,9 +2414,51 @@ mod tests {
         // six-dot window.
         bus.write(0x2006, 0x00);
         bus.write(0x2006, 0x00);
+        bus.advance_cycles(2);
         assert_eq!(bus.read(0x2007), 0x00);
         bus.advance_cycles(8);
         assert_eq!(bus.read(0x2007), 0x5A);
+    }
+
+    /// A `$2006`/`$2007` access reaches the cartridge on the dot it *lands* on,
+    /// not on the CPU's cycle — which is the dot a scanline counter's A12
+    /// watches.
+    #[test]
+    fn test_a_delayed_register_access_drives_the_bus_on_its_own_dot() {
+        let mut bus = NesBus::new();
+        bus.mapper = Some(create_mapper(0, vec![0u8; 0x4000], vec![]).unwrap());
+
+        // `$2006`'s second write moves `v` three dots later, and that is when
+        // the address appears in front of the cartridge. A12 is bit 12, so
+        // $1000 is the smallest address that shows a change.
+        bus.write(0x2006, 0x10);
+        bus.write(0x2006, 0x00);
+        for _ in 0..2 {
+            bus.advance_one_ppu_dot();
+        }
+        assert_eq!(bus.bus_address, 0, "$2006 has not landed yet");
+        bus.advance_one_ppu_dot();
+        assert_eq!(bus.bus_address, 0x1000, "$2006 lands on the third dot");
+        assert_eq!(bus.ppu.v, 0x1000, "and it is v that moved");
+
+        // A `$2007` read is buffered: the memory read behind it waits five
+        // dots, and the increment trails that by one more. `v` is at $1000, so
+        // the increment's $1001 is what tells the two apart on the bus.
+        let _ = bus.read(0x2007);
+        for _ in 0..4 {
+            bus.advance_one_ppu_dot();
+        }
+        assert_eq!(bus.bus_address, 0x1000, "the refill has not run yet");
+        bus.advance_one_ppu_dot();
+        assert_eq!(
+            bus.bus_address, 0x1000,
+            "the fifth dot's refill reads the access' address"
+        );
+        bus.advance_one_ppu_dot();
+        assert_eq!(
+            bus.bus_address, 0x1001,
+            "the increment lands a dot behind the refill"
+        );
     }
 
     #[test]

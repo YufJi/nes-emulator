@@ -35,7 +35,8 @@ Two rules, in order:
 | Interrupt timing | Lines sampled every cycle; the decision reads the previous cycle's samples (`_prevRunIrq`/`_prevNeedNmi`) | `Cpu::end_cycle` keeps the same lag; `execute_instruction` decides after the instruction | `cpu_interrupts_v2` 5/5, `ppu_vbl_nmi` 10/10 |
 | Where the chips sit in the cycle | `StartCpuCycle` runs the PPU's dots up to the access and then `ProcessCpuClock` (the APU and the cartridges); `EndCpuCycle` runs the rest of the dots and the CPU samples the lines | `NesBus::begin_cpu_cycle` runs the dots, then the APU tick, before the access; `end_cpu_cycle` runs the remaining dots | `test_the_apu_clocks_before_the_cycles_access`, and `cpu_interrupts_v2` 5/5 — its last three tables read this one cycle |
 | Vector choice | The vector is chosen at the status push; an NMI asserted by then takes it over (`IRQ()`, `BRK()`) | `Cpu::take_interrupt`/`Cpu::brk` do the same, including BRK's `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`, `test_nmi_takes_brks_vector_over` |
-| A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
+| A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them and by the register state machines on the dot their delayed access lands, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
+| `$2006`/`$2007` | The register work is a state machine ticked at the tail of every dot (`UpdateState`): a read refills the buffer five dots later and moves `v` a dot after that, a write lands five dots later (storing the address' low byte if the PPU is drawing), and `$2006`'s second write moves `v` three dots later; the address each puts out is `SetBusAddress`d at that moment | `Ppu::tick_delayed_state`, called from `NesBus::tick_ppu_register_state` after the dot's fetches, with the same three delays, the same rendering-time rules and the same `drawing_line`/`IsRenderingEnabled()` decisions; `PpuMemory::drawing_line()` carries the line the access lands on | `test_ppudata_read_refills_the_buffer_five_dots_later`, `test_ppudata_write_lands_five_dots_later`, `test_ppuaddr_second_write_moves_v_three_dots_later`, `test_a_delayed_register_access_drives_the_bus_on_its_own_dot`; `ppu_read_buffer` and the `full_palette` grids |
 | Per-dot rendering | `ProcessScanlineImpl`: `LoadTileInfo` on `cycle % 8 == 1/3/5/7`, `ShiftTileRegisters` and `DrawPixel` every dot, coarse X stepping on the group's last dot (`(_cycle & 0x07) == 0`), all off the single `_videoRamAddr` | `PixelPipeline`: the same fetch/load/shift/draw schedule, with coarse X moving at the reload dot, off `v`/`t`/`x`, plus the sprite phase's fetches and per-dot sprite pixels and sprite-0 hit | `4-scanline_timing`, `sprite_hit` 11/11, and byte-identical frames against the whole-line renderer on `nestest` (that check cannot see the attribute fetch — see §7's last row) |
 | Open bus | A stamp per bit (`_openBusDecayStamp`), three frames of decay, `$2002`'s low five bits masked from it, and the PPU's own latch rather than the CPU's | the same: `Ppu::drive_open_bus`/`open_bus_decay_stamp`, `$2002` driving only its top three bits, `$2007`'s palette reads driving six | `ppu_open_bus` 1/1 |
 | The pre-render line | The pipeline runs for `scanline < 240`, which includes the pre-render line | The pipeline's own `visible` test, `scanline < 240 \|\| scanline == pre_render` | the same |
@@ -78,11 +79,26 @@ What Mesen has that is missing here: `_lowBitShift`/`_highBitShift`, `TileInfo`,
   is *off* (`_enableOamDecay = false` in `BaseNesPpu.h`), and the rule itself is a 3000-cycle
   per-eight-byte-row stamp whose decayed value is the row's own address
   (`NesPpu::ReadSpriteRam`). Not modelling it matches Mesen's default.
-- ~~**`$2007` during rendering**~~ Modelled from `UpdateVideoRamAddr` and `ReadRegister`: on a
+- **`$2006`/`$2007`: the register state machines are in.** Aligned to `NesPpu::ReadRam`/
+  `WriteRam` and the tail of `UpdateState`, dot for dot: a `$2007` read hands back the buffer and
+  only refills it five dots later, with `v` moving a dot behind the refill
+  (`_ppuMemoryDataReadStateMachine`, `_needVideoRamIncrement`); a `$2007` write is latched and
+  lands five dots later, and *during rendering the value is thrown away and the address' low
+  byte is stored instead*; `$2006`'s second write moves `v` three dots later
+  (`_updateVramAddrDelay`) and copies the result back into `t`. The address each of those puts in
+  front of the cartridge appears on the dot the *delayed* access runs, not on the CPU's cycle
+  (`SetBusAddress`, which is what a scanline counter's A12 watches) — `NesBus` now ticks the
+  machine once per dot after the dot's own fetches, as `Exec` does. Two rules ride along: on a
   drawing line with rendering on a `$2007` access advances the *scroll* — a coarse X increment
   and a Y increment together — instead of the address, and a second `$2007` access within six
   PPU dots is ignored and reads the open bus (`_ignoreVramRead = 6`). Off a drawing line (or
   with rendering off) the documented 1/32 increment stands.
+- ~~**The colour a forced blank puts on the wire**~~ Aligned to `DefaultNesPpu::DrawPixel`: with
+  rendering off and `v` in `$3F00-$3FFF` the pixel is `palette[v & 0x1F]` rather than the
+  backdrop. `full_palette`, `full_palette_smooth` and `flowing_palette` are all written to this
+  rule ("Disables PPU rendering so that current scanline color can be set directly by VRAM
+  address") and now draw the palette grid they are for, where before all three were flat
+  horizontal bars.
 - ~~**Emphasis/grayscale**~~ Aligned to `UpdateColorBitMasks`: the grayscale bit masks a palette
   value with $30 on its way out of `$2007` as well as on its way to the screen, and PAL and
   Dendy swap what the register's emphasis bits mean.
@@ -352,7 +368,7 @@ cargo test --workspace
 - **The ROM suites are not in the tree during this pass** (removed 2026-10-16, §10.6): a full
   run costs minutes, and the alignment work needs a loop measured in seconds. The ROMs stay
   under `roms/`, the suites come back from git when the pass ends, and until then the
-  verification is `cargo test --workspace` (604 unit tests) plus the `#[ignore]`d diagnostics
+  verification is `cargo test --workspace` (613 unit tests) plus the `#[ignore]`d diagnostics
   in `tests/cycle_trace.rs`. Spot checks against the ROMs a change is supposed to move are
   expected — that is what `NES_STATUS_ROM` and `NES_DUMP_ROM` are for.
 - When the suites are back, the rules they carried still hold: ROMs are not committed (the
@@ -413,7 +429,9 @@ several runs.
 
 | The DMA port's three regressions (same day) | Two fixes, both from reading Mesen again rather than from the ROMs. **The byte request is guarded by `_bufferEmpty`** (`StartDmcTransfer`'s own condition): a byte already waiting in the buffer is not fetched over, so a re-enable waits for the previous sample's last byte boundary. **The cycle parity is a named convention**: our counter is the number of *completed* cycles while Mesen's `CycleCount` is incremented when a cycle *starts*, so every parity read *during* a cycle has to count from the current cycle (`NesBus::in_an_odd_cpu_cycle`) — that is what `$4017`'s restart delay, `$4016`'s `_writePending` and the DMC's enable/disable delays all read; the DMA loop's parity is read *between* cycles and keeps the plain counter | **All three regressions gone**: `7-dmc_basics` and `8-dmc_rates` back to `$6000 = 0`, `Controller Strobing` green, and AccuracyCoin 18 → **17**. The whole reporting-ROM set re-measured green except the two documented ones (`6-MMC3_alt`, `cpu_exec_space/apu`). The `dmc_dma_during_read4` five, which used to hang on a blank screen, now run and print: `dma_2007_write` and `read_write_2007` say "Passed", `double_2007_read` prints one of its four accepted checksums, and `dma_2007_read` (0FED8C78 against 159A7A8F/5E3DF9C4) and `dma_4016_read` (08 08 09 07 08 against 08 08 07 08 08) are a one-cycle phase away from their accepted outputs — the same shape as `sprdma_and_dmc_dma`, which now finishes and reports failure #1 instead of spinning forever |
 
-| The PPU's register state machines (§10.3 #6) — **attempted, measured, withdrawn** | Read from `NesPpu.cpp` first: a `$2007` read hands back the buffer and only refills it five dots later (`_ppuMemoryDataReadStateMachine`), with `v` moving a dot behind that (`_needVideoRamIncrement`); a `$2007` write is latched and lands five dots later, and *during rendering the value is thrown away and the address' low byte is stored instead*; `$2006`'s second write moves `v` three dots later (`_updateVramAddrDelay`); and with rendering off and `v` inside `$3F00-$3FFF` the pixel drawn is `palette[v & 0x1F]` rather than the backdrop. Built all four, with the delays ticked from the dot loop (Mesen's `UpdateState`) | **Withdrawn, and the pieces measured separately.** The read delay alone costs AccuracyCoin **17 → 20** (`DMA + $2007 Write` and two items at `$0476`/`$047E` come back) and `cpu_dummy_writes_ppumem` **0x00 → 0x07**, while its own target ROMs do not report through `$6000` at all (`ppu_read_buffer`, `full_palette`: no `$80`, their verdict is on the screen) — so the change had no measurement that could justify it. The write's rendering-time LSB quirk is what `cpu_dummy_writes_ppumem`'s check 7 objects to (it wants a read-modify-write's two `$2007` writes to arrive in order), and the `$2006` delay is what `mmc3_test_2/3-A12_clocking` check 6 ("clocked when A12 changes to 1 via PPUDATA write") measures, because a delayed `$2006` moves *when* the address reaches the cartridge's bus. The attempt is in `/tmp/ppu-statemachine-attempt.rs` and in this session's transcript; the tree is back to the state before it | Next time: do it in the order the ROMs can measure — the `$2007` read buffer first with a **frame-dump** comparison against the ROM's own expected screen (it prints a numeric failure list), then the write's LSB quirk, then `$2006`, re-measuring `3-A12_clocking` and `cpu_dummy_writes_ppumem` at each step. The bus-address plumbing is the part that needs care: Mesen shows the accessed address when the *delayed* access happens, not when the CPU's cycle does, and ours shows it at the cycle |
+| The PPU's register state machines (§10.3 #6) — **attempted, measured, withdrawn** | Read from `NesPpu.cpp` first: a `$2007` read hands back the buffer and only refills it five dots later (`_ppuMemoryDataReadStateMachine`), with `v` moving a dot behind that (`_needVideoRamIncrement`); a `$2007` write is latched and lands five dots later, and *during rendering the value is thrown away and the address' low byte is stored instead*; `$2006`'s second write moves `v` three dots later (`_updateVramAddrDelay`); and with rendering off and `v` inside `$3F00-$3FFF` the pixel drawn is `palette[v & 0x1F]` rather than the backdrop. Built all four, with the delays ticked from the dot loop (Mesen's `UpdateState`) | **Withdrawn, and the pieces measured separately.** The read delay alone costs AccuracyCoin **17 → 20** (`DMA + $2007 Write` and two items at `$0476`/`$047E` come back) and `cpu_dummy_writes_ppumem` **0x00 → 0x07**, while its own target ROMs do not report through `$6000` at all (`ppu_read_buffer`, `full_palette`: no `$80`, their verdict is on the screen) — so the change had no measurement that could justify it. The write's rendering-time LSB quirk is what `cpu_dummy_writes_ppumem`'s check 7 objects to (it wants a read-modify-write's two `$2007` writes to arrive in order), and the `$2006` delay is what `mmc3_test_2/3-A12_clocking` check 6 ("clocked when A12 changes to 1 via PPUDATA write") measures, because a delayed `$2006` moves *when* the address reaches the cartridge's bus. The attempt is in `/tmp/ppu-statemachine-attempt.rs` and in this session's transcript; the tree is back to the state before it (**done in the row below**) | Next time: do it in the order the ROMs can measure — the `$2007` read buffer first with a **frame-dump** comparison against the ROM's own expected screen (it prints a numeric failure list), then the write's LSB quirk, then `$2006`, re-measuring `3-A12_clocking` and `cpu_dummy_writes_ppumem` at each step. The bus-address plumbing is the part that needs care: Mesen shows the accessed address when the *delayed* access happens, not when the CPU's cycle does, and ours shows it at the cycle |
+
+| The register state machines, **done** (the second attempt) | The same four pieces, but with the plumbing the withdrawal said those measurements were really about. **One `v` increment per access, not two**: the first attempt incremented `v` on the CPU's cycle *and* again when the deferred refill fired, which double-stepped the address on every `$2007` access — that, not the delays, is what cost `$0476`/`$047E`/`$044F` and `cpu_dummy_writes_ppumem`'s 0x00 → 0x07. **The bus address travels with the delayed access**: `NesBus` ticks the machine once per dot *after* the dot's own fetches (Mesen's `UpdateState` at the tail of `Exec`), and the address a `$2007` read's refill, a `$2007` write's landing or a `$2006` update puts out is fed to the mapper on *that* dot — the same place Mesen's `SetBusAddress` calls `NotifyVramAddressChange`. The decision rules read `PpuMemory::drawing_line()` and the live mask when the delayed access runs, which is where Mesen reads `_scanline`/`IsRenderingEnabled()`. The forced-blank palette rule went into the renderer (`DefaultNesPpu::DrawPixel`), which is a pixel rule rather than a register one but was part of the same withdrawn attempt | **No regression anywhere, and the one ROM whose verdict is a picture now draws it.** AccuracyCoin **17 → 17** — the same 111 passed, 17 failing, byte-identical failure list (the first attempt's 17 → 20 is gone). Every reporting ROM unchanged, the two documented failures (`6-MMC3_alt`, `cpu_exec_space/apu`) included; `cpu_dummy_writes_ppumem` stays `$6000 = 0x00` where the first attempt put it at `0x07`; `mmc3_test_2/3-A12_clocking` stays green; the `blargg_ppu_tests_2005.09.15b`, the eleven `sprite_hit_tests`, the five `sprite_overflow_tests` and `oam_stress` are all `0x00`. `ppu_read_buffer` still prints "Passed" with a **byte-identical** frame dump. The three `full_palette` ROMs are the measurement the withdrawal asked for: `full_palette`, `full_palette_smooth` and `flowing_palette` all turned from flat horizontal bars into the full 400-colour **grid** they exist to draw, because they are written against the forced-blank palette rule ("Disables PPU rendering so that current scanline color can be set directly by VRAM address"). Unit tests 605 → 613 (the read refill's five dots and the increment behind it, the write's five dots, `$2006`'s three, the rendering-time low-byte store, `palette_at`'s mirrors, and a bus-address test that walks the dots one at a time); state version 13 → 14 |
 
 **One stale number, corrected.** From `8ec693d` (DMA inside `MemoryRead`) until the row above,
 AccuracyCoin never ran: the ROM hung inside its own DMA-sync loop while booting, `$37` stayed
@@ -581,7 +599,7 @@ first, then pick a row. Nothing goes into this document without a measurement be
 
 **The suites are out of the tree right now (2026-10-16), on purpose.** A full run cost minutes, and
 the alignment work (§10) needs a loop measured in seconds: `cargo test --workspace` is down to
-~11 s (604 unit tests). The ROMs stay under `roms/` and every suite comes back from git — with the
+~11 s (613 unit tests). The ROMs stay under `roms/` and every suite comes back from git — with the
 rules it carried: it failed rather than skipped when a ROM stopped reporting, because a ROM that
 never runs its suite is what a boot-time hang looks like, and that is exactly how the DMC's
 double-charged fetch hid here for several steps (§7). Re-add them when the pass ends, together with
@@ -792,6 +810,12 @@ ones shifted in past the eight buttons, the open-bus mask, the same-cycle double
 write's one/two-cycle delay (`§7`). What is left of the controller group is the DMA's put/halt
 cycles clocking the port, which is #7's work.
 
+**Update, later:** 7 is done (Mesen's `ProcessPendingDma`), and so is 6 — `$2006`'s three-dot
+delay, `$2007`'s five-dot read and write (the write including the rendering-time "store the
+address' low byte"), the bus address travelling with the delayed access, and the forced-blank
+`palette[v & 0x1F]` path in the renderer (`§7`, the second attempt). `$2004`'s rendering-time
+behaviour is still open — it belongs with the per-dot OAM work in §2.1.
+
 1. **NES 2.0's mapper and submapper nibbles are swapped** (`crates/nes-core/src/nes.rs`, the
    `RomHeader` parse). Mesen: `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)` and
    `SubMapper = (Byte8 & 0xF0) >> 4`; here the mapper takes `(flags8 & 0xF0) << 4` and the submapper
@@ -806,9 +830,12 @@ cycles clocking the port, which is #7's work.
    open-bus mask, no "same address twice in a cycle" rule, and the shift register empties to 0
    instead of filling with 1s.
 5. **The `$4016` write reaches the controllers immediately** instead of at the next PUT cycle.
-6. **The PPU's register state machines do not exist**: `$2007`'s delayed read buffer and delayed
-   write (including the rendering-time "write the address' low byte"), `$2006`'s three-cycle delay,
-   `$2004`'s rendering-time behaviour, and the forced-blank `palette[v & 0x1F]` path.
+6. ~~**The PPU's register state machines do not exist**~~ **Fixed**: `$2007`'s delayed read buffer
+   and delayed write (including the rendering-time "write the address' low byte"), `$2006`'s
+   three-cycle delay, the address reaching the cartridge on the dot the delayed access lands on,
+   and the forced-blank `palette[v & 0x1F]` path are all in (`§7`, the second attempt). What is
+   left of this item is `$2004`'s rendering-time behaviour, which belongs with the per-dot OAM
+   work in §2.1.
 7. **DMA's shape** (§2.3/B4): the halt and dummy cycles make no bus access, the DMC fetch is always
    four cycles, there is no abort path, and the cycles do not sample the interrupt lines.
 8. **The APU's edge timings**: the length counter's deferred reload, the frame IRQ flag's real
@@ -819,7 +846,8 @@ cycles clocking the port, which is #7's work.
     running.
 11. **`ppu.render_v` still exists** (`ppu.rs`, and it is in `state_fields!`, so it is serialized)
     although §2.1 says it was deleted.
-12. **§1 still credits `NesBus::drive_ppu_bus`** in the pre-render row; the function is gone.
+12. ~~**§1 still credits `NesBus::drive_ppu_bus`** in the pre-render row~~ §1 no longer mentions
+    it; the function itself is gone (the pipeline's fetches feed `bus_address` directly).
 
 ### 10.4 Verified identical - do not re-open these
 
@@ -963,8 +991,12 @@ the oracle does not have.
 2. **`$4016`/`$4017`** - the open-bus masks, the PUT-cycle strobe, the same-cycle double read - with
    `read_joy3` added first. Small, self-contained, and it moves four AccuracyCoin items (Open Bus 2,
    APU Register Activation 2, Controller Clocking 2, Controller Strobing 2).
-3. **The PPU's register state machines** (`$2004`/`$2006`/`$2007`, the rendering-time write) with
-   `ppu_read_buffer` and `full_palette`.
+3. ~~**The PPU's register state machines** (`$2004`/`$2006`/`$2007`, the rendering-time write) with
+   `ppu_read_buffer` and `full_palette`.~~ **Done** (§7, the second attempt): `$2006`'s three-dot
+   and `$2007`'s five-dot delays, the rendering-time write, the bus address landing with the
+   delayed access, and the forced-blank palette path — `ppu_read_buffer` byte-identical and the
+   three `full_palette` ROMs now drawing their grid. What is left here is `$2004`: the
+   rendering-time read returning the OAM copy buffer and the write's glitchy OAMADDR increment.
 4. **`$2002`'s flag lifetimes** and the sprite evaluation at dot granularity (with its overflow-bug
    counter) - the three sprite items and `$2002 flag timing` check 2.
 5. **The APU's edge timings**, with `len_reload_timing` in the baseline first.

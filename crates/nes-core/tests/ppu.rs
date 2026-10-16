@@ -1047,40 +1047,29 @@ fn test_cartridge_nametable_answers_ppudata() {
 
     let mut ppu = Ppu::new();
     ppu.v = 0x2000;
-    ppu.write_register_with(
-        0x2007,
-        0x42,
+    fn memory(mapper: &mut Mapper5) -> PpuMemory<'_> {
         PpuMemory::System {
-            chr: Some(&mut mapper),
+            chr: Some(mapper),
             mirroring: Mirroring::Horizontal,
             drawing_line: false,
             open_bus: 0,
-        },
-    );
-
-    // Reading $2007 is buffered, so the first read hands back the old buffer.
-    ppu.v = 0x2000;
-    ppu.read_register_with(
-        0x2007,
-        PpuMemory::System {
-            chr: Some(&mut mapper),
-            mirroring: Mirroring::Horizontal,
-            drawing_line: false,
-            open_bus: 0,
-        },
-    );
-    for _ in 0..6 {
-        ppu.tick_vram_access_window();
+        }
     }
-    let value = ppu.read_register_with(
-        0x2007,
-        PpuMemory::System {
-            chr: Some(&mut mapper),
-            mirroring: Mirroring::Horizontal,
-            drawing_line: false,
-            open_bus: 0,
-        },
-    );
+    ppu.write_register_with(0x2007, 0x42, memory(&mut mapper));
+    // The `$2007` write only reaches the cartridge five dots later.
+    for _ in 0..6 {
+        ppu.tick_delayed_state(&mut memory(&mut mapper));
+    }
+
+    // Reading $2007 is buffered, so the first read hands back the old buffer,
+    // and the refill it starts only lands five dots later — the same window the
+    // second read has to wait out.
+    ppu.v = 0x2000;
+    ppu.read_register_with(0x2007, memory(&mut mapper));
+    for _ in 0..6 {
+        ppu.tick_delayed_state(&mut memory(&mut mapper));
+    }
+    let value = ppu.read_register_with(0x2007, memory(&mut mapper));
     assert_eq!(
         value, 0x42,
         "the write went to the cartridge, and came back"

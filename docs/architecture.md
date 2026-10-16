@@ -186,7 +186,7 @@ Key points:
   behind the very fetch it should: raster splits need no compatibility switch, and there is
   no second copy of the scroll registers to keep in step.
 - **DMA stalls the CPU**: OAM DMA (`$4014`) stalls it for 513/514 cycles and a DMC byte
-  fetch for 4 cycles; PPU and APU keep advancing during the stall.
+  fetch for three or four by cycle parity; PPU and APU keep advancing during the stall.
 - **The CPU drives its own cycles, the way Mesen's does**: an instruction is not a lump of
   cycles the machine ticks afterwards. Every access the chip makes — the opcode fetch, the
   addressing's operand fetches, the handler's read or write, the discarded reads the 6502
@@ -220,9 +220,9 @@ you observe the flag.
 a time is the PPU. Observations made *through* the PPU are in machine order either way, and
 the one that matters for the accuracy work — the address the cartridge sees — is available as
 a sample per dot through `Nes::ppu_bus_trace()` (bounded history, `set_ppu_bus_trace_capacity`
-to size it; a whole NTSC frame is 89,342 dots). A12 rises between fetch dots and a scanline
-counter's filter is measured in dots, so this is the resolution a mapper's IRQ has to be
-reasoned about at.
+to size it; a whole NTSC frame is 89,342 dots). A12 rises on the fetch dots and on the dot a
+delayed `$2006`/`$2007` access lands, and a scanline counter's filter is measured in dots, so
+this is the resolution a mapper's IRQ has to be reasoned about at.
 
 ---
 
@@ -372,8 +372,8 @@ flowchart LR
     Step --> Vblank["VBlank 241<br/>set status bit + optional NMI"]
     Step --> Pre["Pre-render line<br/>reload scroll / clear flags"]
 
-    Visible --> BG["BackgroundRenderer<br/>shift registers build pixels"]
-    Visible --> Sprites["SpriteEvaluator + SpriteRenderer<br/>at most 8 sprites per line"]
+    Visible --> BG["PixelPipeline<br/>fetch · shift · draw, one pixel per dot"]
+    Visible --> Sprites["PixelPipeline sprite phase + SpriteEvaluator<br/>at most 8 sprites per line"]
     BG --> Hit["sprite 0 hit detection"]
     Sprites --> Hit
     BG --> Buf["bg_pixels working buffer"]
@@ -383,8 +383,20 @@ flowchart LR
 
 | Component | Key structures | Notes |
 | --- | --- | --- |
-| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` | Registers and internal latches |
-| `BackgroundRenderer` | `BgRenderState` | Whole-scanline rendering: tiles are fetched left to right at one dot (§3.2 picks which), so there is no shift-register pipeline; the mirroring mode can be switched at runtime |
+| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` | Registers, internal latches, and the register state machines (`tick_delayed_state`) |
+| `PixelPipeline` | `Shifters` (two 16-bit shift registers plus the attribute latches) | Per-dot rendering: a tile is fetched every eight dots, shifted out one pixel per dot, and drawn on the dot it belongs to, off `v`/`t`/`x`; the mirroring mode can be switched at runtime |
+| `SpriteEvaluator` | `SecondaryOam` | Per-line evaluation (including the 8-sprite overflow bug behavior) |
+| `FrameBuffer` | `pixels: Vec<u32>`, `width`, `height` | The externally visible picture; its size derives from the `WIDTH`/`HEIGHT` constants |
+
+**The `$2006`/`$2007` state machines.** The register logic is not a set of immediate effects:
+it is a machine the dot loop ticks (`Ppu::tick_delayed_state`, Mesen's `UpdateState`, called
+from the tail of `NesBus::advance_one_ppu_dot` after the dot's own fetches). A `$2007` read
+hands back its buffer and only refills it five dots later, with `v` moving a dot behind the
+refill; a `$2007` write is latched and lands five dots later (storing the *address'* low byte
+instead of the value if the PPU is drawing); and `$2006`'s second write moves `v` three dots
+later. The address each of those puts in front of the cartridge appears on the dot the
+*delayed* access runs, which is what a scanline counter's A12 watches — see §3.3's note on
+`Nes::step_dot` and `Nes::ppu_bus_trace`.
 | `SpriteEvaluator` | `SecondaryOam` | Per-line evaluation (including the 8-sprite overflow bug behavior) |
 | `FrameBuffer` | `pixels: Vec<u32>`, `width`, `height` | The externally visible picture; its size derives from the `WIDTH`/`HEIGHT` constants |
 

@@ -387,6 +387,15 @@ impl PixelPipeline {
             }
             if show_bg {
                 self.draw_background_pixel(ppu, x);
+            } else if !rendering && ppu.v & 0x3F00 == 0x3F00 {
+                // "If the current VRAM address points in the range
+                // $3F00-$3FFF during forced blanking, the color indicated by
+                // this palette location will be shown on screen instead of the
+                // backdrop color" (Mesen's `DefaultNesPpu::DrawPixel`). It is
+                // what `full_palette` draws its grid with: with rendering off
+                // the program aims `v` at the entry it wants on the wire.
+                let color = nes_color(ppu.palette_at(ppu.v), ppu.mask, self.region);
+                self.frame.set_pixel(x, scanline as usize, color);
             } else {
                 // With the background off the chip puts the backdrop on the
                 // wire, and sprites draw over it.

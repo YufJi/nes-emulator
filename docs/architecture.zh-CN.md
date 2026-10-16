@@ -175,7 +175,7 @@ sequenceDiagram
   dot 画出该像素——即 Mesen 的 `ProcessScanlineImpl`。它直接读 `v`/`t`/`x`，所以 `$2005`/
   `$2006` 的写入正好落在它该影响的取指之后：光栅分屏不再需要兼容开关，也没有第二份滚动
   寄存器需要同步。
-- **DMA 会让 CPU 停顿**：OAM DMA（`$4014`）停 513/514 周期，DMC 取字节停 4 周期；
+- **DMA 会让 CPU 停顿**：OAM DMA（`$4014`）停 513/514 周期，DMC 取字节按周期奇偶停 3 或 4 个周期；
   停顿期间 PPU/APU 继续推进。
 - **CPU 自己驱动自己的周期，和 Mesen 一样**：一条指令不再是"由机器事后补 tick 的一坨周期"。
   芯片做的每一次访问——取操作码、寻址取操作数、handler 的读写、6502 用内部周期做的丢弃读——
@@ -203,8 +203,9 @@ sequenceDiagram
 `step_dot()` 是"另一颗芯片上的同一件事"：CPU 仍以整条指令推进，因此逐 dot 移动的是 PPU。
 两种走法下**通过 PPU 观察到的量**都是机器顺序；其中精度工作真正需要的那个——卡带在总线上看到
 的地址——由 `Nes::ppu_bus_trace()` 按每 dot 一条采样给出（历史上限可调，
-`set_ppu_bus_trace_capacity`；NTSC 一帧是 89,342 个 dot）。A12 的上升发生在取指 dot 之间，
-扫描线计数器的过滤以 dot 计长，所以这是讨论 mapper IRQ 时必须用的分辨率。
+`set_ppu_bus_trace_capacity`；NTSC 一帧是 89,342 个 dot）。A12 的上升发生在取指 dot 上，也发生在延迟的
+`$2006`/`$2007` 访问真正落地的那个 dot 上；扫描线计数器的过滤以 dot 计长，所以这是讨论 mapper IRQ 时
+必须用的分辨率。
 
 ---
 
@@ -342,8 +343,8 @@ flowchart LR
     Step --> Vblank["VBlank 241<br/>置状态位 + 可选 NMI"]
     Step --> Pre["预渲染行<br/>重载滚动/清标志"]
 
-    Visible --> BG["BackgroundRenderer<br/>移位寄存器拼像素"]
-    Visible --> Sprites["SpriteEvaluator + SpriteRenderer<br/>每行最多 8 个精灵"]
+    Visible --> BG["PixelPipeline<br/>取指 · 移位 · 绘制，每 dot 一个像素"]
+    Visible --> Sprites["PixelPipeline 的精灵阶段 + SpriteEvaluator<br/>每行最多 8 个精灵"]
     BG --> Hit["sprite 0 命中检测"]
     Sprites --> Hit
     BG --> Buf["bg_pixels 工作缓冲"]
@@ -353,10 +354,17 @@ flowchart LR
 
 | 组件 | 关键结构 | 说明 |
 | --- | --- | --- |
-| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` | 寄存器与内部锁存器 |
+| `Ppu` | `vram` / `palette` / `oam` / `ctrl` / `mask` / `status` / `v` / `t` / `x` / `w` | 寄存器、内部锁存器，以及寄存器状态机（`tick_delayed_state`） |
 | `PixelPipeline` | `Shifters`（16 位移位寄存器与属性锁存） | 逐 dot 渲染：每八个 dot 取一个瓦片、每 dot 移位并画一个像素，滚动取自 `v`/`t`/`x`；镜像模式可运行时切换 |
 | `SpriteEvaluator` | `SecondaryOam` | 逐行求值（含 8 精灵溢出 bug 行为） |
 | `FrameBuffer` | `pixels: Vec<u32>`、`width`、`height` | 对外暴露的画面，尺寸由 `WIDTH`/`HEIGHT` 常量派生 |
+
+**`$2006`/`$2007` 的状态机。** 寄存器逻辑不是一组即时生效的写：它是一台由逐 dot 循环打拍的状态机
+（`Ppu::tick_delayed_state`，即 Mesen 的 `UpdateState`，在 `NesBus::advance_one_ppu_dot` 尾部该 dot
+自己的取指之后调用）。`$2007` 读交还的是缓冲，回填要等五个 dot，`v` 又比回填晚一个 dot 才动；`$2007`
+写先被锁存、五个 dot 后落地（绘制期存进去的是**地址**的低字节而不是写入值）；`$2006` 的第二次写三个
+dot 后才移动 `v`。这几处放出的地址是在**延迟访问真正跑的那个 dot** 出现在卡带面前的，也正是行计数器
+所看的 A12——见 §3.3 关于 `Nes::step_dot` 与 `Nes::ppu_bus_trace` 的说明。
 
 **对外画面契约**（宿主不得自行假设）：
 
