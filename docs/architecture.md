@@ -903,7 +903,7 @@ suites go back in:
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper — and Mesen fails it too, `docs/mesen-alignment.md` §10.6) |
 | `apu_test` | 8/8 |
-| AccuracyCoin | 32 failing, down from 34 when §10.3's first four fixes landed (`Suddenly Resize Sprite` and `Misaligned OAM DMA` stopped failing). The ROM's own counter depends on how long its results screen has been up, so a harness uses it only as a liveness check |
+| AccuracyCoin | 17 failing, down from 34 when §10.3's first four fixes landed, 32, 31 with the controller ports and 18 with the DMA port's first cut (`Suddenly Resize Sprite`, `Misaligned OAM DMA`, `Controller Strobing`, the whole DMA group and five `UnOp_` stores among the items that stopped failing). The ROM's own counter depends on how long its results screen has been up, so a harness uses it only as a liveness check |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
 submapper that a plain iNES header cannot carry. (`ppu_vbl_nmi`'s last one, the dot the odd

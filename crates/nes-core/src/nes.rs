@@ -979,22 +979,18 @@ impl NesBus {
                 // reads the port in the very next cycle sees the difference.
                 self.pending_controller_write = Some(PendingControllerWrite {
                     value,
-                    cycles_left: if self.cpu_cycles & 1 == 1 { 1 } else { 2 },
+                    cycles_left: if self.in_an_odd_cpu_cycle() { 1 } else { 2 },
                 });
             }
             _ => {
-                // The APU's clock phase matters to a `$4017` restart, and the
-                // machine's cycle parity is how the once-per-cycle APU here
-                // sees it.
-                let odd_apu_cycle = self.cpu_cycles & 1 == 0;
-                // ^ the APU's "between cycles" phase. The mapping was flipped
-                // with the DMA port: `4-irq_and_dma` wants it this way round and
-                // AccuracyCoin drops two items with it (18 against 20), while
-                // every ROM that pins the frame counter's own phase
-                // (`4-jitter`, `5-len_timing`, `6-irq_flag_timing`) is green
-                // either way. What the flip costs is pinned below in
-                // `test_the_apu_clocks_before_the_cycles_access` — see
-                // `docs/mesen-alignment.md` §7.
+                // The APU's clock phase matters to a `$4017` restart and to
+                // the DMC's enable/disable delays, and the cycle the write is
+                // in is how the once-per-cycle APU here sees it.
+                // The cycle the write is in decides the APU's "between cycles"
+                // flavour: `4-irq_and_dma` is what pinned this side of the
+                // convention, and `4-jitter`, `5-len_timing` and
+                // `6-irq_flag_timing` are green with it.
+                let odd_apu_cycle = self.in_an_odd_cpu_cycle();
                 self.apu.write_register_at(addr, value, odd_apu_cycle);
             }
         }
@@ -1528,6 +1524,25 @@ impl NesBus {
     #[inline]
     fn cpu_divider(&self) -> u64 {
         self.region.cpu_divider() as u64
+    }
+
+    /// Whether the chip is currently in an "odd" CPU cycle.
+    ///
+    /// Our counter is the number of cycles *completed*, and it is incremented
+    /// when a cycle ends; Mesen's `CycleCount` is incremented when one starts,
+    /// so a value read *during* a cycle is one higher there than here. Anything
+    /// whose behaviour depends on the parity and is read mid-cycle has to count
+    /// from the current cycle — this is that count, and it is what makes a
+    /// `$4017` restart three cycles late instead of four and a `$4016` write
+    /// reach the pads a cycle later than it otherwise would (Mesen's
+    /// `_transferStartDelay` and `_writePending` both read its `GetMasterClock`
+    /// the same way).
+    ///
+    /// A parity read *between* cycles — the DMA loop deciding whether the next
+    /// cycle is a read — uses [`NesBus::cpu_cycles`] directly instead.
+    #[inline]
+    fn in_an_odd_cpu_cycle(&self) -> bool {
+        self.cpu_cycles & 1 == 0
     }
 
     /// Master-clock ticks one PPU dot takes.

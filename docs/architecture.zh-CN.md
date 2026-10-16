@@ -820,7 +820,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
 | `apu_test` | 8/8 |
-| AccuracyCoin | 32 项失败（§10.3 前五项落地后由 34 降到 32；`Suddenly Resize Sprite` 与 `Misaligned OAM DMA` 转绿。最后一轮实测在套件移除之前——ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
+| AccuracyCoin | 17 项失败（§10.3 首批修完 34 → 32，手柄口降到 31，DMA 移植首版 18、修完三处回退 17；`Suddenly Resize Sprite`、`Misaligned OAM DMA`、`Controller Strobing`、整个 DMA 组与五项 `UnOp_` 存储都在转绿之列。最后一轮实测在套件移除之前——ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
 （`ppu_vbl_nmi` 的最后一项已在 C3 那一步转绿；`cpu_interrupts_v2` 原先也在这张单子上，

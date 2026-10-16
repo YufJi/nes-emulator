@@ -308,7 +308,12 @@ impl DmcChannel {
     /// the channel calls when its buffer has just been emptied and the sample
     /// has bytes left.
     fn start_transfer(&mut self) {
-        if self.bytes_remaining == 0 || self.byte_requested {
+        // Mesen's guard is `_bufferEmpty && _bytesRemaining > 0`: a byte already
+        // waiting in the buffer is not fetched over, which is what makes a
+        // re-enable wait for the *previous* sample's last byte boundary — and
+        // that wait is what `8-dmc_rates` measures (17 bytes read as 135 bit
+        // periods rather than 128 when the sync left seven of a byte playing).
+        if self.bytes_remaining == 0 || self.byte_requested || self.has_sample {
             return;
         }
         if let Some(ref mut callback) = self.dma_callback {
