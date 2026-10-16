@@ -282,6 +282,48 @@ re-recorded after their new screens were read (both `PASSED`), and both left the
 
 ### S2 — the walk becomes dot-exact
 
+> **Status, 2026-10-16: ported, measured, and blocked on S4.** The port is in
+> `/tmp/s2-walk-dot-exact.diff` (with `…-sprite.rs` and `…-test-ppu.rs` for the two files it
+> rewrites wholesale); read the measurement table below before re-applying it.
+
+**What was ported.** The faithful `ProcessSpriteEvaluation` from `/tmp/newsrc4` replacing
+`evaluate()` — dots 1-64 clear secondary OAM, dot 65 starts the walk, odd dots read primary OAM at
+`$2003`, even dots decide (the range test outside the room test, the misalignment resync, the
+diagonal overflow-bug step, the `_oamCopyDone` re-read) — driven per dot from `ppu_step`; plus
+Mesen's `OAMADDR = 0` over dots 257-320 (of a *drawing* line: `Exec` runs `ProcessScanlineImpl` when
+`_scanline < 240`, so the pre-render line is in and vertical blanking is out, which is what keeps a
+program's own `$2003` alive during vblank); plus Mesen's rendering-time `$2004` — a read answers
+`_oamCopybuffer`, re-read out of secondary OAM on dots 257-340 and dot 0, and a write only performs
+the glitchy increment. 617 unit tests and 55 integration tests, all green.
+
+**Four measurements**, AccuracyCoin at 3600 frames and the sprite suites:
+
+| Configuration | AccuracyCoin | `sprite_overflow_tests/3.Timing` | `sprite_hit_tests` |
+| --- | --- | --- | --- |
+| walk + `$2004` only | 155 ran / 18 failing | **check 4 → check 10** | broken: 8 pictures move to `FAILED` |
+| + `$2003 = 0` over 257-320 | 144 ran / 24 failing | check 4, unchanged | 11/11 |
+| + `$2003 = 0`, no write-back | 155 ran / 19 failing | **check 4 → check 8** | broken: sprite 0 stops hitting |
+| all three (Mesen's own shape) | 144 ran / 24 failing | check 4 | 11/11 |
+
+**What that says.** The walk's `$2003` write-back is load-bearing for sprite 0 here — with it off,
+`sprite_hit_tests` reports "isn't working at all" across the board — while with it on, Mesen's
+`$2003 = 0` over 257-320 costs eleven AccuracyCoin items at once (`Address2004_Behavior`,
+`OAM_Corruption`, `2004_Stress`, `FrozenOAM2Inc`, `HybridAddresses`, `ALERead`,
+`StaleBGShiftRegs`, `StaleBGShiftRegisters`, `RenderingFlagBehavior`, `BGSerialIn`, `2007_Stress`).
+Those eleven are the tests that watch `$2003`/`$2004` *while rendering*, and the write-back only
+becomes observable the way Mesen intends once the rest of the OAM address bookkeeping is in: the
+`$2004` write landing a dot or two after the write ends, the OAM row corruption rows, and the DMA's
+own address timing. **That is S4's work, so S2 is blocked on S4** rather than on anything in S2
+itself; the order to do them in is S4's bookkeeping first, then this write-back on top.
+
+The part with a green gate is the walk's *timing*, and it moves where it counts: with the write-back
+off, `3.Timing` goes from check 4 to check 8 — checks 4 and 5, "set too early/too late for the first
+scanline", pass — and AccuracyCoin's `$0459 Sprite overflow behavior` passes in every configuration.
+
+**Costs recorded**: `$0457 Sprite0Hit_Behavior`, `$0489 Suddenly Resize Sprite` and
+`$0494 Misaligned OAM DMA` pass with the write-back and fail without it; the sprite-suite pictures
+that move to `FAILED` in the write-back-off column are the sprite-0 breakage itself.
+
 **Change.** `SpriteEvaluator` (the port in `/tmp/newsrc4/sprite.rs`) replaces `evaluate()`: dots 1-64
 clear, dot 65 starts, odd dots read `$2003`'s byte, even dots decide (the range test outside the room
 test, the misalignment resync rule, the diagonal overflow-bug step, the `_oamCopyDone` re-read

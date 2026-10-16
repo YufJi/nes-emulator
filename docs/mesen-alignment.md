@@ -468,6 +468,27 @@ row is measured.
 
 Their value is the evidence; do not retry them without reading this first.
 
+- **The per-dot sprite walk (S2 of `sprite-phase-plan.md`), ported and measured four ways
+  (2026-10-16).** The faithful `ProcessSpriteEvaluation` — dots 1-64 clear, dot 65 starts, odd dots
+  read `$2003`'s byte, even dots decide, `$2003` written back — plus Mesen's `OAMADDR = 0` over dots
+  257-320 of a drawing line, plus its rendering-time `$2004` (a read answers `_oamCopybuffer`, a write
+  only performs the glitchy increment): 617 unit tests and 55 integration tests green, and the
+  flag's *timing* moves where it counts — `sprite_overflow_tests/3.Timing` goes from check 4 to
+  check 10 with the walk alone and to check 8 with the `$2003` reset in, and AccuracyCoin's `$0459`
+  passes in every configuration. What no configuration keeps is the rest: the walk's `$2003`
+  write-back is load-bearing for sprite 0 (`sprite_hit_tests` reports "isn't working at all" across
+  the board without it, sixteen pictures to `FAILED`), and *with* it, Mesen's `$2003 = 0` over
+  257-320 costs eleven AccuracyCoin items at once — `Address2004_Behavior`, `OAM_Corruption`,
+  `2004_Stress`, `FrozenOAM2Inc`, `HybridAddresses`, `ALERead`, `StaleBGShiftRegs`,
+  `StaleBGShiftRegisters`, `RenderingFlagBehavior`, `BGSerialIn`, `2007_Stress` — leaving 144 tests
+  run and 24 failing against the baseline's 17. AccuracyCoin's best configuration (155 run, 19
+  failing) is the one *without* the write-back, and that is the one that breaks sprite 0. The eleven
+  are exactly the tests that watch `$2003`/`$2004` *while rendering*, so **S2 is blocked on S4**:
+  the `$2004` write that lands a dot or two after the write ends, the OAM corruption rows and the
+  DMA's own address timing are what make the write-back observable the way Mesen intends. The port
+  stays in `/tmp/s2-walk-dot-exact.diff` (with `…-sprite.rs`/`…-test-ppu.rs` for the two wholesale
+  files); re-apply it together with S4's piece, not before.
+
 - **The per-dot sprite evaluation *with* the sprite phase (§2.1, second attempt).** The first
   attempt (§7, "the per-dot sprite evaluation, alone") showed the walk cannot land by itself, so
   this one ported the phase it feeds as well: `LoadSpriteTileInfo`/`LoadSprite` on the group's
@@ -703,6 +724,13 @@ The per-ROM verdicts are `sprite-phase-plan.md` §2, and what stage 0 changed is
 targets have since started moving: **S1 is done too**, and `sprite_overflow_tests` is 2/5 → **4/5**
 (`1.Basics` and `5.Emulator` print `PASSED`; `3.Timing`'s check 4 is S2's gate). AccuracyCoin is
 146/111/17 with the same failing addresses, and `sprite_hit_tests` is still 11/11.
+
+**S2 is ported and measured but blocked on S4** (2026-10-16): the walk's timing is right —
+`3.Timing` reaches check 8, and `$0459` passes — but its `$2003` write-back is load-bearing for
+sprite 0 and, together with Mesen's `$2003 = 0` over dots 257-320, costs eleven AccuracyCoin items
+until S4's OAM-address bookkeeping is in. The four measurements are in
+`sprite-phase-plan.md` §4/S2 and the experiments list in §7 here; the port waits in
+`/tmp/s2-walk-dot-exact.diff`.
 
 **The suites were back in the tree on 2026-10-16** (stage 0 of `sprite-phase-plan.md`), after being
 removed for the §10 pass and restored from `b4caaf6^`. Before they went back, every ROM whose verdict

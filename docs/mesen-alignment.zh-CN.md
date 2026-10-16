@@ -389,6 +389,23 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 
 它们的价值在于证据；不先读这一段就不要重试。
 
+- **逐 dot 的 sprite 步进（`sprite-phase-plan.zh-CN.md` 的 S2），已移植、四组对照量过（2026-10-16）。**
+  忠实的 `ProcessSpriteEvaluation`（1-64 清、65 起步、奇数 dot 读 `$2003` 指的那个字节、偶数 dot 判决、
+  `$2003` 写回）加上 Mesen 在绘制行 257-320 上的 `OAMADDR = 0`，以及它渲染期的 `$2004`（读回
+  `_oamCopybuffer`，写只做抖动自增）：单元测试 617 + 集成 55 全绿，而且标志的**时序**前进在关键处——
+  只上步进时 `sprite_overflow_tests/3.Timing` 从第 4 项走到第 10 项，加上 `$2003` 归零是第 8 项，而
+  AccuracyCoin 的 `$0459` 在四组里都通过。四组里没有一组能同时保住其余部分：步进对 `$2003` 的写回对
+  sprite 0 是**承重**的（关掉它，`sprite_hit_tests` 全线"根本不工作"，十六张画面变 `FAILED`）；而
+  **开着**写回时，Mesen 那条 257-320 的 `$2003 = 0` 一次代价十一项 AccuracyCoin——`Address2004_Behavior`、
+  `OAM_Corruption`、`2004_Stress`、`FrozenOAM2Inc`、`HybridAddresses`、`ALERead`、
+  `StaleBGShiftRegs`、`StaleBGShiftRegisters`、`RenderingFlagBehavior`、`BGSerialIn`、`2007_Stress`
+  ——留下跑 144 项、失败 24 项，而基线是 17 项。AccuracyCoin 最好的一组（跑 155、失败 19）恰恰是
+  **去掉写回**的那组，也正是把 sprite 0 弄坏的那组。这十一项盯的就是**渲染期间**的
+  `$2003`/`$2004`，所以 **S2 卡在 S4 上**：`$2004` 的写要晚一两个 dot 才落地、OAM 行损坏的那几行、
+  以及 DMA 自己的地址时序，才是让写回以 Mesen 想要的方式可观测的前提。移植留在
+  `/tmp/s2-walk-dot-exact.diff`（两个整文件版本 `…-sprite.rs`/`…-test-ppu.rs`）；要重新套用，请与
+  S4 那件一起套，不要提前。
+
 - **逐 dot sprite 求值**加上**它喂养的 sprite 阶段**（§2.1，第二次尝试）**。第一次尝试（见本节的"只做逐 dot
   sprite 求值"）说明这套步进无法单独落地，于是这次把 sprite 阶段一起移植了：`LoadSpriteTileInfo`/
   `LoadSprite` 在该组的取指 dot（261、269、…、317）从二级 OAM 原始字节装载、`ProcessSpriteShifters`、
@@ -567,6 +584,12 @@ AccuracyCoin 结果日志、进度监视）都在 `tests/cycle_trace.rs` 里。`
 第 0 步具体改了什么见那个文件的 §3。C8 的目标此后已经开始移动：**S1 也做完了**，
 `sprite_overflow_tests` 从 2/5 到 **4/5**（`1.Basics` 与 `5.Emulator` 打出 `PASSED`；`3.Timing`
 的第 4 项是 S2 的门）。AccuracyCoin 仍是 146/111/17、失败地址逐个相同，`sprite_hit_tests` 仍是 11/11。
+
+**S2 已经移植并实测，但卡在 S4 上**（2026-10-16）：步进的时序是对的——`3.Timing` 走到第 8 项、
+`$0459` 通过——但它的 `$2003` 写回对 sprite 0 是承重的，而它与 Mesen 那条 257-320 的 `$2003 = 0`
+合在一起，在 S4 的 OAM 地址簿记到位之前要代价十一项 AccuracyCoin。四组对照在
+`sprite-phase-plan.zh-CN.md` §4/S2，本文件 §7 的实验清单里也有一条；移植在
+`/tmp/s2-walk-dot-exact.diff` 里等着。
 
 **套件 2026-10-16 已经回到树里**（`sprite-phase-plan.zh-CN.md` 的第 0 步）：它们曾为 §10 那轮让路被
 移出，又从 `b4caaf6^` 放了回去。放回之前，凡是以**画面**为判决的 ROM 都被人眼读过一遍，然后才按当前

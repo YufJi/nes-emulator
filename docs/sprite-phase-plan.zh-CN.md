@@ -262,6 +262,44 @@ S3，是计划自己的规则（§5 第 4 条）：收窄回退，而不是回�
 
 ### S2——步进变成逐 dot
 
+> **状态，2026-10-16：已移植、已实测，卡在 S4 上。** 移植在
+> `/tmp/s2-walk-dot-exact.diff`（另有两个整文件版本 `…-sprite.rs`、`…-test-ppu.rs`）；重新套用
+> 之前先读下面那张对照表。
+
+**移植了什么。** 用 `/tmp/newsrc4` 里那份忠实的 `ProcessSpriteEvaluation` 替换 `evaluate()`——
+1-64 清二级 OAM、65 起步、奇数 dot 按 `$2003` 读主 OAM、偶数 dot 判决（范围判断在空位判断之外、
+错位重对齐、溢出 bug 的对角步进、`_oamCopyDone` 的重读）——并由 `ppu_step` 逐 dot 驱动；加上 Mesen
+在 257-320 上的 `OAMADDR = 0`（限**绘制行**：`Exec` 只在 `_scanline < 240` 时跑
+`ProcessScanlineImpl`，所以预渲染行算、vblank 不算，程序自己在 vblank 设的 `$2003` 因此得以保留）；
+以及 Mesen 渲染期的 `$2004`——读回 `_oamCopybuffer`（257-340 与 dot 0 先从二级 OAM 重读）、写只做
+抖动自增。单元测试 617 + 集成 55 全绿。
+
+**四组实测**（AccuracyCoin 3600 帧 + sprite 套件）：
+
+| 配置 | AccuracyCoin | `sprite_overflow_tests/3.Timing` | `sprite_hit_tests` |
+| --- | --- | --- | --- |
+| 只有步进 + `$2004` | 跑 155 / 失败 18 | **第 4 项 → 第 10 项** | 坏：8 张画面变 `FAILED` |
+| 再加 257-320 的 `$2003 = 0` | 跑 144 / 失败 24 | 第 4 项，没动 | 11/11 |
+| 再加 `$2003 = 0`、去掉写回 | 跑 155 / 失败 19 | **第 4 项 → 第 8 项** | 坏：sprite 0 整体不命中 |
+| 三者齐全（Mesen 的形状） | 跑 144 / 失败 24 | 第 4 项 | 11/11 |
+
+**这说明什么。** 步进对 `$2003` 的写回在本内核里是**承重**的——关掉它，`sprite_hit_tests` 全线报
+"根本不工作"；而开着它时，Mesen 那条 257-320 的 `$2003 = 0` 会一次代价十一项 AccuracyCoin
+（`Address2004_Behavior`、`OAM_Corruption`、`2004_Stress`、`FrozenOAM2Inc`、`HybridAddresses`、
+`ALERead`、`StaleBGShiftRegs`、`StaleBGShiftRegisters`、`RenderingFlagBehavior`、`BGSerialIn`、
+`2007_Stress`）。这十一项正是盯着**渲染期间** `$2003`/`$2004` 行为的测试，而写回只有在 OAM 地址簿记的
+其余部分到位之后才会以 Mesen 想要的方式可观测：`$2004` 的写要晚一两个 dot 才落地、OAM 行损坏的几行、
+以及 DMA 自己的地址时序。**那是 S4 的活，所以 S2 卡在 S4 上**，而不是卡在 S2 自身；正确的顺序是先做
+S4 的地址簿记，再把这个写回压上去。
+
+有绿门的是步进的**时序**，而且它前进在关键处：关掉写回时 `3.Timing` 从第 4 项走到第 8 项——第 4、5 项
+（"第一条扫描线上置得太早/太晚"）通过——而 AccuracyCoin 的 `$0459 Sprite overflow behavior` 在四组
+配置里都通过。
+
+**记在账上的代价**：`$0457 Sprite0Hit_Behavior`、`$0489 Suddenly Resize Sprite` 与
+`$0494 Misaligned OAM DMA` 在有写回时通过、无写回时失败；"去掉写回"那一列里变成 `FAILED` 的 sprite
+画面，就是上面那个 sprite 0 失效本身。
+
 **改动。** 用移植版 `SpriteEvaluator`（`/tmp/newsrc4/sprite.rs`）替换 `evaluate()`：1-64 清二级 OAM、
 65 起步、奇数 dot 读 `$2003` 指的那个字节、偶数 dot 判决（范围判断放在空位判断**之外**、错位重对齐
 规则、溢出 bug 的对角步进、`_oamCopyDone` 的重读分支），`$2003` 由步进写回，溢出标志**在它被升起的
