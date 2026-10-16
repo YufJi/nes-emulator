@@ -341,6 +341,19 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
   `$4017` 写入上的那三个套件（`4-jitter`、`5-len_timing`、`6-irq_flag_timing`）保持全绿，因为
   标志是**跟着** APU 一起挪的。下一次再追 ±1 周期的教训：当三组测试互不相容时，去找那颗不在
   Mesen 位置的芯片，而不是找一个可以加的数。
+- **DMA 的 dummy 读，第一次尝试（AccuracyCoin 那 13 项 DMA）**。先读 ROM 源码这一步很值：
+  `DMA + $2007 Read` 的第 3 项是 `CMP #$03 / BMI fail`，量的是"DMA 落在 `LDA $2007` 最后一个
+  周期里之后，这一读返回的字节"——只有在 **DMA 的 dummy 周期是对 CPU 即将访问那个地址的真实读**
+  时才对得上（Mesen 的 `ProcessPendingDma` 在 halt 周期、DMC 那个额外 dummy 周期、以及 OAM 传输
+  的对齐周期里都读 `readAddress`；我们的这些周期是空转，于是窗口里的 `$2007` 从不推进 `v`，
+  返回值老是 0/1/2）。
+  照这个写的第一版**实测后撤回**：Mesen 的循环给 DMC 与 sprite 传输定了固定优先级，并且每个分支
+  恰好消耗 `_needHalt` / `_needDummyRead` 中的一个；我那一版近似了这个握手，结果是
+  `4-irq_and_dma` 的表动了（`+526` 那一行变成指令 9，readme 要的是 8），并且 **AccuracyCoin
+  卡在启动**——0 项测试，被 harness 那条"失败而不是跳过"当场抓住（单元测试仍全绿）。
+  下一次应当**逐字**移植 `ProcessPendingDma`：`(_state.CycleCount & 0x01) == 0` 的奇偶、
+  两个标志的握手、`_abortDmcDma`、以及 `$4016`/`$4017` 的 `skipDummyReads`/`skipFirstInputClock`，
+  同时保持 OAM 传输仍是 513/514 个周期。
 
 ## 8. 仍需拍板的决策
 
@@ -393,6 +406,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | P3c | `cpu_interrupts_v2` 剩下的三张表 | **完成** | 链条按周期量了一遍（§7），缺的那一个周期是 APU 在周期里的位置：芯片在 CPU 周期的**开头**给 APU 打点（Mesen 的 `ProcessCpuClock`），而不是末尾。**`cpu_interrupts_v2` 2/5 → 5/5**——`3-nmi_and_irq`、`4-irq_and_dma`、`5-branch_delays_irq` 全部通过，而把标志钉在 `$4017` 写入上的那些一条没动。见 §2.4；两个撤回的旋钮实验在 §7 里都得到了解释 | 无；相邻项是 sprite 的**求值**仍是逐行（P1） |
 | B1 | 游戏里 sprite 一块块透明（"人物像透明的"） | **完成** | sprite 取指的 high 平面用了 low 平面的地址（§7），颜色 2 的像素读成颜色 0 而消失。改成 `addr + row + 8`；单元测试 `test_a_sprites_high_plane_is_the_tiles_second_half` 在旧代码上失败 | 无。值得记住：ROM 基线看不见"画出来的像素"，这类问题靠游戏或单元测试来抓 |
 | B3 | 未文档 `SHx` 的地址损坏（AccuracyCoin 5 项） | 部分完成 | 按 Mesen 的 `SyaSxaAxa` 建模：保留进位、高位与寄存器对按位与、值用 base 的高位 +1 掩蔽、DMA 打断则不掩蔽（§7）。五项 `UnOp_SHA/SHS/SHY/SHX` 从第 3 项推进到第 15 项 | 剩下那一项在这些测试的 DMA 段里——并入下一刀（DMA 那一组 13 项） |
+| B4 | AccuracyCoin 的 DMA 组（13 项） | **进行中** | 机制已定位：DMA 的 halt/dummy 周期必须是"对 CPU 即将访问地址的真实读"（`DMA + $2007 Read` 第 3 项就在数它）。第一版实现实测后撤回（`4-irq_and_dma` 的表动了、AccuracyCoin 启动卡死），细节与下一步写进 §7 | **逐字**移植 Mesen 的 `ProcessPendingDma`（奇偶、两个标志、`_abortDmcDma`、`$4016/$4017` 的跳过规则），保持 OAM 513/514 |
 | B2 | 背景瓦片拿到右邻的调色板（`?` 砖、砖行末尾、标题文字末尾变绿） | **完成** | 粗 X 在属性取指之前自增（§7 那一行）；回归测试三条在旧代码上失败 | 无；相邻项是 §2.2 里背景取指的开关（关背景时 Mesen 仍取指） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 

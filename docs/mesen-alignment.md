@@ -416,6 +416,22 @@ Their value is the evidence; do not retry them without reading this first.
   that pin the flag (`4-jitter`, `5-len_timing`, `6-irq_flag_timing`) stay green because they
   moved *with* it. The lesson for the next ±1-cycle hunt: when three groups of tests disagree
   about a cycle, look for a chip that is not where Mesen keeps it, not for a number to add.
+- **The DMA's dummy reads, first attempt (the 13 AccuracyCoin DMA cases).** Reading the ROM's
+  source first paid off: `DMA + $2007 Read` check 3 is `CMP #$03 / BMI fail` over the byte a
+  `LDA $2007` returns after a DMA lands in its last cycle, which only comes out right if the
+  DMA's **dummy cycles are real reads at the address the CPU was about to use** — Mesen's
+  `ProcessPendingDma` reads `readAddress` in the halt cycle, in the DMC's extra dummy-read
+  cycle and in the OAM transfer's alignment cycles (ours performs bare cycles there, so a
+  `$2007` in that window never moves `v` and the value comes back 0/1/2).
+  The first implementation of that was measured and **withdrawn**: Mesen's loop gives the DMC
+  and the sprite transfer a fixed priority and consumes exactly one of `_needHalt` /
+  `_needDummyRead` per branch, and a version that approximated that handshake moved
+  `4-irq_and_dma`'s table (its `+526` row became instruction 9 where the readme has 8) and
+  **hung AccuracyCoin's boot** — 0 tests ran, which the harness's "fail instead of skip" caught
+  (every unit test still passed). The next attempt should port `ProcessPendingDma` verbatim:
+  the `(_state.CycleCount & 0x01) == 0` parity, the two-flag handshake, `_abortDmcDma`, and
+  `skipDummyReads`/`skipFirstInputClock` for `$4016`/`$4017` — with the OAM total staying at
+  513/514 cycles.
 
 ## 8. Decisions still open
 
@@ -475,6 +491,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | P3c | `cpu_interrupts_v2`'s three remaining tables | **Done** | The chain was measured cycle by cycle (§7) and the missing cycle was the APU's place in it: the chip clocks the APU at the *start* of a CPU cycle (Mesen's `ProcessCpuClock`), not at the end. **`cpu_interrupts_v2` 2/5 → 5/5** — `3-nmi_and_irq`, `4-irq_and_dma` and `5-branch_delays_irq` all pass, and everything that pinned the flag against the `$4017` write stayed green. §2.4; the two withdrawn knob experiments are explained in §7 | Nothing; the neighbouring item is the sprite *evaluation* being per line (P1) |
 | B1 | A game's sprites drawn with holes ("transparent" characters) | **Done** | The sprite pattern fetch's high plane came from the low plane's address (§7), so colour 2 pixels read as colour 0 and vanished. Fixed to `addr + row + 8`; unit test `test_a_sprites_high_plane_is_the_tiles_second_half` fails on the old code | Nothing. Worth remembering: the ROM baseline is blind to drawn pixels — a game, or a unit test, is what catches this class |
 | B3 | The unofficial `SHx` stores' address corruption (5 AccuracyCoin cases) | Partly done | Modelled on Mesen's `SyaSxaAxa`: the index's carry into the high byte is kept, that byte is ANDed with the register pair, the value is masked by the base's high byte plus one, and a DMA in the cycle before the write lifts the mask (§7). The five `UnOp_SHA`/`SHS`/`SHY`/`SHX` tests move from check 3 to check 15 | That last check is in the tests' own DMA section — it goes with the next cut, the 13 DMA cases |
+| B4 | AccuracyCoin's DMA group (13 cases) | **In progress** | The mechanism is identified: the DMA's halt and dummy cycles have to be *reads at the address the CPU was about to use* (`DMA + $2007 Read` check 3 counts them). The first implementation was measured and withdrawn — it moved `4-irq_and_dma`'s table and hung AccuracyCoin's boot; §7 has the detail and the next step | Port Mesen's `ProcessPendingDma` **verbatim**: the parity, the two-flag handshake, `_abortDmcDma`, and the `$4016`/`$4017` skip rules — with the OAM transfer still 513/514 cycles |
 | B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 
