@@ -51,13 +51,14 @@ dot 上画出来，滚动取芯片自己的 `v`/`t`/`x`；sprite 阶段的图案
 仍未解决的后果：
 
 - **sprite 只能被搬进二级 OAM 一次**：求值过程中写 `$2003` 造成的 OAM 地址损坏没有建模。
-- **求值本身还没做到逐 dot**（见 §7 那一条）：Mesen 的 `ProcessSpriteEvaluation`——1-64 dot 清二级
+- **求值本身还没做到逐 dot**（见 §7 的两条）：Mesen 的 `ProcessSpriteEvaluation`——1-64 dot 清二级
   OAM、65 dot 起步、奇数 dot 从主 OAM 读一字节、偶数 dot 判决、边走边把 `$2003` 写回、
-  `_sprite0Added`、溢出 bug 的对角步进——已经移植并量过，但**撤回了**，因为它喂养的 sprite 阶段仍是
-  整行式的：`LoadSpriteTileInfo` 必须在渲染开启时无条件运行（与 sprite 使能位无关）、
-  `_spriteCount`/`_processSprites` 要决定像不像素、每个 shifter 要在 `spriteX + 1` 那个 dot 激活并
-  在八 dot 后过期、整个逐 dot 主体要由慢一个 dot 的 `_prevRenderingEnabled` 而不是实时 mask 把关。
-  两者必须一起落地。`$2004` 的渲染期读写随之同行。
+  `_sprite0Added`、溢出 bug 的对角步进——已经移植并量过两次；它喂养的 sprite **阶段**也一并移植量过
+  （`LoadSpriteTileInfo` 在取指 dot 上运行、与 sprite 使能位无关；移位器表与 active/counting/expired
+  三个掩码；dot 339 的交接；帧初冻结的裁剪 dot；逐 dot 主体由 `_prevRenderingEnabled` 把关）。两次尝试
+  都按实测撤回：第一次因为阶段缺失，第二次因为 dot 级精确的 sprite 取指时序仍不对。`$2004` 的渲染期
+  读写随之同行。剩下的问题已钉在 §7：`Suddenly Resize Sprite` 的第 2、3 项、Mesen 在 dot 337/339 的
+  nametable 读、以及 dot 320 的 `LoadExtraSprites`。
 - MMC5 竖向分屏仍然不做。
 - sprite 像素与 sprite 0 命中都跟随取指，因此行内切 CHR 银行现在会在它落到的那个 dot 上
   影响 sprite。
@@ -378,6 +379,28 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 
 它们的价值在于证据；不先读这一段就不要重试。
 
+- **逐 dot sprite 求值**加上**它喂养的 sprite 阶段**（§2.1，第二次尝试）**。第一次尝试（见本节的"只做逐 dot
+  sprite 求值"）说明这套步进无法单独落地，于是这次把 sprite 阶段一起移植了：`LoadSpriteTileInfo`/
+  `LoadSprite` 在该组的取指 dot（261、269、…、317）从二级 OAM 原始字节装载、`ProcessSpriteShifters`、
+  移位器表与它的 `_active`/`_counting`/`_expired` 三个掩码、`_processSprites`/`_spriteCount`、dot 0 的
+  排序与 dot 339 的交接（Mesen 的 `ProcessScanlineFirstCycle` 与 339 那个分支，含奇数帧 sprite 整体延后
+  一个像素）、`_minimumDrawBgCycle`/`_minimumDrawSpriteCycle`——注意这两个是**帧初冻结**的，不是读实时
+  mask——以及整个逐 dot 主体由 `_prevRenderingEnabled` 而不是实时 mask 把关。`$2004` 的渲染期读写随之
+  同行。渲染器那三条 sprite 测试改写成走真实路径（OAM → 步进 → 取指 → 移位器 → 像素）后全部通过，
+  包括 sprite 0 命中恰好落在 `sprite_x + 1` 那一 dot。**实测**：AccuracyCoin 111 通过 / 17 失败 →
+  harness 预算下 **116 / 27**、9000 帧下 **116 / 30**；`Arbitrary Sprite zero`（第 3 项）与
+  `Sprite overflow behavior`（第 2 项 → 通过）修好，所有 blargg sprite 套件、`oam_read`、
+  `oam_stress`、`blargg_ppu_tests` 仍绿——但 `Suddenly Resize Sprite` 由通过变为第 3 项失败，另外十几项
+  旧版本根本跑不到的测试现在有结果（多数失败），而且 ROM 跑不完自己的表（9000 帧下 146 项，基线是
+  155），说明它在旧版本不会卡的地方卡住了 | **按计数撤回，但把诊断收窄了。** 两个工具是这次的主力，
+  值得保留：一份逐帧记录每次 PPU 寄存器写（地址、值、`$2002`）的日志，在两个构建之间 diff，找出了**第一
+  处分歧**——第一个失败测试前几帧的 sprite 溢出标志；以及一份逐帧记录 AccuracyCoin 结果字节变化的日志，
+  它直接指出第一个挪动的测试是哪一个。剩下的是 dot 级精确的 sprite 取指时序：`Suddenly Resize Sprite`
+  的第 2、3 项是同一段序列，只是 `$2001`/`$2000` 的写相对 261..317 那几个取指 slot 落在不同的几周期上，
+  而第 3 项期望"没有命中"是因为 slot 0 的取指已经过去了。下次要一并移植的两件事（这次都没做，而扫描线
+  计数器都看得见）：Mesen 在 dot 337 与 339 会读 nametable
+  （`if(IsRenderingEnabled()) _tile.TileAddr = ReadVram(GetNameTableAddr())`），以及 dot 320 的
+  `LoadExtraSprites`。尝试留在 `/tmp/ppu-sprite-phase-attempt.diff` 与 `/tmp/newsrc4/` |
 - **只做逐 dot sprite 求值（§2.1）**。Mesen 的 `ProcessSpriteEvaluation` 整段移植了——1-64 dot 清二级
   OAM、65 dot 起步、奇数 dot 读主 OAM、偶数 dot 判决，`$2003` 奇数 dot 读、偶数 dot 写回，
   `_sprite0Added`/`_spriteInRange`/`_oamCopyDone`/`_overflowBugCounter`，"刚读到的字节若在范围内就不
@@ -561,7 +584,7 @@ DMA 那一刀带使能延迟是 20、去掉是 18；逐项清单见 §10.5）。
 | C2 | **为对齐让路而移除 ROM 套件**（§6/§9） | 完成 | 10-16 删除 `tests/rom_tests.rs`、`tests/common/`、`tests/golden/`（可从 git 取回：`b6c06a1` 及更早；另有一份在 `/tmp/nes-baseline-snapshot-20261016`）。`cargo test --workspace` 130 s → 约 11 s，604 个单元测试全绿。§10.6 列出的套件已放到 `roms/nes-test-roms/`（37 张 ROM，已 gitignore）并各自量过一次 | 对齐收尾时全部放回，连同 §10.6 的那些：那次实测里 `cpu_dummy_writes`（2/2）与 `cpu_exec_space` 的 `ppuio` 已经报 "Passed"，`cpu_exec_space_apu` 失败在 open bus 第 2 项，`cpu_reset/registers` 失败在第 2 项并打印 `SP=$F7`（ROM 要的是 `$FD`）——正是 §10.3 第 3 条要修的缺陷 |
 | C3 | §10.3 的前五项：NES 2.0 半字节、`$2002` 标志寿命、Mesen 混音、复位分成两种加八个预热周期、奇数帧跳点读慢一个 dot 的渲染状态 | **完成** | 实测整行见 §7。`ppu_vbl_nmi` 10/10、AccuracyCoin 32 项失败、`cpu_reset/registers` 越过第 2 项并打出期望的 `S=$FD`；所有会自报结果的 ROM 复测无回退；单元测试 605 | §10.3 剩下的，按 §10.7 的顺序：手柄口与 `$4016` 写入延迟（第 4/5 条），再是 PPU 寄存器状态机（第 6 条），再是 DMA（第 7 条）——APU 边沿时序（第 8 条）与死代码 `addressing.rs`（第 10 条）作为侧刀 |
 | C6 | PPU 寄存器状态机（§10.3 第 6 条） | **试过并撤回** | §7 那一行：四件都做了并分别量过；只做读缓冲延迟就会让 AccuracyCoin 17 → 20、`cpu_dummy_writes_ppumem` 0x00 → 0x07，而它针对的两张 ROM（`ppu_read_buffer`、`full_palette`）根本不通过 `$6000` 上报 | 按可测量的步骤重做，那两张 ROM 用帧导出对照；总线地址的管线要挪到「延迟后的访问」（Mesen 的 `SetBusAddress`）而不是 CPU 的那个周期 |
-| C8 | **逐 dot sprite 求值与 `$2004`（§2.1）** | **试过并撤回** | §7 那一条：Mesen 的 `ProcessSpriteEvaluation` 与 `$2004` 的渲染期读写整段移植，路上修掉三个移植 bug（范围判断的位置、预渲染行必须跳过、写要取代而不是叠加存储）。AccuracyCoin 111/17 → **119/22**（9000 帧预算下 119/27）：`Arbitrary Sprite zero` 与 `Sprite overflow behavior` 修好，另有五项被触达到，七项在 sprite/OAM/渲染组新失败 | 与 sprite **阶段**一起落地：`LoadSpriteTileInfo` 与 sprite 使能位无关、`_spriteCount`/`_processSprites`、逐 sprite shifter 的激活与过期（`ProcessSpriteShifters`）、以及整个逐 dot 主体由慢一个 dot 的 `_prevRenderingEnabled` 把关。尝试在 `/tmp/ppu-oam-attempt.diff` 与 `/tmp/newsrc2/` |
+| C8 | **逐 dot sprite 求值与 `$2004`（§2.1）** | **试过并撤回，两次** | 第一次（只做步进与 `$2004`）：路上修掉三个移植 bug，AccuracyCoin 111/17 → 119/22。第二次（步进 + sprite 阶段——取指 dot 上的 `LoadSpriteTileInfo` 与 sprite 使能位无关、移位器表与 active/counting/expired 掩码、dot 339 的交接、帧初冻结的裁剪 dot、逐 dot 主体由 `_prevRenderingEnabled` 把关）：**116/27**（9000 帧下 116/30），修好 `Arbitrary Sprite zero` 与 `Sprite overflow behavior`，所有 blargg sprite 套件仍绿，但 `Suddenly Resize Sprite` 回退，且 ROM 跑不完（9000 帧下 146 项，基线 155） | dot 级精确的 sprite 取指时序：`Suddenly Resize Sprite` 第 2、3 项只差 `$2001`/`$2000` 相对取指 slot 落点的几个周期。一并移植 Mesen 在 dot 337/339 的 nametable 读与 dot 320 的 `LoadExtraSprites`。尝试在 `/tmp/ppu-oam-attempt.diff`、`/tmp/ppu-sprite-phase-attempt.diff` 与 `/tmp/newsrc4/` |
 | C7 | **PPU 寄存器状态机重做（§10.3 第 6 条）** | **完成** | §7 的新行：撤回那版真正的 bug 是**每次访问自增了两次 `v`**（CPU 周期一次、延迟回填又一次）；改对之后 AccuracyCoin **17 → 17**（清单逐字节相同）、所有会自报结果的 ROM 无回退、`cpu_dummy_writes_ppumem` 保持 0x00，`ppu_read_buffer` 帧逐字节相同，而 `full_palette`/`full_palette_smooth`/`flowing_palette` 三张从横向色条变成该画的调色板**网格**；单元测试 605 → 613、存档版本 13 → 14 | `$2004` 的渲染期行为（读返回 OAM 拷贝缓冲、写的抖动自增）留着，属于 §2.1 的逐 dot OAM |
 | C5 | **DMA 逐字移植（§10.3 第 7 条）** | **完成** | §7 的两行：AccuracyCoin 31 → 18 → **17** 项失败且 146 项全部跑到结果、`dmc_tests` 4/4 转绿、DMA 状态机与内部寄存器合并、DMC 的状态规则与 `_bufferEmpty` 守卫、以及把周期奇偶写成有名约定而不是各处翻转。它带出的四处回退全部关闭；除两项已知项外，所有会自报结果的 ROM 复测通过 | `dmc_dma_during_read4` 那五张只差一个周期（五张里三张已打印可接受输出）；`sprdma_and_dmc_dma` 报失败码 1——sprite/DMC 重叠相位，现在是可测的而不是卡死 |
 | C4 | 手柄口（§10.3 第 4/5 条） | 完成（端口自己这一侧） | 见 §7 那一行：Mesen 的 strobe 沿、补 1 的移位、open bus 掩码、同周期重复读、写入的两周期延迟。AccuracyCoin 32 → 31（`Controller Strobing` 转绿，`Controller Clocking` 由第 2 项推进到第 7 项） | 这一组剩下的是"DMA 的 put/halt 周期走手柄口"，属于 DMA 那一刀（第 7 条） |

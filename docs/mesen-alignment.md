@@ -58,15 +58,17 @@ Consequences still outstanding:
 
 - **A sprite can only be shifted into secondary OAM once**: the OAM-address corruption the
   hardware does when `$2003` is written mid-evaluation is not modelled.
-- **The walk is not per dot yet** (see §7's entry): Mesen's `ProcessSpriteEvaluation` — dots 1-64
-  clearing secondary OAM, dot 65 starting the walk, one byte of primary OAM per odd dot and a
-  decision per even one, `$2003` written back as it goes, `_sprite0Added`, the overflow bug's
-  diagonal stride — is ported and measured but *withdrawn*, because the sprite phase it feeds is
-  still the line-at-a-time one: `LoadSpriteTileInfo` has to run whenever rendering is on
-  regardless of the sprite enable bit, `_spriteCount`/`_processSprites` have to gate the pixels,
-  each shifter has to activate on dot `spriteX + 1` and expire eight dots later, and the whole dot
-  body has to be gated by the one-dot-lagged `_prevRenderingEnabled` rather than the live mask.
-  The two must land together. `$2004`'s rendering-time read and write ride with it.
+- **The walk is not per dot yet** (see §7's two entries): Mesen's `ProcessSpriteEvaluation` —
+  dots 1-64 clearing secondary OAM, dot 65 starting the walk, one byte of primary OAM per odd dot
+  and a decision per even one, `$2003` written back as it goes, `_sprite0Added`, the overflow bug's
+  diagonal stride — is ported and measured twice, and so is the sprite *phase* it feeds
+  (`LoadSpriteTileInfo` on the fetch dots regardless of the sprite enable bit, the shifter list and
+  its active/counting/expired masks, the cycle-339 handoff, the frame-frozen clip dots, the dot
+  body gated on `_prevRenderingEnabled`). Both attempts are withdrawn on the measurement: the
+  first because the phase was missing, the second because dot-exact sprite-fetch timing is still
+  off. `$2004`'s rendering-time read and write ride with them. What is left is pinned down in §7:
+  `Suddenly Resize Sprite`'s tests 2 and 3, Mesen's dots 337/339 nametable reads, and
+  `LoadExtraSprites` at dot 320.
 - MMC5's vertical split remains declined.
 - Sprite pixels and the sprite-0 hit follow the fetches, so a mid-line CHR bank switch now
   affects sprites on the dot it lands on.
@@ -454,6 +456,35 @@ row is measured.
 
 Their value is the evidence; do not retry them without reading this first.
 
+- **The per-dot sprite evaluation *with* the sprite phase (§2.1, second attempt).** The first
+  attempt (§7, "the per-dot sprite evaluation, alone") showed the walk cannot land by itself, so
+  this one ported the phase it feeds as well: `LoadSpriteTileInfo`/`LoadSprite` on the group's
+  pattern-fetch dot (261, 269, ... 317) reading raw secondary OAM, `ProcessSpriteShifters`, the
+  shifter list and its `_active`/`_counting`/`_expired` masks, `_processSprites`/`_spriteCount`,
+  the cycle-0 sort and the cycle-339 handoff (Mesen's `ProcessScanlineFirstCycle` and the
+  339 block, including the odd frame's one-pixel sprite delay), `_minimumDrawBgCycle`/
+  `_minimumDrawSpriteCycle` — which are frozen at the top of the frame, not read from the live
+  mask — and the whole per-dot body gated on `_prevRenderingEnabled` rather than the live mask.
+  `$2004`'s rendering-time read and write ride along. The pipeline's three sprite tests were
+  rewritten to drive the real path (OAM → walk → fetch → shifter → pixel) and all pass,
+  including the sprite-0 hit landing exactly on `sprite_x + 1`. **Measured**: AccuracyCoin
+  111 passed / 17 failing → **116 / 27** at the harness's budget and **116 / 30** at 9000 frames;
+  `Arbitrary Sprite zero` (check 3) and `Sprite overflow behavior` (check 2 → passing) are fixed,
+  every blargg sprite suite, `oam_read`, `oam_stress` and `blargg_ppu_tests` stay green — but
+  `Suddenly Resize Sprite` goes from passing to failing check 3, a dozen tests the old run never
+  reached now report (most of them failing), and the ROM no longer finishes its table (146 tests
+  at 9000 frames where the baseline reaches 155), so it is stalling somewhere the baseline did
+  not. | **Reverted on the count, with the diagnosis narrowed.** Two tools did the work and are
+  worth keeping: a per-frame log of every PPU register write (address, value and `$2002`), diffed
+  between two builds, which found the *first* divergence — the sprite-overflow flag a few frames
+  before the first failing test — and a log of every AccuracyCoin result byte as it changes, which
+  names the first test that moves. What is left is dot-exact sprite timing: `Suddenly Resize
+  Sprite` tests 2 and 3 are the *same* sequence with the `$2001`/`$2000` writes landing a few
+  cycles apart relative to the fetch slots at 261..317, and test 3 expects no hit because slot 0's
+  fetch has already gone by. Two things to port with it next time, both of which this attempt left
+  out and both of which a scanline counter can see: Mesen reads the nametable at dots 337 and 339
+  (`if(IsRenderingEnabled()) _tile.TileAddr = ReadVram(GetNameTableAddr())`), and `LoadExtraSprites`
+  runs at dot 320. The attempt is in `/tmp/ppu-sprite-phase-attempt.diff` and `/tmp/newsrc4/` |
 - **The per-dot sprite evaluation, alone (§2.1).** Mesen's `ProcessSpriteEvaluation` was ported
   whole — dots 1-64 clearing secondary OAM, dot 65 starting the walk, an odd dot reading primary
   OAM and the even one after it deciding, `$2003` read on the odd dot and written back on the
@@ -692,7 +723,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | C3 | The five quick §10.3 items: NES 2.0 nibbles, `$2002` flag lifetime, Mesen's mixer, the reset split + eight warm-up cycles, and the one-dot-lagged rendering state for the odd frame's skip | **Done** | §7's row has the whole measurement. `ppu_vbl_nmi` 10/10, AccuracyCoin 32 failing, `cpu_reset/registers` past check 2 with the expected `S=$FD`; the whole reporting-ROM set re-measured with no regressions; unit tests 605 | §10.3's remaining items, in §10.7's order: the controller ports and `$4016`'s write delay (#4/#5), then the PPU's register state machines (#6), then the DMA port (#7) — with the APU edge timings (#8) and the dead `addressing.rs` (#10) as sidecars |
 | C6 | The PPU's register state machines (§10.3 #6) | **Attempted and withdrawn** | §7's row: the four pieces were built and each measured — the read delay alone costs AccuracyCoin 17 → 20 and `cpu_dummy_writes_ppumem` 0x00 → 0x07, and its own target ROMs (`ppu_read_buffer`, `full_palette`) do not report through `$6000` at all | Redo it in measurable steps, with frame dumps for those two ROMs, and with the bus-address plumbing moved to the delayed access (Mesen's `SetBusAddress`) rather than the CPU's cycle |
 | C7 | **The PPU's register state machines redone (§10.3 #6)** | **Done** | §7's row: the withdrawn attempt's real bug was an extra `v` increment per access. With one increment, AccuracyCoin is **17 → 17** with a byte-identical failure list, every reporting ROM unchanged, `cpu_dummy_writes_ppumem` back at 0x00, `ppu_read_buffer` byte-identical, and the three `full_palette` ROMs turning from bars into their palette grid; unit tests 605 → 613, state version 13 → 14 | `$2004`'s rendering-time behaviour, which belongs with the per-dot OAM in §2.1 |
-| C8 | **The per-dot sprite evaluation and `$2004` (§2.1)** | **Attempted and withdrawn** | §7's entry: Mesen's `ProcessSpriteEvaluation` and `$2004`'s rendering-time read/write were ported whole, with three port bugs found and fixed on the way (the range test's place, the pre-render-line skip, and the write replacing rather than adding to the store). AccuracyCoin 111/17 → **119/22** at the harness's budget (119/27 at 9000 frames): `Arbitrary Sprite zero` and `Sprite overflow behavior` fixed, five more tests reached, seven new failures in the sprite/OAM/rendering group | Land it together with the sprite *phase*: `LoadSpriteTileInfo` regardless of the sprite enable bit, `_spriteCount`/`_processSprites`, per-sprite shifter activation and expiry (`ProcessSpriteShifters`), and the whole dot body gated by the one-dot-lagged `_prevRenderingEnabled`. The attempt is in `/tmp/ppu-oam-attempt.diff` and `/tmp/newsrc2/` |
+| C8 | **The per-dot sprite evaluation and `$2004` (§2.1)** | **Attempted and withdrawn, twice** | First try (the walk and `$2004` alone): three port bugs found and fixed on the way, AccuracyCoin 111/17 → 119/22. Second try (the walk *and* the sprite phase — `LoadSpriteTileInfo` on the fetch dots regardless of the sprite enable bit, the shifter list with its active/counting/expired masks, the cycle-339 handoff, the frame-frozen clip dots, the dot body gated on `_prevRenderingEnabled`): **116/27** (116/30 at 9000 frames), fixing `Arbitrary Sprite zero` and `Sprite overflow behavior` and keeping every blargg sprite suite green, but regressing `Suddenly Resize Sprite` and stalling the ROM's run (146 tests at 9000 frames where the baseline reaches 155) | Dot-exact sprite-fetch timing: `Suddenly Resize Sprite`'s tests 2 and 3 differ only in where the `$2001`/`$2000` writes land relative to the fetch slots. Port Mesen's dots 337/339 nametable reads and `LoadExtraSprites` at dot 320 with it. Attempts in `/tmp/ppu-oam-attempt.diff`, `/tmp/ppu-sprite-phase-attempt.diff` and `/tmp/newsrc4/` |
 | C5 | **The DMA port (§10.3 #7)** | **Done** | §7's two rows: AccuracyCoin 31 → 18 → **17** failing with all 146 tests reaching a result, `dmc_tests` 4/4 green, the DMA state machine and internal-register merge, the DMC's status rule and the `_bufferEmpty` guard, and the cycle-parity convention named rather than flipped. The four regressions it caused are all closed; the whole reporting-ROM set is green except the two documented items | The five `dmc_dma_during_read4` ROMs are one cycle away (3 of 5 print their accepted output); `sprdma_and_dmc_dma` reports failure #1 — the sprite/DMC overlap phase, which is now measurable rather than a hang |
 | C4 | The controller ports (§10.3 #4/#5) | Done (the port's own side) | §7's row: Mesen's strobe edges, the ones shifted in, the open-bus mask, the same-cycle double read, the write's two-cycle delay. AccuracyCoin 32 → 31 (`Controller Strobing` green, `Controller Clocking` 2 → 7) | What is left of the group is the DMA's put/halt cycles clocking the port — part of the DMA port (#7) |
 
