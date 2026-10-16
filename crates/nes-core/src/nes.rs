@@ -109,21 +109,55 @@ fn audio_capacity_floats(sample_rate: u32, ms: f64) -> usize {
     (sample_rate as f64 * ms / 1000.0) as usize * 2
 }
 
+/// A `$4016` write the chip has not carried to the controllers yet.
+///
+/// The OUT pins update at the start of a PUT cycle, so the value waits one or
+/// two CPU cycles depending on the clock's parity (Mesen's `_writePending`).
+#[derive(Debug, Clone, Copy, Default)]
+struct PendingControllerWrite {
+    value: u8,
+    cycles_left: u8,
+}
+
+crate::state::state_fields!(PendingControllerWrite { value, cycles_left });
+
+/// The controller port read that just happened.
+///
+/// Reading the same port twice inside one CPU cycle clocks the shift register
+/// once and answers with the same bit both times (Mesen's
+/// `NesControlManager::ReadDevice`, which keeps the device's previous value for
+/// exactly this case). The extra read is what a DMC DMA's halt cycle causes,
+/// and it is why a game can lose input bits.
+#[derive(Debug, Clone, Copy, Default)]
+struct ControllerPortRead {
+    addr: u16,
+    cycle: u64,
+    bit: u8,
+}
+
+crate::state::state_fields!(ControllerPortRead { addr, cycle, bit });
+
 /// Controller state for one player
 #[derive(Debug, Clone, Default)]
 struct ControllerState {
     /// Current button states (true = pressed)
     buttons: [bool; 8],
-    /// Shift register for serial output (used by $4016/$4017 reads)
-    shift_register: u8,
-    /// Whether the shift register has been latched
-    latched: bool,
+    /// The byte being shifted out, one bit per read.
+    ///
+    /// Hardware reloads it from the buttons on the strobe's falling edge and
+    /// (while the strobe is held high) on every read, and it shifts in **ones**
+    /// — an authentic controller answers `1` once the eight buttons have been
+    /// clocked out, where a third-party one may answer `0` (Mesen's
+    /// `NesController::ReadRam` sets `_stateBuffer |= 0x80` after each read).
+    state_buffer: u8,
+    /// Whether the strobe line is high.
+    strobe: bool,
 }
 
 crate::state::state_fields!(ControllerState {
     buttons,
-    shift_register,
-    latched,
+    state_buffer,
+    strobe,
 });
 
 impl ControllerState {
@@ -138,39 +172,40 @@ impl ControllerState {
         }
     }
 
-    /// Latch the current button states into the shift register
-    fn latch(&mut self) {
-        // Pack button states into shift register
+    /// Load the shift register from the buttons.
+    fn refresh_state_buffer(&mut self) {
         // Order: A, B, Select, Start, Up, Down, Left, Right
-        self.shift_register = 0;
+        self.state_buffer = 0;
         for (i, &pressed) in self.buttons.iter().enumerate() {
             if pressed {
-                self.shift_register |= 1 << i;
+                self.state_buffer |= 1 << i;
             }
         }
-        self.latched = true;
     }
 
-    /// Release the latch so subsequent reads shift out button states.
-    ///
-    /// The strobe line going low is what freezes the shift register; without
-    /// this the controller would report the A button forever.
-    fn unlatch(&mut self) {
-        self.latched = false;
-    }
-
-    /// Read one bit from the shift register and shift
-    fn read(&mut self) -> u8 {
-        if self.latched {
-            // While latched, always return the state of button A (bit 0)
-            self.buttons[0] as u8
-        } else {
-            // Read and shift
-            let bit = self.shift_register & 1;
-            self.shift_register >>= 1;
-            // After 8 reads, subsequent reads return 1 (open bus behavior)
-            bit | 0x40 // Return bit with open bus on bit 6
+    /// The strobe line's edge, in Mesen's shape (`StrobeProcessWrite`): the
+    /// register is loaded when the line goes *high → low*, and while it is held
+    /// high the read reloads it (`StrobeProcessRead`) — so a controller read
+    /// with the strobe up reports the buttons as they are at that moment.
+    fn write_strobe(&mut self, strobe: bool) {
+        let was_strobed = self.strobe;
+        self.strobe = strobe;
+        if was_strobed && !self.strobe {
+            self.refresh_state_buffer();
         }
+    }
+
+    /// One bit out of the register, with the next one shifted in behind it.
+    ///
+    /// The bit that shifts in is a `1`, so the register reads as eight ones
+    /// after the buttons have been clocked out.
+    fn read(&mut self) -> u8 {
+        if self.strobe {
+            self.refresh_state_buffer();
+        }
+        let bit = self.state_buffer & 1;
+        self.state_buffer = (self.state_buffer >> 1) | 0x80;
+        bit
     }
 }
 
@@ -356,8 +391,10 @@ struct NesBus {
     rendering_enabled_delayed: bool,
     /// Controller states (player 1 and 2)
     controllers: [ControllerState; 2],
-    /// Controller strobe/latch state
-    controller_strobe: bool,
+    /// A `$4016` write the chip has not carried to the controllers yet.
+    pending_controller_write: Option<PendingControllerWrite>,
+    /// The controller port read that just happened.
+    controller_prev_read: Option<ControllerPortRead>,
     /// IRQ pending flag (from APU or mapper)
     irq_pending: bool,
     /// Interleaved stereo audio waiting for the host to pull it
@@ -448,7 +485,8 @@ crate::state::state_fields!(NesBus {
     apu,
     mapper,
     controllers,
-    controller_strobe,
+    pending_controller_write,
+    controller_prev_read,
     irq_pending,
     resampler,
     audio_level,
@@ -480,7 +518,8 @@ impl NesBus {
             apu: Apu::new(),
             mapper: None,
             controllers: [ControllerState::new(), ControllerState::new()],
-            controller_strobe: false,
+            pending_controller_write: None,
+            controller_prev_read: None,
             irq_pending: false,
             audio_buffer: VecDeque::with_capacity(audio_capacity_floats(
                 DEFAULT_SAMPLE_RATE,
@@ -827,20 +866,45 @@ impl NesBus {
         self.feed_ppu_bus();
     }
 
+    /// A controller port read.
+    ///
+    /// The device drives bit 0 and nothing else, so the rest of the byte is the
+    /// console's open bus — and the *top three* bits are the ones the port does
+    /// not drive on a NES-001 (`GetOpenBusMask`), which is why a read usually
+    /// answers `$40` or `$41` (the address byte's high half left on the bus).
+    ///
+    /// Reading the same port again inside one CPU cycle does not clock the
+    /// shift register a second time: it answers with the bit the first read
+    /// gave, because the device's own previous read is still current
+    /// (`NesControlManager::ReadDevice`). A DMC DMA's halt cycle is what makes
+    /// this visible — the CPU reads the port, the DMA re-reads it a cycle
+    /// later, and a game can lose a bit.
+    fn read_controller_port(&mut self, port: usize) -> u8 {
+        /// Bits a NES-001's controller ports leave to the open bus.
+        const OPEN_BUS_MASK: u8 = 0xE0;
+
+        let addr = 0x4016 + port as u16;
+        let cycle = self.cpu_cycles;
+        let bit = match self.controller_prev_read {
+            // The previous read's answer still stands if it was this port and
+            // it happened in this cycle or the one before.
+            Some(prev) if prev.addr == addr && prev.cycle + 1 >= cycle => prev.bit,
+            _ => self.controllers[port].read(),
+        };
+        self.controller_prev_read = Some(ControllerPortRead { addr, cycle, bit });
+
+        (self.open_bus & OPEN_BUS_MASK) | bit
+    }
+
     /// Read from APU/register
     fn read_apu_register(&mut self, addr: u16) -> u8 {
+        if addr == 0x4016 || addr == 0x4017 {
+            return self.read_controller_port(usize::from(addr == 0x4017));
+        }
         match addr {
             0x4015 => {
                 // APU status register
                 self.apu.read_register(addr)
-            }
-            0x4016 => {
-                // Controller 1 data
-                self.controllers[0].read()
-            }
-            0x4017 => {
-                // Controller 2 data
-                self.controllers[1].read()
             }
             _ => {
                 // Write-only or expansion-area registers read back as open bus.
@@ -859,15 +923,16 @@ impl NesBus {
                 self.pending_oam_dma = Some(value);
             }
             0x4016 => {
-                // Controller strobe
-                self.controller_strobe = value & 1 != 0;
-                if self.controller_strobe {
-                    self.controllers[0].latch();
-                    self.controllers[1].latch();
-                } else {
-                    self.controllers[0].unlatch();
-                    self.controllers[1].unlatch();
-                }
+                // The strobe and OUT pins are updated at the *next* PUT cycle,
+                // not on the write's own cycle: Mesen's `NesControlManager::
+                // WriteRam` parks the value for one or two CPU cycles
+                // (`_writePending = (masterClock & 1) ? 1 : 2`) and applies it
+                // from `ProcessCpuClock`. A game that writes the strobe and
+                // reads the port in the very next cycle sees the difference.
+                self.pending_controller_write = Some(PendingControllerWrite {
+                    value,
+                    cycles_left: if self.cpu_cycles & 1 == 1 { 1 } else { 2 },
+                });
             }
             _ => {
                 // The APU's clock phase matters to a `$4017` restart, and the
@@ -1424,6 +1489,23 @@ impl NesBus {
             self.run_ppu_to(&mut clock, self.access_clock(self.cpu_cycles));
         }
         self.tick_apu_cycle();
+
+        // The controller pins the CPU wrote are updated here, at the start of a
+        // cycle, rather than on the write itself (Mesen's `ProcessCpuClock`
+        // calling `ProcessWrites`).
+        if let Some(pending) = self.pending_controller_write {
+            if pending.cycles_left <= 1 {
+                self.pending_controller_write = None;
+                for controller in &mut self.controllers {
+                    controller.write_strobe(pending.value & 1 != 0);
+                }
+            } else {
+                self.pending_controller_write = Some(PendingControllerWrite {
+                    value: pending.value,
+                    cycles_left: pending.cycles_left - 1,
+                });
+            }
+        }
     }
 
     /// The rest of the cycle: the remaining dots, then the bookkeeping the chip
@@ -2142,9 +2224,9 @@ mod tests {
         controller.set_button(BUTTON_B, true);
         assert!(controller.buttons[1]);
 
-        // Test latch
-        controller.latch();
-        assert!(controller.latched);
+        // The strobe going high is when the register starts following the
+        // buttons, so a read reports what is held right now.
+        controller.write_strobe(true);
 
         // Test read
         let bit = controller.read();
@@ -2160,15 +2242,20 @@ mod tests {
         controller.set_button(BUTTON_START, true);
 
         // While the strobe is high the controller keeps reporting button A.
-        controller.latch();
+        controller.write_strobe(true);
         assert_eq!(controller.read() & 1, 1);
         assert_eq!(controller.read() & 1, 1);
 
-        // Releasing the strobe freezes the shift register and reads walk
-        // through the buttons in order: A, B, Select, Start, ...
-        controller.unlatch();
+        // The falling edge loads the register, and reads then walk through the
+        // buttons in order: A, B, Select, Start, ...
+        controller.write_strobe(false);
         let bits: Vec<u8> = (0..8).map(|_| controller.read() & 1).collect();
         assert_eq!(bits, vec![1, 0, 0, 1, 0, 0, 0, 0]);
+
+        // Past the eight buttons the register shifts in ones, so a game that
+        // clocks more than eight times reads `1`s rather than zeroes.
+        let extra: Vec<u8> = (0..4).map(|_| controller.read() & 1).collect();
+        assert_eq!(extra, vec![1, 1, 1, 1]);
     }
 
     /// A PPUSTATUS read clears the VBlank flag and leaves the sprite flags: the

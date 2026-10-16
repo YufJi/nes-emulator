@@ -32,7 +32,7 @@ Two rules, in order:
 | Clock | One master clock; `cpuDivider` 12 / `ppuDivider` 4 on NTSC feed both chips | `Region::cpu_divider()`/`ppu_divider()` (12/4, the real crystal), one master clock, `NesBus::run_ppu_to` runs the PPU to a target | `test_clock_dividers_agree_with_the_frame_geometry`, `test_the_master_clock_path_places_the_same_dots` |
 | CPU execution | `MemoryRead`/`MemoryWrite` *are* the cycle (`StartCpuCycle`/`EndCpuCycle` around the access) | `Bus::read_cycle`/`write_cycle` are the cycle; `NesBus::begin_cpu_cycle`/`end_cpu_cycle` advance the PPU and APU around the access | `instr_timing` 2/2, `branch_timing` 3/3, `test_every_opcode_executes` |
 | Operand fetches and discarded reads | `FetchOperand` spells out the dummies (zero-page indexed, indexed absolute/indirect, the implied/accumulator read) | `Cpu::fetch_operand` plus `AddressingMode::AbsoluteXWrite`/`AbsoluteYWrite`/`IndirectYWrite`, `RTS`'s two dummies, `RTI`/`PLA`/`PLP`'s one each | the same suites |
-| Interrupt timing | Lines sampled every cycle; the decision reads the previous cycle's samples (`_prevRunIrq`/`_prevNeedNmi`) | `Cpu::end_cycle` keeps the same lag; `execute_instruction` decides after the instruction | `cpu_interrupts_v2` 5/5, `ppu_vbl_nmi` 9/10 |
+| Interrupt timing | Lines sampled every cycle; the decision reads the previous cycle's samples (`_prevRunIrq`/`_prevNeedNmi`) | `Cpu::end_cycle` keeps the same lag; `execute_instruction` decides after the instruction | `cpu_interrupts_v2` 5/5, `ppu_vbl_nmi` 10/10 |
 | Where the chips sit in the cycle | `StartCpuCycle` runs the PPU's dots up to the access and then `ProcessCpuClock` (the APU and the cartridges); `EndCpuCycle` runs the rest of the dots and the CPU samples the lines | `NesBus::begin_cpu_cycle` runs the dots, then the APU tick, before the access; `end_cpu_cycle` runs the remaining dots | `test_the_apu_clocks_before_the_cycles_access`, and `cpu_interrupts_v2` 5/5 — its last three tables read this one cycle |
 | Vector choice | The vector is chosen at the status push; an NMI asserted by then takes it over (`IRQ()`, `BRK()`) | `Cpu::take_interrupt`/`Cpu::brk` do the same, including BRK's `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`, `test_nmi_takes_brks_vector_over` |
 | A12 | `SetBusAddress` puts the *last real access*'s address on the bus and it is held; the filter is `(GetMasterClock() - _a12LowClock) >= 3` with the master clock being the CPU cycle count | `NesBus::bus_address` (held), fed by the addresses `PixelPipeline` *really read* on the dot it read them, `Mapper::on_ppu_bus(addr, cpu_cycles)` and `mapper4` measure the run in cycles, resetting on *every* rise | `2-details` (241 clockings) and `4-scanline_timing` green |
@@ -398,6 +398,8 @@ several runs.
 
 | The five quick ones from §10.3, in one step | NES 2.0's byte 8 read Mesen's way (`(Byte8 & 0x0F) << 8` for the mapper, `(Byte8 & 0xF0) >> 4` for the submapper, plus the archaic iNES whose mapper lives in byte 6 alone); a `$2002` read clears *only* VBlank (`UpdateStatusFlag`) and leaves the two sprite flags for pre-render; the mixer takes Mesen's constants and channel weights; power-up and soft resets are two different things (`SP = $FD` and `A/X/Y = 0` at power-on, `SP -= 3` and `I` at the button) followed by the eight dummy cycles; and the odd frame's skipped dot reads the rendering state as of the *end* of dot 338 (Mesen's `_renderingEnabled` lags a dot behind `$2001`) | **`ppu_vbl_nmi` 9/10 → 10/10** (`10-even_odd_timing` passes, printing the `08 08 09 07` its own comment predicts) and **AccuracyCoin 34 → 32**: `Suddenly Resize Sprite` and `Misaligned OAM DMA` stop failing. `cpu_reset/registers` gets past its check 2 and now reads `A X Y P S = 00 00 00 34 FD`, exactly the ROM's power-on expectation, where it used to print `S=$F7` and fail. Every reporting ROM re-measured in one pass: `instr_test-v5` 16/16, `instr_timing` 2/2, `cpu_interrupts_v2` 5/5, `apu_test` 8/8, `mmc3_test_2` 5/6 (the documented one), `oam_read`, `ppu_open_bus`, `cpu_dummy_writes` 2/2, `cpu_exec_space/ppuio`, and the five `ACCESS_DOTS = 2` ROMs (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `2-nmi_and_brk`, `4-scanline_timing`) all still green. Unit tests 604 → 605 |
 
+| The controller ports (the rest of §10.3 #4/#5) | Mesen's shape, from `NesController`/`NesControlManager`: the register is loaded on the strobe's falling edge and re-loaded on every read *while* the strobe is high; a read shifts in **ones** (an authentic pad answers `1` past the eight buttons); the top three bits of a port read are the CPU's open bus, not a driven `$40`; a second read of the same port inside one CPU cycle answers with the first read's bit instead of clocking again; and a `$4016` write reaches the pins at the start of the next PUT cycle rather than on the write's own cycle | **AccuracyCoin 32 → 31**: `Controller Strobing` stops failing, and `Controller Clocking` moves from check 2 (the "eight reads then ones" rule) to check 7, which is the DMA's put/halt cycles clocking the port — it needs the DMA port (#7). `APU Register Activation`'s check 2 turns out to be a *pre-requisite* on `DMA + $2007 Read`, not a controller rule, so it waits for the same work. Unit tests 605 green, `read_joy3`'s ROMs still need scripted input (they wait for buttons to be pressed) |
+
 **One stale number, corrected.** From `8ec693d` (DMA inside `MemoryRead`) until the row above,
 AccuracyCoin never ran: the ROM hung inside its own DMA-sync loop while booting, `$37` stayed
 zero, and the harness read that as "no ROM here" and skipped itself — so the rows in between
@@ -570,11 +572,13 @@ never runs its suite is what a boot-time hang looks like, and that is exactly ho
 double-charged fetch hid here for several steps (§7). Re-add them when the pass ends, together with
 the suites §10.6 lists.
 
-**Last measured baseline** (2026-10-16, before the removal): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
-`blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
+**Current numbers** (2026-10-16, re-measured ROM by ROM after the removal and again after C3/C4
+— §7's last two rows): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
+`blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` 1/1,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
-**5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (140 ran, 94 passed, 0 skipped — the same 34 as
-before the APU move; §10.5 has the per-item list). Unit tests: 604. Frame cost: about 1.86 ms (release, 600 frames of nestest,
+**5/5**, `mmc3_test_2` **5/6** (the one Mesen fails too), `ppu_vbl_nmi` **10/10**, AccuracyCoin
+**31 failing** (34 before §10.3's first fixes, 32 after them, 31 after the controller ports; §10.5
+has the per-item list). Unit tests: 605. Frame cost: about 1.86 ms (release, 600 frames of nestest,
 median of five; spread ±0.06). **Frame cost is a same-run comparison only**: this machine has
 reported 1.82 ms (1.815/1.825/1.826, idle) and 3.68 ms (the 10-15 round, with other load on it)
 for the same test, so the difference is the load rather than the code — the 5–8% in `0520b59` is
@@ -602,6 +606,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | C1 | **The file-by-file comparison with MesenCE (§10)** | Done | The whole `Core/NES` tree was fetched and read against this core (551 files, ~275 boards). Twelve defects found, including the NES 2.0 nibble swap, `$2002` clearing the sprite flags, the CPU's reset `SP`, and the controller ports' open bus; twelve areas confirmed identical; AccuracyCoin's 34 re-read as "which check failed" (`(value >> 2) + 1`, which moves the §7/§9 labels by one) | Follow §10.7: the DMA port → `$4016`/`$4017` with `read_joy3` → the PPU's register state machines → `$2002`'s flags and per-dot sprite evaluation |
 | C2 | **The ROM suites removed for the alignment pass** (§6/§9) | Done | `tests/rom_tests.rs`, `tests/common/` and `tests/golden/` deleted on 10-16 (recoverable from git: `b6c06a1` and earlier; a copy sits in `/tmp/nes-baseline-snapshot-20261016`). `cargo test --workspace` 130 s → ~11 s, 604 unit tests green. The suites §10.6 lists were staged under `roms/nes-test-roms/` (37 ROMs, gitignored) and measured once each | Re-add everything when the alignment pass ends, with the suites §10.6 lists: at that measurement `cpu_dummy_writes` (2/2) and `cpu_exec_space`'s `ppuio` ROM already reported "Passed", `cpu_exec_space_apu` failed at open-bus check 2, and `cpu_reset/registers` failed at check 2 with `SP=$F7` where the ROM wants `$FD` — the defect §10.3 #3 fixes |
 | C3 | The five quick §10.3 items: NES 2.0 nibbles, `$2002` flag lifetime, Mesen's mixer, the reset split + eight warm-up cycles, and the one-dot-lagged rendering state for the odd frame's skip | **Done** | §7's row has the whole measurement. `ppu_vbl_nmi` 10/10, AccuracyCoin 32 failing, `cpu_reset/registers` past check 2 with the expected `S=$FD`; the whole reporting-ROM set re-measured with no regressions; unit tests 605 | §10.3's remaining items, in §10.7's order: the controller ports and `$4016`'s write delay (#4/#5), then the PPU's register state machines (#6), then the DMA port (#7) — with the APU edge timings (#8) and the dead `addressing.rs` (#10) as sidecars |
+| C4 | The controller ports (§10.3 #4/#5) | Done (the port's own side) | §7's row: Mesen's strobe edges, the ones shifted in, the open-bus mask, the same-cycle double read, the write's two-cycle delay. AccuracyCoin 32 → 31 (`Controller Strobing` green, `Controller Clocking` 2 → 7) | What is left of the group is the DMA's put/halt cycles clocking the port — part of the DMA port (#7) |
 
 **One thing to get right first**: AccuracyCoin's count is *our* baseline, not Mesen's — it is not
 part of Mesen's test suite (§5.1). Every item's oracle has to be Mesen's source, with the ROM's
@@ -763,6 +768,11 @@ odd frame's skip moved to the one-dot-lagged rendering state (§10.2's PPU rows)
 remaining groups are 4/5 (the controller ports), 6 (the PPU's register state machines), 7 (DMA)
 and 8 (the APU's edge timings), plus the two cleanups 10 and 11.
 
+**Update, same day:** 4 and 5 are done for the port's own side — the strobe's falling edge, the
+ones shifted in past the eight buttons, the open-bus mask, the same-cycle double read and the
+write's one/two-cycle delay (`§7`). What is left of the controller group is the DMA's put/halt
+cycles clocking the port, which is #7's work.
+
 1. **NES 2.0's mapper and submapper nibbles are swapped** (`crates/nes-core/src/nes.rs`, the
    `RomHeader` parse). Mesen: `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)` and
    `SubMapper = (Byte8 & 0xF0) >> 4`; here the mapper takes `(flags8 & 0xF0) << 4` and the submapper
@@ -876,6 +886,12 @@ still failing on the same check, which is the expected shape — the four groups
 controller ports, the PPU's register state machines, DMA, and the APU's edge timings. The
 failing-check arithmetic above is what makes that readable: the values in the table are the
 bytes the ROM prints.
+
+**And 31 after the controller ports' own side.** `Controller Strobing` (`$045F`) stops failing
+and `Controller Clocking` (`$047A`) moves from check 2 to check 7 — from the "eight reads answer
+ones" rule to the DMA's put/halt cycles clocking the port, which is §10.3 #7. `APU Register
+Activation`'s check 2 is a pre-requisite on `DMA + $2007 Read` (the ROM says so in its own
+comment), so it too waits for the DMA work rather than for anything about the controllers.
 
 ### 10.6 Baseline suites: the ones Mesen's own source develops against
 

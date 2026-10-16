@@ -27,7 +27,7 @@
 | 时钟 | 单一主时钟；NTSC 用 `cpuDivider` 12 / `ppuDivider` 4 推导两颗芯片 | `Region::cpu_divider()`/`ppu_divider()`（12/4，即真实晶振），单一主时钟，`NesBus::run_ppu_to` 推进到目标 | `test_clock_dividers_agree_with_the_frame_geometry`、`test_the_master_clock_path_places_the_same_dots` |
 | CPU 执行 | `MemoryRead`/`MemoryWrite` **本身就是周期**（围绕访问做 `StartCpuCycle`/`EndCpuCycle`） | `Bus::read_cycle`/`write_cycle` 即周期；`NesBus::begin_cpu_cycle`/`end_cpu_cycle` 围绕访问推进 PPU/APU | `instr_timing` 2/2、`branch_timing` 3/3、`test_every_opcode_executes` |
 | 操作数取指与丢弃读 | `FetchOperand` 把 dummy 逐条写出（零页索引、绝对/间接索引、隐含与累加器的那次读） | `Cpu::fetch_operand` 加上 `AddressingMode::AbsoluteXWrite`/`AbsoluteYWrite`/`IndirectYWrite`、`RTS` 两次、`RTI`/`PLA`/`PLP` 各一次 | 同上 |
-| 中断时序 | 每周期采样；判决读上一周期的采样（`_prevRunIrq`/`_prevNeedNmi`） | `Cpu::end_cycle` 保持同样的滞后；`execute_instruction` 在指令结束后判决 | `cpu_interrupts_v2` 5/5、`ppu_vbl_nmi` 9/10 |
+| 中断时序 | 每周期采样；判决读上一周期的采样（`_prevRunIrq`/`_prevNeedNmi`） | `Cpu::end_cycle` 保持同样的滞后；`execute_instruction` 在指令结束后判决 | `cpu_interrupts_v2` 5/5、`ppu_vbl_nmi` 10/10 |
 | 芯片落在周期里的位置 | `StartCpuCycle` 先跑到访问点的 PPU dot，再跑 `ProcessCpuClock`（APU 与卡带）；`EndCpuCycle` 跑剩下的 dot，由 CPU 采样中断线 | `NesBus::begin_cpu_cycle` 跑完 dot 后、在访问之前给 APU 打点；`end_cpu_cycle` 跑剩下的 dot | `test_the_apu_clocks_before_the_cycles_access`，以及 `cpu_interrupts_v2` 5/5——它最后三张表读的就是这一个周期 |
 | 向量选择 | 在压状态字节那一刻选定；此前到达的 NMI 接管（`IRQ()`、`BRK()`） | `Cpu::take_interrupt`/`Cpu::brk` 相同，含 BRK 的 `_prevNeedNmi = false` | `test_nmi_hijacks_an_irq_sequence`、`test_nmi_takes_brks_vector_over` |
 | A12 | `SetBusAddress` 把**最后一次真实访问**的地址放上总线并保持；过滤是 `(GetMasterClock() - _a12LowClock) >= 3`，主时钟即 CPU 周期数 | `NesBus::bus_address`（保持），由 `PixelPipeline` **真实读过**的地址、在它读的那个 dot 上喂入；`Mapper::on_ppu_bus(addr, cpu_cycles)` 与 `mapper4` 以周期计长度且**每次上升都清零** | `2-details`（241 次）与 `4-scanline_timing` 均转绿 |
@@ -333,6 +333,8 @@ cargo test --workspace
 
 | §10.3 的前五项，一次做完 | NES 2.0 的 byte 8 按 Mesen 读（mapper 取 `(Byte8 & 0x0F) << 8`、submapper 取 `(Byte8 & 0xF0) >> 4`，并补上 mapper 只写在 byte 6 的古老 iNES）；`$2002` 读**只**清 VBlank（`UpdateStatusFlag`），两个 sprite 标志留给预渲染行；混音改用 Mesen 的常数与声道权重；上电复位与软复位分成两件事（上电 `SP = $FD`、`A/X/Y = 0`，按键 `SP -= 3` 且置 `I`），之后都跑八个空周期；奇数帧跳点读的是 dot 338 **末尾**的渲染状态（Mesen 的 `_renderingEnabled` 比 `$2001` 慢一个 dot） | **`ppu_vbl_nmi` 9/10 → 10/10**（`10-even_odd_timing` 通过，输出正是它自己注释里写的 `08 08 09 07`），**AccuracyCoin 34 → 32**：`Suddenly Resize Sprite` 与 `Misaligned OAM DMA` 不再失败。`cpu_reset/registers` 越过第 2 项，打印出 `A X Y P S = 00 00 00 34 FD`——正是 ROM 对上电的期望值，此前是 `S=$F7` 而失败。把所有会自报结果的 ROM 复测一遍：`instr_test-v5` 16/16、`instr_timing` 2/2、`cpu_interrupts_v2` 5/5、`apu_test` 8/8、`mmc3_test_2` 5/6（已知那一项）、`oam_read`、`ppu_open_bus`、`cpu_dummy_writes` 2/2、`cpu_exec_space/ppuio`，以及被 `ACCESS_DOTS = 2` 钉住的五张（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`2-nmi_and_brk`、`4-scanline_timing`）全部仍然绿。单元测试 604 → 605 |
 
+| 手柄口（§10.3 第 4/5 条剩下的部分） | 照 `NesController`/`NesControlManager` 的形状：移位寄存器在 strobe 的下降沿装载，strobe 保持高时每次读都重新装载；读出的位是**补 1**的（原厂手柄在八个按键之后一律回 1）；手柄口读的高三位是 CPU 的 open bus，而不是硬写成 `$40`；同一个 CPU 周期内对同一端口的第二次读不再走位，而是重复第一次的位；`$4016` 的写要到下一个 PUT 周期开头才落到引脚上，而不是写入自己那个周期 | **AccuracyCoin 32 → 31**：`Controller Strobing` 不再失败，`Controller Clocking` 从第 2 项（"读满八次补 1"）推进到第 7 项——要用 DMA 的 put/halt 周期去走手柄口，属于第 7 条。`APU Register Activation` 的第 2 项查下来是 `DMA + $2007 Read` 的前置条件（ROM 自己的注释就是这么写的），所以它等的也不是手柄这条线。单元测试 605 全绿；`read_joy3` 的几张 ROM 仍需要脚本化输入（它们在等按键被按下） |
+
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
 而 harness 把它当成"这里没有 ROM"跳过了自己——于是中间几行原样重复了它在 `30b7267` 时的 46，
@@ -466,8 +468,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
 `sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` **10/10**、AccuracyCoin **32 项失败**（§10.3 前五项落地后：34 → 32，
-`Suddenly Resize Sprite` 与 `Misaligned OAM DMA` 转绿；逐项清单见 §10.5）。单元测试 605 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+`ppu_vbl_nmi` **10/10**、AccuracyCoin **31 项失败**（§10.3 前五项落地后 34 → 32，
+手柄口那一刀再降到 31；逐项清单见 §10.5）。单元测试 605 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
 抖动 ±0.06）。**帧耗时只做同轮对比**：同一台机器上这项测过 1.82 ms（1.815/1.825/1.826，空闲）
 也测过 3.68 ms（10-15 那轮，机器上有别的负载），差别来自负载而不是代码——`0520b59` 里那个
 5–8% 是 Android 前端自己关掉 PPU 总线轨迹换来的（`set_ppu_bus_trace_capacity(0)`），内核默认
@@ -494,6 +496,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | C1 | **与 MesenCE 的逐文件源码对比（§10）** | 完成 | 把整棵 `Core/NES` 取下来与本内核对照读了一遍（551 个文件、约 275 个板级类）。查出 12 处缺陷，含 NES 2.0 半字节对调、`$2002` 清掉 sprite 两个标志、CPU 复位的 `SP`、手柄口的 open bus；核实 12 项已一致；AccuracyCoin 的 34 项按"第几项失败"重读（`(value >> 2) + 1`，§7/§9 原先的编号整体多一） | 按 §10.7 的顺序做：DMA 逐字移植 → `$4016`/`$4017` 配 `read_joy3` → PPU 寄存器状态机 → `$2002` 标志与逐 dot sprite 求值 |
 | C2 | **为对齐让路而移除 ROM 套件**（§6/§9） | 完成 | 10-16 删除 `tests/rom_tests.rs`、`tests/common/`、`tests/golden/`（可从 git 取回：`b6c06a1` 及更早；另有一份在 `/tmp/nes-baseline-snapshot-20261016`）。`cargo test --workspace` 130 s → 约 11 s，604 个单元测试全绿。§10.6 列出的套件已放到 `roms/nes-test-roms/`（37 张 ROM，已 gitignore）并各自量过一次 | 对齐收尾时全部放回，连同 §10.6 的那些：那次实测里 `cpu_dummy_writes`（2/2）与 `cpu_exec_space` 的 `ppuio` 已经报 "Passed"，`cpu_exec_space_apu` 失败在 open bus 第 2 项，`cpu_reset/registers` 失败在第 2 项并打印 `SP=$F7`（ROM 要的是 `$FD`）——正是 §10.3 第 3 条要修的缺陷 |
 | C3 | §10.3 的前五项：NES 2.0 半字节、`$2002` 标志寿命、Mesen 混音、复位分成两种加八个预热周期、奇数帧跳点读慢一个 dot 的渲染状态 | **完成** | 实测整行见 §7。`ppu_vbl_nmi` 10/10、AccuracyCoin 32 项失败、`cpu_reset/registers` 越过第 2 项并打出期望的 `S=$FD`；所有会自报结果的 ROM 复测无回退；单元测试 605 | §10.3 剩下的，按 §10.7 的顺序：手柄口与 `$4016` 写入延迟（第 4/5 条），再是 PPU 寄存器状态机（第 6 条），再是 DMA（第 7 条）——APU 边沿时序（第 8 条）与死代码 `addressing.rs`（第 10 条）作为侧刀 |
+| C4 | 手柄口（§10.3 第 4/5 条） | 完成（端口自己这一侧） | 见 §7 那一行：Mesen 的 strobe 沿、补 1 的移位、open bus 掩码、同周期重复读、写入的两周期延迟。AccuracyCoin 32 → 31（`Controller Strobing` 转绿，`Controller Clocking` 由第 2 项推进到第 7 项） | 这一组剩下的是"DMA 的 put/halt 周期走手柄口"，属于 DMA 那一刀（第 7 条） |
 
 **先记住一件容易搞错的事**：AccuracyCoin 的计数是**我们的**基线，不是 Mesen 的——它不在 Mesen
 的测试套件里（§5.1）。每一项的 oracle 都应当是 Mesen 的源码，ROM 的裁决是证据而不是目标；少数项
@@ -641,7 +644,9 @@ CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 
 ### 10.3 本轮查出的缺陷（每条附修法）
 
 **进度：**第 1、2、3、9 条已修（C3 那一步，见 §7 与 §9），奇数帧跳点也随之改成读慢一个 dot 的
-渲染状态（§10.2 的 PPU 行）——剩下的是第 4/5 条（手柄口）、第 6 条（PPU 寄存器状态机）、
+渲染状态（§10.2 的 PPU 行）。**同日更新：**第 4/5 条在"端口自己这一侧"已经做完——strobe 的下降沿、
+读满八次后补 1、open bus 掩码、同周期重复读、写入的两周期延迟（§7）。手柄这一组剩下的是
+"DMA 的 put/halt 周期去走手柄口"，属于第 7 条。其余未做的是第 6 条（PPU 寄存器状态机）、
 第 7 条（DMA）与第 8 条（APU 边沿时序），外加第 10、11 两条清理。
 
 1. **NES 2.0 的 mapper 与 submapper 半字节对调**（`crates/nes-core/src/nes.rs` 的 `RomHeader` 解析）。
@@ -740,6 +745,11 @@ harness 打印的是 ROM 存下的那个字节，它的构造是 `(ErrorCode << 
 （`$0489`）与 `Misaligned OAM DMA`（`$0494`）；上表其余每一项都还在同一项检查上失败，这个形状正是
 预期的——剩下四组是手柄口、PPU 寄存器状态机、DMA 与 APU 边沿时序。上面那套失败项换算正是让这件事
 读得出来的原因：表里记的是 ROM 打印出来的原始字节。
+
+**手柄口自己这一侧做完之后：31 项。** `Controller Strobing`（`$045F`）不再失败，
+`Controller Clocking`（`$047A`）从第 2 项推进到第 7 项——从"读满八次补 1"进到"DMA 的 put/halt
+周期走手柄口"，那是 §10.3 第 7 条。`APU Register Activation` 的第 2 项是 `DMA + $2007 Read`
+的前置条件（ROM 自己的注释如此），所以它等的同样是 DMA，而不是手柄规则。
 
 ### 10.6 基线套件：Mesen 自己开发时用的那些
 
