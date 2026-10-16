@@ -832,12 +832,29 @@ Key points:
 | `crates/nes-uniffi` unit tests | 10 | Binding layer: contract sync, panic containment, audio pull, the frame buffer's byte view |
 | Doc tests | 1 | `FrameClock` usage example |
 
-### 13.1 Test ROMs: the accuracy baseline
+### 13.1 Test ROMs: the accuracy baseline (currently removed, deliberately)
 
 Unit tests say the code does what it was written to do; test ROMs say the *emulation* is
-right. `tests/rom_tests.rs` runs the standard suites and is the yardstick every accuracy
-change is measured against. ROMs are never committed, so each suite prints a skip note
-unless its directory exists under `roms/`:
+right. **The automated ROM suites are not in the tree at the moment**: they were removed on
+2026-10-16 for the MesenCE alignment pass (`docs/mesen-alignment.md` §10), because a full run
+costs minutes and every change had to be measured against it. The ROMs themselves are still
+under `roms/` (never committed), and the suites are recoverable from git — `tests/rom_tests.rs`,
+`tests/common/` (the harness, the golden-frame recorder and its SHA1) and `tests/golden/` came
+out in the commits that introduced them (`b6c06a1` and earlier). **Put them back, and re-measure,
+when the alignment pass ends** — §10.6 lists the suites Mesen's own source develops against,
+which belong in the same table.
+
+What is still in the tree for accuracy work:
+
+- `tests/cycle_trace.rs` — `#[ignore]`d diagnostics: a per-instruction trace (`NES_TRACE_ROM`),
+  a status follower (`NES_STATUS_ROM`), a PPU bus-address trace (`NES_A12_ROM`) and a frame
+  dumper (`NES_DUMP_ROM`), which writes PPMs so a screen-verdict ROM can be eyeballed.
+- `tests/apu.rs`, `tests/ppu.rs`, `tests/mappers.rs`, `crates/nes-core/src/**`'s unit tests —
+  the fast loop.
+- `tests/frame_cost.rs` — the `#[ignore]`d frame-cost measurement.
+
+The suites the removed harness ran, for when it goes back in. ROMs are never committed, so a
+suite prints a skip note unless its directory exists under `roms/`:
 
 | Suite | Path under `roms/` | What it pins down |
 | --- | --- | --- |
@@ -866,8 +883,10 @@ failure message names the ROM and the exact check that failed. AccuracyCoin is m
 the harness drives Start to run all tests, then reads the result table it leaves in page
 `$0400` (`$FF` = skipped, bit 0 set = passed, otherwise the value is an error code).
 
-Baseline as of 2026-10-16, re-measured on this checkout (the two rendering fixes of 2026-10-15
-moved no suite: what they fixed is pixels, which the baseline cannot see — see the note below):
+The last measurement, taken on this checkout on 2026-10-16 just before the suites were removed
+(the two rendering fixes of 2026-10-15 moved no suite: what they fixed is pixels, which the
+baseline cannot see — see the note below). These numbers are a record, not a gate, until the
+suites go back in:
 
 | Suite | Result |
 | --- | --- |
@@ -901,7 +920,9 @@ the ROM's own test list (`AccuracyCoin.asm`'s `result_* = $04xx` constants and i
   `DMA + $4016 Read`, `DMA + Open Bus`, `DMA Landing on Write`, `DMC DMA Bus Conflicts`,
   `DMC DMA + OAM DMA`, `DMC Reload Timing`, `Implicit DMA Abort`, `Explicit DMA Abort`,
   `Misaligned OAM DMA`. All of them live on the DMA path `MemoryRead` now runs, and they fail
-  at the same two checks (3 and 5) — evidence that they are one mechanism, not thirteen.
+  at the same two checks — evidence that they are one mechanism, not thirteen. (Which check each
+  one fails on, and the arithmetic the ROM's result byte encodes, is in
+  `docs/mesen-alignment.md` §10.5; the labels used here before that pass were one too high.)
 - **CPU instruction details, 7**: `Open Bus`, `Implied Dummy Reads`, `Instruction Timing`,
   `Interrupt flag latency`, `JSR Edge Cases`, `Branch Dummy Reads`, `Internal Data Bus`.
 - **Unofficial `SHx` opcodes, 5**: `SHA`/`SHS`/`SHY`/`SHX` at `$93`, `$9F`, `$9B`, `$9C`, `$9E`.

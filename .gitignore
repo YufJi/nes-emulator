@@ -4,6 +4,9 @@ pkg/
 # one exception, kept because the nestest log tests depend on it).
 roms/blargg/
 roms/accuracycoin/
+# The `christopherpow/nes-test-roms` collection, for the suites Mesen's own
+# comments name (`docs/mesen-alignment.md` §10.6).
+roms/nes-test-roms/
 # UniFFI bindings are generated, not committed.
 crates/nes-uniffi/out/
 ios/Artifacts/

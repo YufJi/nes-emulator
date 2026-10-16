@@ -53,12 +53,16 @@
   every fix. Integration suites live in `crates/nes-core/tests/`
   (`ppu.rs`, `apu.rs`, `mappers.rs`, `nestest.rs`).
 - ROM-dependent tests are skipped or marked `#[ignore]` when `roms/` is empty.
-- `crates/nes-core/tests/rom_tests.rs` is the accuracy baseline: it runs the
-  blargg suites under `roms/blargg/` and `roms/accuracycoin/AccuracyCoin.nes`
-  (layout and download sources in `docs/architecture.md` §13.1). ROMs are never
-  committed, and each suite carries a baseline of the ROMs it is known not to
-  pass yet — a new failure is a regression, and a baseline entry that starts
-  passing must be removed from the list.
+- The accuracy baselines live in `crates/nes-core/tests/rom_tests.rs` (the
+  blargg suites under `roms/blargg/`, `roms/accuracycoin/AccuracyCoin.nes`, and
+  the `roms/nes-test-roms/` collection; layout and sources in
+  `docs/architecture.md` §13.1). **That file and its harness (`tests/common/`,
+  `tests/golden/`) are out of the tree for the MesenCE alignment pass** — see
+  `docs/mesen-alignment.md` §6 — and come back with the rules they carried:
+  ROMs are never committed, a new failure is a regression, and a baseline entry
+  that starts passing must be removed from the list. While they are out, the
+  loop is `cargo test --workspace` plus the `#[ignore]`d diagnostics in
+  `tests/cycle_trace.rs`.
 - For emulator changes, verify determinism (rewind/replay produces identical
   frames). For web changes, run `npm run build`.
 

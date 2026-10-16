@@ -16,9 +16,9 @@
    `Core/NES/NesPpu.cpp`/`.h`（取指流水线）、`Core/NES/BaseNesPpu.h`（PPU 状态）、
    `Core/NES/NesMemoryManager.cpp`、`Core/NES/Mappers/A12Watcher.h` 以及
    `Core/NES/Mappers/` 下的各 mapper。
-2. **测试 ROM 基线是证据，不是约束。** `crates/nes-core/tests/rom_tests.rs` 里的失败清单是双向
-   断言的，因此任何让套件结果变化的改动都必须更新清单——但清单跟随实测，凡因"更忠实于 Mesen"
-   而产生的回退，都记录并写明原因，而不是回退代码。
+2. **测试 ROM 基线是证据，不是约束。** 各套件的失败清单（在 `crates/nes-core/tests/rom_tests.rs`
+  里，本轮对齐期间已移出树——见 §6）当初是双向断言的，因此任何让套件结果变化的改动**都曾**必须
+  更新清单——但清单跟随实测，凡因"更忠实于 Mesen"而产生的回退，都记录并写明原因，而不是回退代码。
 
 ## 1. 已对齐的部分
 
@@ -185,9 +185,14 @@ CPU 侧最大的差距，DMC 的工作依赖它。
 
 ## 5. 观测手段
 
-已有，且上述每次实测都用到：
+已有，且上述每次实测都用到。**本轮对齐期间 ROM 套件不在树里**（§6）；ROM 仍在 `roms/` 下，
+下面这些诊断就是"逐个 ROM 那几行"的替代：
 
-- `cargo test -p nes-core --test rom_tests -- --nocapture` —— 逐个 ROM 的 pass/known 行。
+- `cargo test -p nes-core --test cycle_trace -- --ignored --nocapture`，配 `NES_STATUS_ROM`
+  （跟踪 `$6000`/`$6004` 与 PC）或 `NES_DUMP_ROM`（把某一帧导成 PPM，看"画面即判决"的 ROM）——
+  这就是"改动想推动的那张 ROM"的点测方式。
+- `cargo test -p nes-core --test rom_tests -- --nocapture` —— 逐个 ROM 的 pass/known 行，套件回去
+  之后才有（§10.1 与 `architecture.md` §13.1 仍然描述着它们）。
 - `cargo test -p nes-core --release --test frame_cost -- --ignored --nocapture` —— 帧耗时
   （nestest 连续 600 帧；多跑几次取中位数）。
 - `cargo test -p nes-core --test cycle_trace -- --ignored --nocapture` —— 逐指令 trace
@@ -237,7 +242,9 @@ README 自己也写着这些测试是给 RP2A03G + RP2C02G 写的、有些与芯
 
 ### 5.2 基线现在也看像素了——顺手查出 26 个"空通过"
 
-套用 Mesen 的**判定机制**顺手暴露了我们这边的一个洞。到 2026-10-16 为止的现状：
+套用 Mesen 的**判定机制**顺手暴露了我们这边的一个洞。到 2026-10-16 为止的现状——**套件与金标准
+当天就一起移出了树**（§6/§9），所以这一节记的是那套机制与它查出的东西，而不是"现在在跑什么"；
+harness 本体是 git 历史里的 `tests/common/frames.rs`（`b6c06a1`）：
 
 - **每个套件的逐帧哈希**（`tests/common/frames.rs`）：对原始帧缓冲做
   `SHA1::GetHash(frame.FrameBuffer, frame.FrameBufferSize)`（与 Mesen 的 `.mtp` 同一个函数、同一
@@ -266,13 +273,15 @@ README 自己也写着这些测试是给 RP2A03G + RP2C02G 写的、有些与芯
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo test -p nes-core --test rom_tests -- --nocapture   # 逐个 ROM 的 pass/known 行
 ```
 
-- ROM 不入库：把 blargg 各套件与 AccuracyCoin 放到 `roms/` 下（布局与下载来源见
-  `docs/architecture.md` §13.1）。
-- 基线清单里"开始通过"的项必须从 `tests/rom_tests.rs` 删掉；清单之外出现失败会直接红。凡因更
-  忠实于 Mesen 而产生的回退，**连同原因**加入清单。
+- **对齐期间 ROM 套件不在树里**（2026-10-16 移除，见 §10.6）：跑满一轮要几分钟，而这轮工作需要
+  以秒计的循环。ROM 本体留在 `roms/` 下，套件在收尾时从 git 取回；在此之前，验收就是
+  `cargo test --workspace`（604 个单元测试）加上 `tests/cycle_trace.rs` 里那些 `#[ignore]` 的
+  诊断工具。改动想推动的那张 ROM，应当用 `NES_STATUS_ROM` 与 `NES_DUMP_ROM` 做点测。
+- 套件放回去之后，它们原先的规则照旧：ROM 不入库（布局与下载来源见 `docs/architecture.md` §13.1）；
+  清单里"开始通过"的项必须从里面删掉；清单之外出现失败会直接红；凡因更忠实于 Mesen 而产生的回退，
+  **连同原因**加入清单而不是把代码改回去。
 - 确定性是不变量而非特性：`frame()` / `run_cycles()` / `step_instruction()` 在同一帧边界必须得到
   逐字节相同的状态，存档必须能往返。
 - `docs/architecture.md` 与其 `zh-CN` 对照必须与代码同步；每一步的实测数字写进提交信息。
@@ -437,20 +446,20 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 
 ## 9. 任务台账（新会话从这里开始）
 
-**怎么用**：每条给出「状态 → 证据 → 下一步」。开工前先按 §6 重跑一遍基线（数字会随环境浮动，但
-套件构成应当一致），再挑一条往下做；没有证据的变化不要写进本文档。
+**怎么用**：每条给出「状态 → 证据 → 下一步」。开工前先按 §6 跑一遍验收，再挑一条往下做；没有
+证据的变化不要写进本文档。
 
-**ROM 报不出结果时 harness 会失败，而不是跳过**：`accuracy_coin_matches_its_baseline` 现在把
-"本机没有这个 ROM"与"ROM 根本没跑起来"区分开——启动期卡死就是后者（`$37` 一直是 0）。以后若有
-改动让 ROM 在菜单之前卡住，这条会直接变红，而不是悄悄通过——DMC 的双重收费正是这样在这儿藏了
-好几步（§7）。
+**套件目前（2026-10-16）被有意移出树了。** 跑满一轮要几分钟，而 §10 的对齐工作需要以秒计的循环：
+`cargo test --workspace` 现在约 11 s（604 个单元测试全绿）。ROM 留在 `roms/` 下，套件都能从 git
+取回——连同它们原来的规则：ROM 报不出结果时**失败**而不是跳过（ROM 根本没跑起来正是启动期卡死的
+样子，DMC 的双重收费就是这样在这儿藏了好几步，§7）。收尾时把它们放回去，连同 §10.6 列出的那些。
 
-**当前基线**（本轮最后一次实测，`cargo test -p nes-core --test rom_tests -- --nocapture`）：
+**上一次实测的基线**（2026-10-16，移除之前）：
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
 `sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 143 项、94 通过、0 跳过——与 APU 挪位之前
-一模一样的 34 项）。单元测试 602 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 140 项、94 通过、0 跳过——与 APU 挪位之前
+一模一样的 34 项，逐项清单见 §10.5）。单元测试 604 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
 抖动 ±0.06）。**帧耗时只做同轮对比**：同一台机器上这项测过 1.82 ms（1.815/1.825/1.826，空闲）
 也测过 3.68 ms（10-15 那轮，机器上有别的负载），差别来自负载而不是代码——`0520b59` 里那个
 5–8% 是 Android 前端自己关掉 PPU 总线轨迹换来的（`set_ppu_bus_trace_capacity(0)`），内核默认
@@ -475,6 +484,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | B2 | 背景瓦片拿到右邻的调色板（`?` 砖、砖行末尾、标题文字末尾变绿） | **完成** | 粗 X 在属性取指之前自增（§7 那一行）；回归测试三条在旧代码上失败 | 无；相邻项是 §2.2 里背景取指的开关（关背景时 Mesen 仍取指） |
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 | C1 | **与 MesenCE 的逐文件源码对比（§10）** | 完成 | 把整棵 `Core/NES` 取下来与本内核对照读了一遍（551 个文件、约 275 个板级类）。查出 12 处缺陷，含 NES 2.0 半字节对调、`$2002` 清掉 sprite 两个标志、CPU 复位的 `SP`、手柄口的 open bus；核实 12 项已一致；AccuracyCoin 的 34 项按"第几项失败"重读（`(value >> 2) + 1`，§7/§9 原先的编号整体多一） | 按 §10.7 的顺序做：DMA 逐字移植 → `$4016`/`$4017` 配 `read_joy3` → PPU 寄存器状态机 → `$2002` 标志与逐 dot sprite 求值 |
+| C2 | **为对齐让路而移除 ROM 套件**（§6/§9） | 完成 | 10-16 删除 `tests/rom_tests.rs`、`tests/common/`、`tests/golden/`（可从 git 取回：`b6c06a1` 及更早；另有一份在 `/tmp/nes-baseline-snapshot-20261016`）。`cargo test --workspace` 130 s → 约 11 s，604 个单元测试全绿。§10.6 列出的套件已放到 `roms/nes-test-roms/`（37 张 ROM，已 gitignore）并各自量过一次 | 对齐收尾时全部放回，连同 §10.6 的那些：那次实测里 `cpu_dummy_writes`（2/2）与 `cpu_exec_space` 的 `ppuio` 已经报 "Passed"，`cpu_exec_space_apu` 失败在 open bus 第 2 项，`cpu_reset/registers` 失败在第 2 项并打印 `SP=$F7`（ROM 要的是 `$FD`）——正是 §10.3 第 3 条要修的缺陷 |
 
 **先记住一件容易搞错的事**：AccuracyCoin 的计数是**我们的**基线，不是 Mesen 的——它不在 Mesen
 的测试套件里（§5.1）。每一项的 oracle 都应当是 Mesen 的源码，ROM 的裁决是证据而不是目标；少数项
@@ -733,6 +743,16 @@ Mesen 在注释里点名了自己的 oracle，所以缺哪些套件很好选。�
 
 Mesen 点名的两张 ROM **不在**那个合集里，要另行获取：`oam_flicker_test_reenable`（`NesPpu.cpp:1177`）
 与 `dmc_dma_start_test`/`_v2`（`NesCpu.cpp:397`）。
+
+**已就位，并各自量过一次。** 上面这些都已拷进 `roms/nes-test-roms/`（37 张 ROM，不入库），并在
+harness 被移除之前（§6）各跑了一次——下面就是那次的结果，也是套件放回去之后第一批要盯的门：
+
+| 套件 | 那次量到的结果 |
+| --- | --- |
+| `cpu_dummy_writes` | 两张都报 `$6000 = 0`（通过） |
+| `cpu_exec_space` | `ppuio`："Passed"；`apu`：失败在第 2 项，即 open bus 那一项（§10.3 第 4 条） |
+| `cpu_reset` | `registers`：**失败在第 2 项**，打印 `S=$F7` 而 ROM 要的是 `$FD`——§10.3 第 3 条。`ram_after_reset` 要求**人**按复位（"Press reset AFTER this message disappears"），在从不复位的 harness 里不可能通过 |
+| `read_joy3`、`full_palette`、`ppu_read_buffer`、`blargg_apu_2005`、`dmc_tests`、`dmc_dma_during_read4`、`cpu_dummy_reads` | 帧预算内没有 `$6000` 上报——它们的判决是画面或卡死，harness 无从判定（帧导出诊断与金标准帧就是为这类 ROM 准备的）。DMC/DMA 那几张**什么都不画**：`sprdma_and_dmc_dma` 在它自己的 `$E200`/`$E220`/`$E240` 测量序列里空转（`$E22D` 的延时加 `$4015` 的等待），自带的时钟计数器永不前进——它的 DMA 相位永远对不上，正是 §10.3 第 7 条现场 |
 
 **还有一项基线根本不是缺陷。** `mmc3_test_2` 的 `6-MMC3_alt` 要的是 MMC3 **修订版 A** 的 IRQ 条件，
 而 Mesen 只在数据库说这块板的芯片是 `MMC3A` 时才用它（`MMC3.h:209`）。数据库

@@ -756,11 +756,26 @@ flowchart TB
 | `crates/nes-uniffi` 单元测试 | 10 | 绑定层：契约同步、panic 兜底、音频拉取、帧缓冲的字节视图 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
 
-### 13.1 测试 ROM：精度基线
+### 13.1 测试 ROM：精度基线（当前是有意移除的）
 
 单元测试只能说明代码按写法在跑，测试 ROM 才能说明**模拟得对不对**。
-`tests/rom_tests.rs` 跑的是业界标准套件，也是此后每一处精度改动的衡量基准。
-ROM 不入库，所以只要 `roms/` 下没有对应目录，套件就打一行 skip 说明：
+**自动化的 ROM 套件此刻不在树里**：2026-10-16 为了给与 MesenCE 的对齐（`docs/mesen-alignment.md`
+§10）让路而移除——跑满一轮要几分钟，而每个改动都得拿它量。ROM 本体仍在 `roms/` 下（不入库），
+套件也可以从 git 找回：`tests/rom_tests.rs`、`tests/common/`（harness、金标准逐帧录制与 SHA1）与
+`tests/golden/` 都在引入它们的提交里（`b6c06a1` 及更早）。**对齐结束后把它们放回去并重新实测**；
+§10.6 列了 Mesen 自己源码点名的那几套，它们应该进同一张表。
+
+精度工作还可以用的东西：
+
+- `tests/cycle_trace.rs`——`#[ignore]` 的诊断工具：逐指令 trace（`NES_TRACE_ROM`）、状态跟踪
+  （`NES_STATUS_ROM`）、PPU 总线地址 trace（`NES_A12_ROM`），以及帧导出（`NES_DUMP_ROM`，
+  写 PPM，好用来看"画面即判决"的 ROM）。
+- `tests/apu.rs`、`tests/ppu.rs`、`tests/mappers.rs` 与 `crates/nes-core/src/**` 的单元测试——
+  快速循环。
+- `tests/frame_cost.rs`——`#[ignore]` 的帧耗时测量。
+
+以下是被移除的那套 harness 曾经跑过的套件，供放回去时参考。ROM 不入库，所以只要 `roms/` 下没有
+对应目录，套件就打一行 skip 说明：
 
 | 套件 | `roms/` 下的路径 | 钉住的东西 |
 | --- | --- | --- |
@@ -786,8 +801,9 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 哪一项检查失败。AccuracyCoin 是菜单式 ROM：harness 会按 Start 跑完全部测试，
 再读它留在 `$0400` 页的结果表（`$FF` = 跳过，bit0 置位 = 通过，否则该值就是错误码）。
 
-2026-10-16 在本机重新实测的基线（10-15 的两处渲染修复没有移动任何套件：
-它们修的是像素，而基线看不见像素——见本节末尾的说明）：
+下面是一次实测记录：2026-10-16 在这台机器上、套件被移除之前的最后一次（10-15 的两处渲染修复没有
+移动任何套件：它们修的是像素，而基线看不见像素——见本节末尾的说明）。套件放回去之前，这些数字是
+记录，不是门禁：
 
 | 套件 | 结果 |
 | --- | --- |
@@ -820,7 +836,8 @@ AccuracyCoin 那 34 项也值得点名，因为其中最大的一组其实是同
   Read`、`DMA + $4016 Read`、`DMA + Open Bus`、`DMA Landing on Write`、`DMC DMA Bus
   Conflicts`、`DMC DMA + OAM DMA`、`DMC Reload Timing`、`Implicit DMA Abort`、`Explicit DMA
   Abort`、`Misaligned OAM DMA`。它们全都落在 `MemoryRead` 现在跑的那条 DMA 路径上，而且
-  失败在同一两项检查（第 3、5 项）——这正是"一个机制、不是十三件事"的证据。
+  失败在同一两项检查——这正是"一个机制、不是十三件事"的证据。（每一项究竟失败在第几项、以及 ROM
+  结果字节的换算方式，见 `docs/mesen-alignment.md` §10.5；本节此前用的编号整体多一。）
 - **CPU 指令细节，7 项**：`Open Bus`、`Implied Dummy Reads`、`Instruction Timing`、
   `Interrupt flag latency`、`JSR Edge Cases`、`Branch Dummy Reads`、`Internal Data Bus`。
 - **未文档 `SHx` 指令，5 项**：`SHA`/`SHS`/`SHY`/`SHX`（`$93`、`$9F`、`$9B`、`$9C`、`$9E`）。

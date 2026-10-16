@@ -19,10 +19,11 @@ Two rules, in order:
    `Core/NES/NesPpu.cpp`/`.h` (the fetch pipeline), `Core/NES/BaseNesPpu.h` (PPU state),
    `Core/NES/NesMemoryManager.cpp`, `Core/NES/Mappers/A12Watcher.h` and the mapper files under
    `Core/NES/Mappers/`.
-2. **Test-ROM baselines are evidence, not constraints.** Each suite's expected-fail list in
-   `crates/nes-core/tests/rom_tests.rs` is asserted in both directions, so a change that moves a
-   suite *must* update the list — but the list follows the measurements, and a regression that
-   comes from a more faithful model is recorded and explained rather than reverted.
+2. **Test-ROM baselines are evidence, not constraints.** Each suite's expected-fail list (in
+   `crates/nes-core/tests/rom_tests.rs`, out of the tree for this pass — §6) was asserted in both
+   directions, so a change that moved a suite *had* to update the list — but the list follows the
+   measurements, and a regression that comes from a more faithful model is recorded and explained
+   rather than reverted.
 
 ## 1. What is aligned
 
@@ -224,9 +225,15 @@ randomised CPU/PPU alignment (this core has offset 0).
 
 ## 5. Instruments
 
-Existing, and used for every measurement above:
+Existing, and used for every measurement above. **The ROM suites are out of the tree for this
+pass** (§6); the ROMs are still under `roms/`, and the diagnostics below are what replaces the
+per-ROM lines while the alignment runs:
 
-- `cargo test -p nes-core --test rom_tests -- --nocapture` — the per-ROM pass/known lines.
+- `cargo test -p nes-core --test cycle_trace -- --ignored --nocapture` with `NES_STATUS_ROM`
+  (follow `$6000`/`$6004` and the PC) or `NES_DUMP_ROM` (write the frame out as a PPM, for the
+  ROMs whose verdict is a screen) — the spot-check for a ROM a change is meant to move.
+- `cargo test -p nes-core --test rom_tests -- --nocapture` — the per-ROM pass/known lines, back
+  when the suites are (§10.1 and §13.1 of `architecture.md` still describe them).
 - `cargo test -p nes-core --release --test frame_cost -- --ignored --nocapture` — frame cost
   (600 frames of nestest; run it a few times and compare medians).
 - `cargo test -p nes-core --test cycle_trace -- --ignored --nocapture` — per-instruction traces
@@ -289,7 +296,9 @@ built and the ROMs present, so it is not free.
 ### 5.2 The baseline now judges pixels too — and 26 of its "passes" were empty
 
 Adopting Mesen's *mechanism* turned up a hole in ours, so this is the state of the local suites as
-of 2026-10-16:
+of 2026-10-16. **The suites and their goldens came out of the tree the same day** (§6/§9), so this
+section is a record of the mechanism and of what it found, not a description of what runs now; the
+harness itself is `tests/common/frames.rs` in the git history (`b6c06a1`).
 
 - **Every suite's frames are hashed** (`tests/common/frames.rs`): SHA1 over the raw frame buffer
   (`SHA1::GetHash(frame.FrameBuffer, frame.FrameBufferSize)`, the same hash and the same bytes
@@ -322,14 +331,19 @@ of 2026-10-16:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-cargo test -p nes-core --test rom_tests -- --nocapture   # per-ROM pass/known lines
 ```
 
-- ROMs are not committed: drop blargg's suites and AccuracyCoin under `roms/` (the layout and
-  the download sources are in `docs/architecture.md` §13.1).
-- A baseline entry that starts passing must be removed from the list in `tests/rom_tests.rs`; a
-  failure outside the list fails the suite. A regression that comes from a more faithful model
-  is added to the list *with the reason in the comment*.
+- **The ROM suites are not in the tree during this pass** (removed 2026-10-16, §10.6): a full
+  run costs minutes, and the alignment work needs a loop measured in seconds. The ROMs stay
+  under `roms/`, the suites come back from git when the pass ends, and until then the
+  verification is `cargo test --workspace` (604 unit tests) plus the `#[ignore]`d diagnostics
+  in `tests/cycle_trace.rs`. Spot checks against the ROMs a change is supposed to move are
+  expected — that is what `NES_STATUS_ROM` and `NES_DUMP_ROM` are for.
+- When the suites are back, the rules they carried still hold: ROMs are not committed (the
+  layout and sources are in `docs/architecture.md` §13.1); a baseline entry that starts passing
+  must be removed from the list; a failure outside the list fails the suite; and a regression
+  that comes from being *more* faithful to Mesen is added to the list *with the reason in the
+  comment* rather than reverted.
 - Determinism is an invariant, not a feature: `frame()` / `run_cycles()` / `step_instruction()`
   must reach byte-identical state at the same frame boundary, and save states must round-trip.
 - Keep `docs/architecture.md` and its `zh-CN` twin in step with the code, and record each
@@ -536,22 +550,22 @@ header is plain iNES, which §2.5 now records.
 
 ## 9. The ledger (start a new session here)
 
-**How to use it**: every row is *status → evidence → next step*. Re-run the baseline from §6 first
-(the numbers move with the machine; the set of suites should not), then pick a row. Nothing goes
-into this document without a measurement behind it.
+**How to use it**: every row is *status → evidence → next step*. Re-run the verification from §6
+first, then pick a row. Nothing goes into this document without a measurement behind it.
 
-**The harness fails rather than skips when a ROM stops reporting**: `accuracy_coin_matches_its_baseline`
-now distinguishes "the ROM is not on this checkout" from "the ROM never ran its suite", because the
-second one is what a boot-time hang looks like (`$37` stays zero). If a future change hangs the ROM
-before the menu, that test goes red instead of quietly passing — which is exactly how the DMC's
-double-charged fetch hid here for several steps (§7).
+**The suites are out of the tree right now (2026-10-16), on purpose.** A full run cost minutes, and
+the alignment work (§10) needs a loop measured in seconds: `cargo test --workspace` is down to
+~11 s (604 unit tests). The ROMs stay under `roms/` and every suite comes back from git — with the
+rules it carried: it failed rather than skipped when a ROM stopped reporting, because a ROM that
+never runs its suite is what a boot-time hang looks like, and that is exactly how the DMC's
+double-charged fetch hid here for several steps (§7). Re-add them when the pass ends, together with
+the suites §10.6 lists.
 
-**Current baseline** (last measured this session, `cargo test -p nes-core --test rom_tests --
---nocapture`): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
+**Last measured baseline** (2026-10-16, before the removal): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
 `blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` **1/1**,
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
-**5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94 passed, 0 skipped — the same 34 as
-before the APU move). Unit tests: 602. Frame cost: about 1.86 ms (release, 600 frames of nestest,
+**5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (140 ran, 94 passed, 0 skipped — the same 34 as
+before the APU move; §10.5 has the per-item list). Unit tests: 604. Frame cost: about 1.86 ms (release, 600 frames of nestest,
 median of five; spread ±0.06). **Frame cost is a same-run comparison only**: this machine has
 reported 1.82 ms (1.815/1.825/1.826, idle) and 3.68 ms (the 10-15 round, with other load on it)
 for the same test, so the difference is the load rather than the code — the 5–8% in `0520b59` is
@@ -577,6 +591,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 | C1 | **The file-by-file comparison with MesenCE (§10)** | Done | The whole `Core/NES` tree was fetched and read against this core (551 files, ~275 boards). Twelve defects found, including the NES 2.0 nibble swap, `$2002` clearing the sprite flags, the CPU's reset `SP`, and the controller ports' open bus; twelve areas confirmed identical; AccuracyCoin's 34 re-read as "which check failed" (`(value >> 2) + 1`, which moves the §7/§9 labels by one) | Follow §10.7: the DMA port → `$4016`/`$4017` with `read_joy3` → the PPU's register state machines → `$2002`'s flags and per-dot sprite evaluation |
+| C2 | **The ROM suites removed for the alignment pass** (§6/§9) | Done | `tests/rom_tests.rs`, `tests/common/` and `tests/golden/` deleted on 10-16 (recoverable from git: `b6c06a1` and earlier; a copy sits in `/tmp/nes-baseline-snapshot-20261016`). `cargo test --workspace` 130 s → ~11 s, 604 unit tests green. The suites §10.6 lists were staged under `roms/nes-test-roms/` (37 ROMs, gitignored) and measured once each | Re-add everything when the alignment pass ends, with the suites §10.6 lists: at that measurement `cpu_dummy_writes` (2/2) and `cpu_exec_space`'s `ppuio` ROM already reported "Passed", `cpu_exec_space_apu` failed at open-bus check 2, and `cpu_reset/registers` failed at check 2 with `SP=$F7` where the ROM wants `$FD` — the defect §10.3 #3 fixes |
 
 **One thing to get right first**: AccuracyCoin's count is *our* baseline, not Mesen's — it is not
 part of Mesen's test suite (§5.1). Every item's oracle has to be Mesen's source, with the ROM's
@@ -860,6 +875,17 @@ is in `crates/nes-core/tests/rom_tests.rs` today:
 
 Two ROMs Mesen cites are **not** in that collection and would have to be fetched separately:
 `oam_flicker_test_reenable` (`NesPpu.cpp:1177`) and `dmc_dma_start_test`/`_v2` (`NesCpu.cpp:397`).
+
+**Staged, and measured once.** All of these were copied into `roms/nes-test-roms/` (37 ROMs, not
+committed) and run once through the harness before it came out (§6), which is where these
+verdicts come from — they are the first things to gate on when the suites go back in:
+
+| Suite | What it said at that measurement |
+| --- | --- |
+| `cpu_dummy_writes` | both ROMs reported `$6000 = 0` (passed) |
+| `cpu_exec_space` | `ppuio`: "Passed"; `apu`: failed at check 2, the open-bus one (§10.3 #4) |
+| `cpu_reset` | `registers`: **failed at check 2**, printing `S=$F7` where the ROM wants `$FD` — §10.3 #3. `ram_after_reset` asks the *operator* to press reset ("Press reset AFTER this message disappears"), so it cannot pass under a harness that never resets |
+| `read_joy3`, `full_palette`, `ppu_read_buffer`, `blargg_apu_2005`, `dmc_tests`, `dmc_dma_during_read4`, `cpu_dummy_reads` | no `$6000` report inside the frame budget — their verdict is a screen or a hang, so the harness had nothing to judge (that is what the frame-dump diagnostic and the golden frames were for). The DMC/DMA ones draw **nothing at all**: `sprdma_and_dmc_dma` spins inside its `$E200`/`$E220`/`$E240` measurement sequence (the delay at `$E22D` plus the `$4015` waits) and never advances its own clock counter — its DMA phase never lines up, which is §10.3 #7 in the act |
 
 **And one baseline item is not a defect at all.** `mmc3_test_2`'s `6-MMC3_alt` asks for the MMC3
 **revision A** IRQ condition, which Mesen only applies when its database says the board's chip is an

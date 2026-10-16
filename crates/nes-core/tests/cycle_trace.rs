@@ -21,6 +21,121 @@ use std::path::PathBuf;
 
 use nes_core::Nes;
 
+/// Follow a ROM's blargg-style status while it runs.
+///
+/// A suite that never reports `$6000 = $80` is either still running or stuck,
+/// and the difference matters: this prints the status byte and the report text
+/// every so many frames so the two can be told apart.
+///
+/// ```text
+/// NES_STATUS_ROM=roms/nes-test-roms/sprdma_and_dmc_dma/sprdma_and_dmc_dma.nes \
+///   cargo test -p nes-core --test cycle_trace dump_status_for_a_rom -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "a diagnostic tool: set NES_STATUS_ROM to the .nes file to follow"]
+fn dump_status_for_a_rom() {
+    let Some(requested) = std::env::var("NES_STATUS_ROM").ok() else {
+        println!("set NES_STATUS_ROM=<path to a .nes file> to follow its status");
+        return;
+    };
+    let path = resolve_rom_path(&requested);
+    let frames: u32 = std::env::var("NES_STATUS_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(600);
+    let every: u32 = std::env::var("NES_STATUS_EVERY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(60);
+
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+
+    for frame in 1..=frames {
+        nes.frame();
+        if frame % every == 0 || frame <= 3 {
+            let status = nes.peek(0x6000);
+            let mut text = String::new();
+            for offset in 0..64u16 {
+                let byte = nes.peek(0x6004 + offset);
+                if byte == 0 {
+                    break;
+                }
+                text.push(if byte.is_ascii_graphic() || byte == b' ' {
+                    byte as char
+                } else {
+                    '.'
+                });
+            }
+            println!(
+                "frame {frame:5}: $6000={status:#04X} pc={:#06X} halted={} {text}",
+                nes.cpu_pc(),
+                nes.is_cpu_halted()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "a diagnostic tool: set NES_DUMP_ROM to the .nes file to dump frames"]
+fn dump_frames_of_a_rom() {
+    let Some(requested) = std::env::var("NES_DUMP_ROM").ok() else {
+        println!("set NES_DUMP_ROM=<path to a .nes file> to dump its frames");
+        return;
+    };
+    let path = resolve_rom_path(&requested);
+    let frames: u32 = std::env::var("NES_DUMP_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(120);
+    let every: u32 = std::env::var("NES_DUMP_EVERY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(frames);
+    let directory = std::env::var("NES_DUMP_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    let stem = path
+        .file_stem()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "frame".to_string());
+
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+
+    // The frame buffer holds `0xAARRGGBB` words, so on a little-endian host the
+    // bytes land as B, G, R, A — read in that order here, which is what keeps
+    // red and blue from swapping.
+    for frame in 1..=frames {
+        nes.frame();
+        if frame % every != 0 {
+            continue;
+        }
+        let mut ppm = b"P6\n256 240\n255\n".to_vec();
+        for pixel in nes.frame_buffer() {
+            ppm.push((pixel >> 16) as u8);
+            ppm.push((pixel >> 8) as u8);
+            ppm.push(*pixel as u8);
+        }
+        let out = format!("{directory}/{stem}_f{frame:04}.ppm");
+        std::fs::write(&out, ppm).expect("write the frame");
+        println!("wrote {out}");
+    }
+}
+
+/// The path a `NES_*_ROM` variable names, resolved from the repository root when
+/// it is written the way the docs write it (`roms/...`).
+fn resolve_rom_path(requested: &str) -> PathBuf {
+    if std::path::Path::new(requested).exists() {
+        return PathBuf::from(requested);
+    }
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop();
+    root.pop();
+    root.push(requested);
+    root
+}
+
 #[test]
 #[ignore = "a diagnostic tool: set NES_TRACE_ROM to the .nes file to trace"]
 fn trace_a_rom() {

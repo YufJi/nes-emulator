@@ -2440,6 +2440,68 @@ mod tests {
         rom
     }
 
+    /// A cartridge that starts a one-byte DMC sample and then spins on
+    /// `$4015`'s active bit until it clears — the sequence `sprdma_and_dmc_dma`
+    /// synchronises its DMA tests with.
+    fn dmc_active_bit_rom() -> Vec<u8> {
+        let mut rom = vec![0u8; 16];
+        rom[0..4].copy_from_slice(b"NES\x1a");
+        rom[4] = 1; // one 16 KB PRG bank, mirrored over $8000-$FFFF
+        rom[5] = 1; // one 8 KB CHR bank
+
+        let mut prg = vec![0u8; 0x4000];
+        let code: &[u8] = &[
+            0x78, // SEI
+            0xD8, // CLD
+            0xA9, 0x40, 0x8D, 0x17, 0x40, // $4017: 4-step, frame IRQ inhibited
+            0xA9, 0x00, 0x8D, 0x13, 0x40, // $4013: a one-byte sample
+            0xA9, 0x0F, 0x8D, 0x10, 0x40, // $4010: rate 15, no IRQ, no loop
+            0xA9, 0x0F, 0x8D, 0x15, 0x40, // $4015: DMC off
+            0xA9, 0x1F, 0x8D, 0x15, 0x40, // $4015: DMC on
+            0xEA, // NOP, as the ROM has it
+            0x8D, 0x15, 0x40, // $4015: written once more
+            0xA9, 0x10, // loop: LDA #$10
+            0x2C, 0x15, 0x40, //       BIT $4015
+            0xD0, 0xFB, //             BNE loop (while the DMC bit is set)
+            0xA9, 0x5A, 0x85, 0x10, // reached: LDA #$5A / STA $10
+        ];
+        prg[..code.len()].copy_from_slice(code);
+        // Park after the marker rather than falling off the end of the bank.
+        let hang = 0x8000u16 + code.len() as u16;
+        prg[code.len()] = 0x4C; // JMP $xxxx
+        prg[code.len() + 1] = hang as u8;
+        prg[code.len() + 2] = (hang >> 8) as u8;
+
+        // NMI and IRQ return immediately, as in `dmc_sync_rom`.
+        prg[0x3F00] = 0x40;
+        prg[0x3FFA] = 0x00;
+        prg[0x3FFB] = 0xBF;
+        prg[0x3FFC] = 0x00;
+        prg[0x3FFD] = 0x80;
+        prg[0x3FFE] = 0x00;
+        prg[0x3FFF] = 0xBF;
+        rom.extend_from_slice(&prg);
+        rom.extend_from_slice(&[0u8; 0x2000]);
+        rom
+    }
+
+    /// The DMC's `$4015` bit has to clear when the sample's last byte has been
+    /// fetched, or a ROM that waits on it spins forever — which is what
+    /// `sprdma_and_dmc_dma` does before every one of its DMA measurements.
+    #[test]
+    fn test_the_dmc_active_bit_clears_when_the_sample_ends() {
+        let mut nes = Nes::new();
+        nes.load_rom(&dmc_active_bit_rom()).expect("load NROM");
+        for _ in 0..30 {
+            nes.frame();
+        }
+        assert_eq!(
+            nes.peek(0x10),
+            0x5A,
+            "the ROM never got past its wait for $4015's DMC bit"
+        );
+    }
+
     /// A cartridge whose first act is to turn the background off after a short
     /// delay, so the frame shows where that write landed.
     fn background_off_rom() -> Vec<u8> {

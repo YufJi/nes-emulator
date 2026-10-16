@@ -1372,3 +1372,51 @@ fn test_5step_mode_no_irq() {
     // IRQ should never be set in 5-step mode
     assert!(!apu.frame_counter_irq);
 }
+
+/// The register sequence `sprdma_and_dmc_dma` runs before every one of its DMA
+/// measurements: one byte of length, the fastest rate, disable-then-enable on
+/// `$4015` (with the enable written twice, a `NOP` apart), and then a spin on
+/// `$4015`'s DMC bit until it clears.
+///
+/// The bit has to clear once that one byte has been *fetched* — `$4015` follows
+/// the reader, not the playback (Mesen's `GetStatus` is `_bytesRemaining > 0`)
+/// — because the ROM uses it as a clock: if it never clears, the ROM spins
+/// forever and measures nothing.
+#[test]
+fn test_the_rom_style_enable_fetches_one_byte_and_clears_the_status_bit() {
+    let mut dmc = DmcChannel::new();
+    dmc.write_register(0x4013, 0x00); // length 1
+    dmc.write_register(0x4010, 0x0F); // rate 15, no IRQ, no loop
+    dmc.write_register(0x4015, 0x0F); // DMC off
+    dmc.write_register(0x4015, 0x1F); // DMC on
+    dmc.write_register(0x4015, 0x1F); // on again, as the ROM writes it
+
+    assert!(
+        dmc.is_active(),
+        "enabling the channel has to start the sample"
+    );
+    assert_eq!(
+        dmc.dma_request(),
+        Some(0xC000),
+        "the fetch is asked for at once, from the sample's address"
+    );
+
+    let mut fetched = 0;
+    for _ in 0..3000 {
+        if let Some(addr) = dmc.dma_request() {
+            assert_eq!(addr, 0xC000);
+            dmc.supply_dma_byte(0xAA);
+            fetched += 1;
+        }
+        dmc.clock_timer();
+        if !dmc.is_active() {
+            break;
+        }
+    }
+
+    assert_eq!(fetched, 1, "a one-byte sample fetches exactly one byte");
+    assert!(
+        !dmc.is_active(),
+        "the status bit has to clear once the byte is fetched"
+    );
+}
