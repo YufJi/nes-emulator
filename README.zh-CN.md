@@ -5,6 +5,10 @@
 用 Rust 编写的 NES 模拟器内核，附带 WASM 绑定与 React 网页前端：把 `.nes`
 文件拖进页面，或填入一个 ROM 链接，即可开始游戏。
 
+> 本项目由 AI 完成：从 `nes-core` 模拟器内核、WASM / Swift / Kotlin 绑定，到 Web、iOS
+> 与 Android 前端，以及测试和这些文档，全部由 **Codex**（OpenAI 的编码智能体）配合
+> **deepseek-flash** 大模型编写。
+
 ![网页前端：从内置游戏列表选中《超级玛莉》后的运行画面，右侧依次是控制台、从链接加载、即时存档、虚拟手柄与键位面板](docs/img/web-ui.png)
 
 ## 特性

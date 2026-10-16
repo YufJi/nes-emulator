@@ -5,6 +5,10 @@
 A NES emulator core written in Rust, with WASM bindings and a React web front end:
 drag a `.nes` file onto the page, or paste a ROM URL, and start playing.
 
+> The whole project — the `nes-core` emulator, the WASM / Swift / Kotlin bindings, the
+> web, iOS, and Android front ends, the tests, and these docs — was written end to end by
+> **Codex**, OpenAI's coding agent, working with the **deepseek-flash** LLM.
+
 > The web UI strings are currently Chinese; the docs are English-first, with
 > `*.zh-CN.md` alongside each translated page.
 
