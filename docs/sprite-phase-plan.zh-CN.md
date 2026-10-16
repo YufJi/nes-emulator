@@ -300,6 +300,12 @@ S4 的地址簿记，再把这个写回压上去。
 `$0494 Misaligned OAM DMA` 在有写回时通过、无写回时失败；"去掉写回"那一列里变成 `FAILED` 的 sprite
 画面，就是上面那个 sprite 0 失效本身。
 
+**S4 的另一件也试过并排除了**（2026-10-16）：`UpdateState` 里还有一条无条件的抖动——在绘制行的
+65-256 中途把渲染**关掉**会让 OAM 地址 +1（"disabling rendering during OAM evaluation will trigger a
+glitch causing the current address to be incremented by 1"）。实现后按 Mesen 形状那一组量：结果完全
+相同，144 跑 / 24 失败、失败地址逐项一致。所以那十一项要的是 S4 里的别的东西——剩下两个候选是
+`$2004` 写的落地时机与 DMA 的地址时序，不是这条抖动。
+
 **改动。** 用移植版 `SpriteEvaluator`（`/tmp/newsrc4/sprite.rs`）替换 `evaluate()`：1-64 清二级 OAM、
 65 起步、奇数 dot 读 `$2003` 指的那个字节、偶数 dot 判决（范围判断放在空位判断**之外**、错位重对齐
 规则、溢出 bug 的对角步进、`_oamCopyDone` 的重读分支），`$2003` 由步进写回，溢出标志**在它被升起的

@@ -324,6 +324,14 @@ scanline", pass — and AccuracyCoin's `$0459 Sprite overflow behavior` passes i
 `$0494 Misaligned OAM DMA` pass with the write-back and fail without it; the sprite-suite pictures
 that move to `FAILED` in the write-back-off column are the sprite-0 breakage itself.
 
+**One more piece of S4, tried and ruled out** (2026-10-16): `UpdateState` also carries an
+unconditional glitch — switching rendering *off* during dots 65-256 of a drawing line bumps the OAM
+address by one ("disabling rendering during OAM evaluation will trigger a glitch causing the current
+address to be incremented by 1"). It was implemented and measured against the Mesen-shaped
+configuration: identical, 144 ran / 24 failing with the same failing addresses. So the eleven items
+want something else from S4 — the `$2004` write's landing and the DMA's address timing are the
+candidates left, not this glitch.
+
 **Change.** `SpriteEvaluator` (the port in `/tmp/newsrc4/sprite.rs`) replaces `evaluate()`: dots 1-64
 clear, dot 65 starts, odd dots read `$2003`'s byte, even dots decide (the range test outside the room
 test, the misalignment resync rule, the diagonal overflow-bug step, the `_oamCopyDone` re-read
