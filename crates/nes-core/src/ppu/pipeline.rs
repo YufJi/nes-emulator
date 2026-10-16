@@ -181,9 +181,23 @@ struct SpriteTile {
     low: u8,
     high: u8,
     /// Whether the slot was occupied, i.e. whether the fetched bytes mean
-    /// anything. The chip fetches tile $FF for an empty slot; this is what
-    /// keeps that fetch from being drawn.
+    /// anything. The chip fetches tile $FF for an empty slot, and it fetches
+    /// for a slot whose sprite is not on the line either; this is what keeps
+    /// those fetches from being drawn.
     occupied: bool,
+}
+
+/// Where a slot's pattern bytes are on the line the chip is fetching for, and
+/// whether the sprite is on that line — Mesen's `LoadSprite`, less the work it
+/// does for the shifters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SpriteFetch {
+    /// Address of the tile's first row.
+    addr: u16,
+    /// The row within the tile, which is `addr + row` and `addr + row + 8`.
+    row: u16,
+    /// Whether the sprite covers the line being fetched for.
+    in_range: bool,
 }
 
 crate::state::state_fields!(SpriteTile {
@@ -291,6 +305,18 @@ impl PixelPipeline {
         &self.bg_opaque
     }
 
+    /// The secondary-OAM slots the sprite phase is holding for this line.
+    ///
+    /// Read-only, for the tests and diagnostics that ask *which dot* the fetch
+    /// ran on: the slots are the pipeline's own state, so a caller outside this
+    /// module has no other way to see what the dot-257 latch produced.
+    ///
+    /// S3 of `docs/sprite-phase-plan.md` replaces this latch with Mesen's
+    /// shifter list; this getter goes with it.
+    pub fn sprite_slots(&self) -> &[SpriteSlot; 8] {
+        &self.sprite_slots
+    }
+
     /// Run the pipeline for the dot the PPU has just advanced to.
     ///
     /// The PPU's own `scanline`/`cycle` are the input: the machine counts the
@@ -342,7 +368,7 @@ impl PixelPipeline {
                     self.bus_access = Some(addr);
                 }
                 4 | 6 => {
-                    let (addr, row) = self.sprite_pattern_addr(ppu, slot);
+                    let fetch = self.sprite_fetch(ppu, slot);
                     // The tile's eight low-plane bytes come first and the high
                     // plane's eight follow them: phase 4 reads `row`, phase 6
                     // reads `row + 8`. Reading the same address twice hands the
@@ -350,10 +376,14 @@ impl PixelPipeline {
                     // colours — every pixel whose planes are (0, 1), colour 2,
                     // reads as (0, 0) and is dropped as transparent.
                     let high_plane = if (cycle - 257) % 8 == 4 { 0 } else { 8 };
-                    let pattern_addr = addr + row + high_plane;
+                    let pattern_addr = fetch.addr + fetch.row + high_plane;
                     let byte = chr.read_pattern(ppu, pattern_addr);
                     if high_plane == 0 {
                         self.sprite_tiles[slot].low = byte;
+                        // Mesen's `LoadSprite`: a sprite that is not on the line
+                        // being fetched for never reaches the shifters, whatever
+                        // bytes it happened to leave in secondary OAM.
+                        self.sprite_tiles[slot].occupied = fetch.in_range;
                     } else {
                         self.sprite_tiles[slot].high = byte;
                     }
@@ -477,43 +507,56 @@ impl PixelPipeline {
         ppu.vram[self.mirroring.mirror_vram_addr(addr) as usize]
     }
 
-    /// Pattern address of a slot's sprite row, and the row within the tile.
+    /// Mesen's `LoadSprite`: where a slot's pattern bytes live for the line
+    /// being fetched, and whether the sprite is on that line at all.
     ///
-    /// The sprites the evaluation found during the line being drawn are for the
-    /// *next* line, so the row comes from that one: how far the sprite's own
-    /// top is above it, flipped if the attributes say so. 8x16 sprites pick
-    /// their pattern table from bit 0 of the tile and their second tile from
-    /// bit 0 of the row.
-    fn sprite_pattern_addr(&self, ppu: &Ppu, slot: usize) -> (u16, u16) {
+    /// The line the chip compares against is truncated to eight bits — the
+    /// pre-render line is 261 here and -1 in Mesen, so both sides end up using
+    /// **5** — and the difference is a signed one widened to sixteen bits, so a
+    /// sprite whose Y is *below* it comes out as a large number and is rejected.
+    /// That rejection is what keeps a secondary-OAM entry left over from the
+    /// previous line from being drawn as a sprite on line 0, and it is why the
+    /// pre-render fetch is the "dummy `$FF` tiles" path Mesen describes.
+    ///
+    /// Two ROM checks measure it: `sprite_hit_tests/07.screen_bottom`'s check 4
+    /// (a Y of 255 must never hit) and AccuracyCoin's `Sprite0Hit_Behavior`.
+    fn sprite_fetch(&self, ppu: &Ppu, slot: usize) -> SpriteFetch {
         let sprite = self.sprite_slots[slot];
-        let height = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_SIZE) {
-            16u16
+        let (height, size_mask) = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_SIZE) {
+            (16u16, 15u16)
         } else {
-            8u16
+            (8u16, 7u16)
         };
-        // The evaluation only keeps sprites that cover that line, so the
-        // subtraction stays in range; saturate anyway so a slot the evaluation
-        // did not fill cannot wrap.
-        let mut row = ppu
-            .scanline
-            .saturating_add(1)
-            .saturating_sub(sprite.y as u16 + 1);
+
+        // `(uint8_t)_scanline`: 261 becomes 5, 311 becomes 55, visible lines are
+        // themselves. Then the subtraction Mesen's `uint16_t rangeResult` gets.
+        let scanline8 = (ppu.scanline & 0xFF) as i32;
+        let mut range = (scanline8 - sprite.y as i32) as u16;
         if sprite.vertical_flip() {
-            row = height - 1 - row;
+            range ^= size_mask;
         }
 
-        let (table, tile) = if height == 16 {
+        // `(((tileIndex & 0x01) << 12) | ((tileIndex & ~0x01) << 4))` for 8x16:
+        // the pattern table comes from bit 0 of the tile index and the second
+        // tile from bit 3 of the row. 8x8 takes its table from `$2000` and keeps
+        // the tile index whole.
+        let addr = if height == 16 {
             let table = if sprite.tile & 1 != 0 { 0x1000 } else { 0x0000 };
-            (table, (sprite.tile & 0xFE) as u16 + (row / 8))
+            table | ((sprite.tile & 0xFE) as u16) << 4 | ((range & 0x08) << 1)
         } else {
             let table = if ppu.ctrl.contains(crate::ppu::PpuCtrl::SPRITE_PATTERN) {
                 0x1000
             } else {
                 0x0000
             };
-            (table, sprite.tile as u16)
+            table | (sprite.tile as u16) << 4
         };
-        (table + tile * 16, row & 7)
+
+        SpriteFetch {
+            addr,
+            row: range & 0x07,
+            in_range: range <= size_mask,
+        }
     }
 
     /// Draw the sprite pixel for this dot, if any sprite covers it.

@@ -3,8 +3,8 @@
 # A frame is hashed when its picture differs from the previous one, so this is a
 # regression net and not a verdict -- and not yet Mesen's own recorded values.
 2b5dba90767cae3dc31d322a46dd3c23eb487374 x2
-16202c2a8dc37faf4f656779afd95c093c732af3 x7
+16202c2a8dc37faf4f656779afd95c093c732af3 x11
 6923e21bc15b73450e1fe2034070fb3653e2f59d x1
-442fa4c0cc4926de05e21c78e4065ab4abfd5ba1 x255
-442fa4c0cc4926de05e21c78e4065ab4abfd5ba1 x255
-442fa4c0cc4926de05e21c78e4065ab4abfd5ba1 x80
+8fdcc82ac8bac2ff3ce27df18d3d58ddaa29ca65 x255
+8fdcc82ac8bac2ff3ce27df18d3d58ddaa29ca65 x255
+8fdcc82ac8bac2ff3ce27df18d3d58ddaa29ca65 x76

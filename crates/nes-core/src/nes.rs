@@ -1128,14 +1128,22 @@ impl NesBus {
         if scanline == pre_render {
             // Pre-render scanline: the flags the last frame left go, the
             // background shift registers start the new frame empty, and the
-            // sprites for line 0 are evaluated and prefetched here.
+            // sprites for line 0 are fetched from the secondary OAM the last
+            // visible line's walk left behind.
+            //
+            // No *walk* runs here. Mesen keeps `ProcessSpriteEvaluation` inside
+            // `if(_scanline >= 0)`, and the comment next to it says why:
+            // "Secondary OAM clear and sprite evaluation do not occur on the
+            // pre-render line". Running one would clear the very bytes line 0's
+            // fetch reads, and it would compare every sprite's Y against a line
+            // number no sprite can be on.
             if cycle == 1 {
                 self.ppu.status.remove(PpuStatus::VBLANK);
                 self.ppu.status.remove(PpuStatus::SPRITE_OVERFLOW);
                 self.ppu.status.remove(PpuStatus::SPRITE_0_HIT);
                 self.pipeline.reset_shifters();
             }
-            self.step_sprite_pipeline(0, cycle);
+            self.latch_sprite_slots(cycle);
         } else if scanline < 240 {
             // The sprite pipeline is driven at Mesen's dots: the evaluation
             // that fills secondary OAM runs at dot 65 and the pattern fetches
@@ -1156,7 +1164,13 @@ impl NesBus {
 
     /// The sprite half of the pipeline for `sprite_line`, at this dot.
     fn step_sprite_pipeline(&mut self, sprite_line: u16, cycle: u16) {
-        if cycle == 65 {
+        // The walk is gated on the rendering state as of the end of the
+        // previous dot — Mesen's `if(_prevRenderingEnabled)` around
+        // `ProcessSpriteEvaluation`. With the picture off the chip never
+        // compares a sprite's Y against the line, so a line with nine sprites on
+        // it raises nothing; `sprite_overflow_tests/1.Basics`'s check 6 is the
+        // ROM that measures exactly that (`$2001 = 0`, then read `$2002`).
+        if cycle == 65 && self.rendering_enabled_delayed {
             let overflow = self.sprite_evaluator.evaluate(
                 &self.ppu.oam,
                 sprite_line,
@@ -1167,7 +1181,18 @@ impl NesBus {
                 self.ppu.status.insert(PpuStatus::SPRITE_OVERFLOW);
             }
         }
-        if cycle == 257 {
+        self.latch_sprite_slots(cycle);
+    }
+
+    /// Hand the pipeline the slots for the next line, on the dot the chip does.
+    ///
+    /// This is the *fetch* half and it is gated the same way the walk is, for
+    /// the same reason: Mesen's whole dots-257-320 window sits inside
+    /// `if(_prevRenderingEnabled)`. On the pre-render line it is the only thing
+    /// that runs, and what it hands over is whatever secondary OAM holds — line
+    /// 0's sprites.
+    fn latch_sprite_slots(&mut self, cycle: u16) {
+        if cycle == 257 && self.rendering_enabled_delayed {
             let slots = self.sprite_slots_from_secondary_oam();
             self.pipeline.set_sprite_slots(slots);
         }
@@ -4430,5 +4455,137 @@ mod tests {
                 "cycle {cycle}: the PPU has to stop on a dot boundary"
             );
         }
+    }
+
+    /// Put `count` sprites on one line in OAM, starting at sprite 0.
+    ///
+    /// `y` is the OAM Y byte, which is the line *above* the sprite's top row:
+    /// an OAM Y of 5 puts an 8x8 sprite on line 6.
+    fn put_sprites_on_a_line(nes: &mut Nes, y: u8, count: usize) {
+        for index in 0..count {
+            nes.bus.ppu.oam[index * 4] = y;
+            nes.bus.ppu.oam[index * 4 + 1] = 0x00;
+            nes.bus.ppu.oam[index * 4 + 2] = 0x00;
+            nes.bus.ppu.oam[index * 4 + 3] = (index * 8) as u8;
+        }
+    }
+
+    /// Run the machine until the PPU has reached `(scanline, dot)`.
+    ///
+    /// `step_dot` spends one dot per call, but the call that runs out of the
+    /// previous instruction's dots executes the next instruction whole and
+    /// moves the PPU an instruction's worth of dots at once, so the machine can
+    /// land a few dots *past* the target. What the tests below ask is "by this
+    /// dot, has the walk run", which a small overshoot does not change.
+    fn run_until_at_least(nes: &mut Nes, scanline: u16, dot: u16) {
+        let mut dots = 0u32;
+        while nes.ppu_position() < (scanline, dot) {
+            nes.step_dot();
+            dots += 1;
+            // One frame is 261 lines of 341 dots, so a target may be most of a
+            // frame away; the bound is there to stop a runaway loop.
+            assert!(dots < 200_000, "never reached ({scanline}, {dot})");
+        }
+    }
+
+    /// Run until the PPU reaches `(scanline, dot)` on a frame that has not
+    /// started yet: a target this frame has already passed means the next
+    /// frame's, which is what a test needs after it changes `$2001` mid-frame.
+    fn run_until_after_this_frame(nes: &mut Nes, scanline: u16, dot: u16) {
+        let frame = nes.frame_number();
+        let mut dots = 0u32;
+        while nes.frame_number() == frame {
+            nes.step_dot();
+            dots += 1;
+            assert!(dots < 200_000, "the frame never ended");
+        }
+        run_until_at_least(nes, scanline, dot);
+    }
+
+    /// The walk is gated on the rendering state as of the end of the previous
+    /// dot (Mesen's `if(_prevRenderingEnabled)` around `ProcessSpriteEvaluation`).
+    ///
+    /// With the picture off the chip never compares a sprite's Y against the
+    /// line, so nine sprites sharing one raise nothing — which is exactly what
+    /// `sprite_overflow_tests/1.Basics`'s check 6 measures, by setting
+    /// `$2001 = 0` and reading `$2002`. It is S1 of
+    /// `docs/sprite-phase-plan.md`'s gate.
+    #[test]
+    fn test_the_sprite_walk_is_skipped_while_rendering_is_off() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+
+        // Nine sprites on line 6, and the picture switched off.
+        put_sprites_on_a_line(&mut nes, 5, 9);
+        nes.bus.ppu.mask = PpuMask::empty();
+        run_until_at_least(&mut nes, 6, 100);
+        assert!(
+            !nes.bus.ppu.status.contains(PpuStatus::SPRITE_OVERFLOW),
+            "nine sprites must not raise the flag while rendering is off"
+        );
+
+        // The same OAM with the picture on: the walk runs, and the flag is up
+        // by the dot the ninth sprite has been judged on. Line 6 has already
+        // gone by in this frame, so this waits for the next frame's.
+        nes.bus.ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES;
+        run_until_after_this_frame(&mut nes, 6, 100);
+        assert!(
+            nes.bus.ppu.status.contains(PpuStatus::SPRITE_OVERFLOW),
+            "with rendering on the same nine sprites do overflow line 6"
+        );
+    }
+
+    /// The pre-render line has no walk: Mesen's `ProcessSpriteEvaluation` sits
+    /// inside `if(_scanline >= 0)`, and the comment next to it says so —
+    /// "Secondary OAM clear and sprite evaluation do not occur on the pre-render
+    /// line".
+    ///
+    /// So its secondary OAM is whatever the last visible line's walk left
+    /// there, and that is what line 0's fetch reads (Mesen's "force prerender
+    /// scanline sprite fetches to load the dummy `$FF` tiles").
+    #[test]
+    fn test_the_pre_render_line_does_not_walk_oam() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        // Nine sprites on line 239 (an OAM Y of 238), the last line the walk
+        // runs on: it finds eight of them.
+        put_sprites_on_a_line(&mut nes, 238, 9);
+        nes.bus.ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES;
+
+        run_until_at_least(&mut nes, 240, 100);
+        let found = nes.bus.sprite_evaluator.secondary_oam.count();
+        assert_eq!(found, 8, "line 239's walk fills secondary OAM");
+
+        let pre_render = nes.region().last_scanline();
+        run_until_at_least(&mut nes, pre_render, 100);
+        assert_eq!(
+            nes.bus.sprite_evaluator.secondary_oam.count(),
+            found,
+            "the pre-render line runs no walk, so secondary OAM still holds \
+             what line 239 left it"
+        );
+    }
+
+    /// What the pre-render line *does* still run is the fetch: at dot 257 the
+    /// pipeline is handed the slots straight out of secondary OAM, unwalked.
+    ///
+    /// That is the only way line 0 can show a sprite at all, since the walk that
+    /// would have picked one for it never happened. S3 replaces the latch with
+    /// Mesen's shifter list, and this assertion moves with it.
+    #[test]
+    fn test_line_zero_is_fetched_from_the_last_walks_secondary_oam() {
+        let mut nes = Nes::new();
+        nes.load_rom(&marker_rom(0)).expect("load NROM");
+        put_sprites_on_a_line(&mut nes, 238, 8);
+        nes.bus.ppu.mask = PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES;
+
+        let pre_render = nes.region().last_scanline();
+        run_until_at_least(&mut nes, pre_render, 258);
+        let slots = *nes.bus.pipeline.sprite_slots();
+        assert!(slots[0].occupied, "the pre-render fetch still runs");
+        assert_eq!(
+            slots[0].y, 238,
+            "and it fetches the bytes line 239's walk left behind"
+        );
     }
 }

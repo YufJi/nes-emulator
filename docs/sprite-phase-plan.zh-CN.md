@@ -114,7 +114,7 @@
 | `blargg/oam_stress`（1） | 1/1，走 `$6000`（它要约 1700 帧） |
 | `blargg/ppu_open_bus`（1） | 1/1，走 `$6000` |
 | `blargg/sprite_hit_tests`（11） | **11/11**，按画面：`PASSED` |
-| `blargg/sprite_overflow_tests`（5） | **2/5**，按画面：`2.Details` 与 `4.Obscure` `PASSED`；`1.Basics` **`FAILED: #6`**、`3.Timing` **`FAILED: #4`**、`5.Emulator` **`FAILED: #3`** |
+| `blargg/sprite_overflow_tests`（5） | 第 0 步时按画面 2/5（`1.Basics` `FAILED: #6`、`3.Timing` `FAILED: #4`、`5.Emulator` `FAILED: #3`）；**S1 之后是 4/5**，见下面那一步 |
 | `blargg/mmc3_test_2`（6） | 5/6，走 `$6000`；`6-MMC3_alt` 要 MMC3 修订版 A，Mesen 是从数据库选的，因此它同样失败（§10.6） |
 | `blargg/apu_test`（8） | 8/8，走 `$6000` |
 | `nes-test-roms/blargg_apu_2005.07.30`（11） | 9/11，按画面：九张打 `$01`；`10.len_halt_timing` 打 `$03`、`11.len_reload_timing` 打 `$04`——长度计数器的 halt/reload 时序（§10.3 第 8 条） |
@@ -214,24 +214,51 @@ cargo test --release -p nes-core --test rom_tests -- --nocapture
 的门就是它下面列的领先指标；AccuracyCoin 的计数随后才看，而"领先指标全绿、计数却往坏处走"是一处要
 记下来的发现，不是回撤的理由。
 
-### S1——把步进按 Mesen 的门限起来
+### S1——把步进按 Mesen 的门限起来 —— **已完成，2026-10-16**
 
-**改动。** 在 `ppu_step` 里，步进只在 `rendering_enabled_delayed` 为真、且只在 0-239 行上运行。预渲染
-行保留取指阶段、不再求值，于是第 0 行的 sprite 来自最后一条可见行的步进留在二级 OAM 里的东西——这正是
-Mesen"预渲染行的 sprite 取指装的是哑 `$FF` 瓦片"那条行为。
+**改了什么。** `NesBus::ppu_step` 只在画面正在绘制时驱动步进：它挂在 `rendering_enabled_delayed`
+上（Mesen 的 `_prevRenderingEnabled`，上一个 dot 末尾的掩码状态），并且**不再**在预渲染行上运行。
+预渲染行保留**取指**，dot 257 的锁存现在把"最后一条可见行的步进留在二级 OAM 里的槽位"原样交给流水线
+——`latch_sprite_slots` 因此单独成函数，并同样受门限，因为 Mesen 的整个 257-320 窗口就在同一个
+`if(_prevRenderingEnabled)` 里面。
 
-**依据。** `NesPpu.cpp` 里围住 `ProcessSpriteEvaluation` 的 `if(_scanline >= 0)`，以及它旁边的注释
-"Secondary OAM clear and sprite evaluation do not occur on the pre-render line"。
+**有一件事必须一起做。** 给步进加门限，正是让第 0 行改成吃"陈旧的二级 OAM"的那一步，而旧的槽位模型
+把它们画了出来：`sprite_hit_tests/07.screen_bottom` 从 `PASSED` 掉到 `FAILED: #4`（"Y = 255 时必须
+不命中"），AccuracyCoin 的 `Sprite0Hit_Behavior`（`$0457` 第 13 项）也进了失败清单。两处缺的是同一件
+东西——Mesen 的 `LoadSprite` 在**取指那个 dot** 上就判定这个 sprite 到底在不在这一行上：
 
-**先写测试。** `test_the_walk_does_not_run_on_the_pre_render_line`、
-`test_the_walk_is_skipped_while_rendering_is_off`、
-`test_line_zero_takes_its_sprites_from_the_last_walks_secondary_oam`。
+```cpp
+const uint8_t scanline8Bit = (uint8_t)(_scanline >= 0 ? _scanline : (_region == ConsoleRegion::Ntsc ? 261 : 311));
+uint16_t rangeResult = scanline8Bit - spriteY;
+```
 
-**门。** `sprite_overflow_tests/1.Basics` 过掉 #6（它接着停在 #7 是预期之内的，#7/#8 是 S2 修的时间）。
-`sprite_hit_tests` 保持 11/11。AccuracyCoin 的清单不变或更好。
+行号被截成八位（261 与 -1 都变成 5），差值按有符号加宽，于是 Y 落在这一行之下的 sprite 会算出一个很大的
+数并被拒绝。`PixelPipeline::sprite_fetch` 现在做的就是这件事，行号与 8x16 的第二块瓦片位也都取自同一个
+`rangeResult`——这才让 `07.screen_bottom` 回到 `PASSED`、`$0457` 也回到清单之外。把它放进 S1 而不是
+S3，是计划自己的规则（§5 第 4 条）：收窄回退，而不是回撤这一步。S3 会挪动这个判定**住在哪里**（移位器
+表），这套算术不变。
 
-**风险。** 第 0 行的 sprite 会按设计改变。`sprite_hit` 的画面就是那道检查；若有一个动了，那就是预期中
-的第 0 行效应，要读、要记录，而不是回撤。
+**先写的测试**（三条在上一个提交上都是红的）：
+`test_the_sprite_walk_is_skipped_while_rendering_is_off`、
+`test_the_pre_render_line_does_not_walk_oam`、
+`test_line_zero_is_fetched_from_the_last_walks_secondary_oam`。
+
+**实测。**
+
+| 门 | S1 之前 | S1 之后 |
+| --- | --- | --- |
+| `sprite_overflow_tests/1.Basics` | `FAILED: #6` | **`PASSED`** |
+| `sprite_overflow_tests/5.Emulator` | `FAILED: #3` | **`PASSED`** |
+| `sprite_overflow_tests/3.Timing` | `FAILED: #4` | `FAILED: #4`——那是 S2 的门 |
+| `sprite_overflow_tests` 合计 | 2/5 | **4/5** |
+| `sprite_hit_tests` | 11/11 | 11/11——补上取指判定之后；没补时 `07.screen_bottom` 回退了 |
+| AccuracyCoin | 跑 146 / 过 111 / 失败 17 | 146 / 111 / 17，失败地址逐个相同 |
+| `mmc3_test_2`、`ppu_vbl_nmi`、`cpu_interrupts_v2`、`apu_test` | 全绿 | 全绿（`5/6`、`10/10`、`5/5`、`8/8`） |
+| 单元测试 | 613 | **616** |
+
+`cargo test --workspace --release` 全绿。`1.Basics` 与 `5.Emulator` 的新屏幕读过（都是 `PASSED`）之后
+重录了金标准，两条也一并从清单里删掉。
+
 
 ### S2——步进变成逐 dot
 

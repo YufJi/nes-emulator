@@ -121,18 +121,16 @@ fn blargg_sprite_overflow() {
         // entries were read off their screens on 2026-10-16, and they correct
         // the 5/5 the alignment document used to record: that number came from
         // goldens recorded while the pictures already showed these failures.
-        // `1.Basics` #6 is "must not be set when all rendering is off",
-        // `3.Timing` #4 is "set too early for the first scanline", and
-        // `5.Emulator` #3 is "disabling rendering did not recalculate the flag
-        // time" — all three because the walk runs on every line with no
-        // rendering gate and raises the flag at dot 65. The fix is S1/S2 of
-        // `docs/sprite-phase-plan.md`, and their goldens are the net that will
-        // say when the pictures move.
-        &[
-            "1.Basics.nes — prints FAILED: #6 (flag set with all rendering off)",
-            "3.Timing.nes — prints FAILED: #4 (flag raised at dot 65, not the judging dot)",
-            "5.Emulator.nes — prints FAILED: #3 (a rendering change does not move the flag's time)",
-        ],
+        //
+        // S1 of `docs/sprite-phase-plan.md` (2026-10-16) gated the walk on the
+        // rendering state and took it off the pre-render line, and that is what
+        // `1.Basics` (check 6, "must not be set when all rendering is off") and
+        // `5.Emulator` (check 3, "disabling rendering did not recalculate the
+        // flag time") were waiting for: both print `PASSED` now, and their
+        // entries and goldens moved with them. `3.Timing` is left, and it is
+        // S2's: its check 4 wants the flag to appear on the dot the walk judges
+        // the ninth sprite on, where this core still raises it at dot 65.
+        &["3.Timing.nes — prints FAILED: #4 (flag raised at dot 65, not the judging dot)"],
     );
 }
 

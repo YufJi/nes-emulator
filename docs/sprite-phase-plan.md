@@ -124,7 +124,7 @@ this plan is written against:
 | `blargg/oam_stress` (1) | 1/1 through `$6000` (it needs ~1700 frames) |
 | `blargg/ppu_open_bus` (1) | 1/1 through `$6000` |
 | `blargg/sprite_hit_tests` (11) | **11/11** by picture: `PASSED` |
-| `blargg/sprite_overflow_tests` (5) | **2/5** by picture: `2.Details` and `4.Obscure` `PASSED`; `1.Basics` **`FAILED: #6`**, `3.Timing` **`FAILED: #4`**, `5.Emulator` **`FAILED: #3`** |
+| `blargg/sprite_overflow_tests` (5) | 2/5 by picture at S0 (`1.Basics` `FAILED: #6`, `3.Timing` `FAILED: #4`, `5.Emulator` `FAILED: #3`); **4/5 after S1** — see that stage below |
 | `blargg/mmc3_test_2` (6) | 5/6 through `$6000`; `6-MMC3_alt` wants MMC3 revision A, which Mesen selects from its database and therefore fails too (§10.6) |
 | `blargg/apu_test` (8) | 8/8 through `$6000` |
 | `nes-test-roms/blargg_apu_2005.07.30` (11) | 9/11 by picture: `$01` on nine; `10.len_halt_timing` prints `$03`, `11.len_reload_timing` prints `$04` — the length counter's halt/reload timing (§10.3 item 8) |
@@ -234,25 +234,51 @@ asks for this, and §7 is where they are collected). A stage's gate is its leadi
 AccuracyCoin count is checked afterwards, and a count that moves the wrong way while every leading
 indicator is green is a finding to write down, not a reason to revert.
 
-### S1 — gate the walk the way Mesen gates it
+### S1 — gate the walk the way Mesen gates it — **done, 2026-10-16**
 
-**Change.** In `ppu_step`, the walk runs only when `rendering_enabled_delayed` is true and only on
-lines 0-239. The pre-render line keeps the fetch phase and stops evaluating, so line 0's sprites come
-from whatever the last visible line's walk left in secondary OAM — which is what Mesen's
-"pre-render sprite fetches load the dummy `$FF` tiles" behaviour is.
+**What changed.** `NesBus::ppu_step` drives the walk only while the picture is being drawn: it hangs
+off `rendering_enabled_delayed` (Mesen's `_prevRenderingEnabled`, the mask as of the end of the
+previous dot) and it no longer runs on the pre-render line at all. The pre-render line keeps the
+*fetch*, and the latch at dot 257 now hands the pipeline the slots straight out of whatever secondary
+OAM the last visible line's walk left — `latch_sprite_slots` is its own function, gated the same way,
+because Mesen's whole dots-257-320 window sits inside the same `if(_prevRenderingEnabled)`.
 
-**Oracle.** `NesPpu.cpp`'s `if(_scanline >= 0)` around `ProcessSpriteEvaluation`, and the comment
-next to it: "Secondary OAM clear and sprite evaluation do not occur on the pre-render line".
+**One thing had to come with it.** Gating the walk is what makes line 0 take its sprites from stale
+secondary OAM, and the old slot path drew them: `sprite_hit_tests/07.screen_bottom` fell from
+`PASSED` to `FAILED: #4` ("should always miss when Y = 255"), and AccuracyCoin's `Sprite0Hit_Behavior`
+(`$0457`, check 13) appeared on the failing list. Both were the same missing piece — Mesen's
+`LoadSprite` decides *at the fetch dot* whether the sprite is on the line being fetched for:
 
-**Tests first.** `test_the_walk_does_not_run_on_the_pre_render_line`,
-`test_the_walk_is_skipped_while_rendering_is_off`,
-`test_line_zero_takes_its_sprites_from_the_last_walks_secondary_oam`.
+```cpp
+const uint8_t scanline8Bit = (uint8_t)(_scanline >= 0 ? _scanline : (_region == ConsoleRegion::Ntsc ? 261 : 311));
+uint16_t rangeResult = scanline8Bit - spriteY;
+```
 
-**Gate.** `sprite_overflow_tests/1.Basics` passes #6 (it moving on to #7 is expected — #7/#8 are the
-timing S2 fixes). `sprite_hit_tests` stays 11/11. AccuracyCoin's list unchanged or better.
+The line is truncated to eight bits (261 *and* -1 both become 5) and the difference is widened
+signed, so a sprite whose Y sits below that line comes out huge and is rejected. `PixelPipeline::sprite_fetch`
+does exactly that now, and takes its row and its 8x16 second-tile bit from the same `rangeResult` —
+which is what puts `07.screen_bottom` back at `PASSED` and `$0457` back off the list. Bringing it in
+with S1 rather than S3 is the plan's own rule (§5.4): narrow the regression, do not revert the stage.
+S3 moves *where* the decision lives (the shifter list); this arithmetic stays as it is.
 
-**Risks.** Line 0's sprites change by construction. The `sprite_hit` pictures are the check; if one
-moves, that is the expected line-0 effect, to be read and recorded rather than reverted.
+**Tests first** (all three fail on the previous commit): `test_the_sprite_walk_is_skipped_while_rendering_is_off`,
+`test_the_pre_render_line_does_not_walk_oam`, `test_line_zero_is_fetched_from_the_last_walks_secondary_oam`.
+
+**Measured.**
+
+| Gate | Before S1 | After S1 |
+| --- | --- | --- |
+| `sprite_overflow_tests/1.Basics` | `FAILED: #6` | **`PASSED`** |
+| `sprite_overflow_tests/5.Emulator` | `FAILED: #3` | **`PASSED`** |
+| `sprite_overflow_tests/3.Timing` | `FAILED: #4` | `FAILED: #4` — that is S2's gate |
+| `sprite_overflow_tests`, overall | 2/5 | **4/5** |
+| `sprite_hit_tests` | 11/11 | 11/11 — after the fetch fix; without it `07.screen_bottom` regressed |
+| AccuracyCoin | 146 ran / 111 passed / 17 failing | 146 / 111 / 17, the same 17 addresses |
+| `mmc3_test_2`, `ppu_vbl_nmi`, `cpu_interrupts_v2`, `apu_test` | green | green (`5/6`, `10/10`, `5/5`, `8/8`) |
+| unit tests | 613 | **616** |
+
+`cargo test --workspace --release` is green. The goldens for `1.Basics` and `5.Emulator` were
+re-recorded after their new screens were read (both `PASSED`), and both left the baseline.
 
 ### S2 — the walk becomes dot-exact
 

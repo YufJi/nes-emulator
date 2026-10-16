@@ -383,6 +383,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 并没有实测（回头在本次会话之前的 `0934d3a` 上重测，菜单能正常显示，所以这个卡死来自 DMA 的
 改动，不是逐 dot 渲染）。harness 现在在 ROM 什么都报不出来时会直接失败，本行的数字是实测的。
 
+| sprite 阶段计划的 S1，2026-10-16 | 步进按 Mesen 的门限起来：只在画面正在绘制时运行（`_prevRenderingEnabled`，上一个 dot 末尾的掩码），且**不再**在预渲染行上运行——预渲染行保留取指，并直接从二级 OAM 锁存槽位。这需要同时补上 `LoadSprite` 的另一半：取指处的 in-range 判定（行号截成八位，261 与 -1 都变成 5，差值按有符号加宽），否则第 0 行会把陈旧槽位画出来 | `sprite_overflow_tests` 2/5 → **4/5**：`1.Basics`（第 6 项"全部渲染关闭时不得置位"）与 `5.Emulator`（第 3 项"关闭渲染没有重算标志时间"）打出 `PASSED`；`3.Timing` 仍 `FAILED: #4`，那是 S2 的门。`sprite_hit_tests` 11/11——不补取指判定时 `07.screen_bottom` 掉到 `FAILED: #4`，同一处缺失也让 AccuracyCoin 的 `Sprite0Hit_Behavior`（`$0457` 第 13 项）进了清单，补上后两者都回来了。AccuracyCoin 146/111/17、失败地址逐个相同；`mmc3_test_2` 5/6、`ppu_vbl_nmi` 10/10、`cpu_interrupts_v2` 5/5、`apu_test` 8/8 不变；单元测试 613 → 616。细节见 [`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md) §4/S1 |
+
 ### 实现、实测、随后撤回的实验
 
 它们的价值在于证据；不先读这一段就不要重试。
@@ -562,8 +564,9 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 再重录金标准；清单条目开始带着"为什么在清单上"；四个诊断（逐 dot 日志、寄存器写日志、
 AccuracyCoin 结果日志、进度监视）都在 `tests/cycle_trace.rs` 里。`cargo test --workspace --release`
 全绿——其中 ROM 套件 90 s、AccuracyCoin 7.4 s。逐 ROM 的判决见 `sprite-phase-plan.zh-CN.md` §2，
-第 0 步具体改了什么见那个文件的 §3。C8 的目标还没有移动：`sprite_overflow_tests` 仍三项失败、
-AccuracyCoin 仍 17 项失败，而 `1.Basics` 的第 6 项就是 S1 的门。
+第 0 步具体改了什么见那个文件的 §3。C8 的目标此后已经开始移动：**S1 也做完了**，
+`sprite_overflow_tests` 从 2/5 到 **4/5**（`1.Basics` 与 `5.Emulator` 打出 `PASSED`；`3.Timing`
+的第 4 项是 S2 的门）。AccuracyCoin 仍是 146/111/17、失败地址逐个相同，`sprite_hit_tests` 仍是 11/11。
 
 **套件 2026-10-16 已经回到树里**（`sprite-phase-plan.zh-CN.md` 的第 0 步）：它们曾为 §10 那轮让路被
 移出，又从 `b4caaf6^` 放了回去。放回之前，凡是以**画面**为判决的 ROM 都被人眼读过一遍，然后才按当前

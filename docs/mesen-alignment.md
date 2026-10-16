@@ -462,6 +462,8 @@ before this session, puts the menu back on screen, so the hang came from the DMA
 the per-dot renderer). The harness now fails when the ROM reports nothing, and the number in this
 row is measured.
 
+| S1 of the sprite-phase plan, 2026-10-16 | The sprite walk is gated the way Mesen gates it: it runs only while the picture is being drawn (`_prevRenderingEnabled`, the mask as of the end of the previous dot) and never on the pre-render line, whose fetch instead latches the slots straight out of secondary OAM. That needed one more piece of `LoadSprite` — the fetch's in-range test, with the line truncated to eight bits (261 and -1 both become 5) and the difference widened signed — or line 0 would draw the stale entries | `sprite_overflow_tests` 2/5 → **4/5**: `1.Basics` (check 6, "must not be set when all rendering is off") and `5.Emulator` (check 3, "disabling rendering did not recalculate the flag time") print `PASSED`; `3.Timing` is still `FAILED: #4`, which is S2's gate. `sprite_hit_tests` 11/11 — without the fetch test `07.screen_bottom` fell to `FAILED: #4`, and the same missing piece put AccuracyCoin's `Sprite0Hit_Behavior` (`$0457`, check 13) on the failing list; both came back with it. AccuracyCoin 146/111/17, the same 17 addresses; `mmc3_test_2` 5/6, `ppu_vbl_nmi` 10/10, `cpu_interrupts_v2` 5/5, `apu_test` 8/8 unchanged; unit tests 613 → 616. Detail in [`sprite-phase-plan.md`](./sprite-phase-plan.md) §4/S1 |
+
 ### Experiments that were implemented, measured and reverted
 
 Their value is the evidence; do not retry them without reading this first.
@@ -698,8 +700,9 @@ entries now carry the reason they are on the list, and the four diagnostics (dot
 log, AccuracyCoin result log, progress monitor) are in `tests/cycle_trace.rs`.
 `cargo test --workspace --release` is green — the ROM suite is 90 s of that, AccuracyCoin 7.4 s.
 The per-ROM verdicts are `sprite-phase-plan.md` §2, and what stage 0 changed is its §3. The C8
-targets have not moved yet: `sprite_overflow_tests` still fails three checks, AccuracyCoin still
-fails 17, and `1.Basics`'s check 6 is stage S1's gate.
+targets have since started moving: **S1 is done too**, and `sprite_overflow_tests` is 2/5 → **4/5**
+(`1.Basics` and `5.Emulator` print `PASSED`; `3.Timing`'s check 4 is S2's gate). AccuracyCoin is
+146/111/17 with the same failing addresses, and `sprite_hit_tests` is still 11/11.
 
 **The suites were back in the tree on 2026-10-16** (stage 0 of `sprite-phase-plan.md`), after being
 removed for the §10 pass and restored from `b4caaf6^`. Before they went back, every ROM whose verdict
