@@ -746,14 +746,14 @@ flowchart TB
 
 | 套件 | 数量 | 覆盖内容 |
 | --- | --- | --- |
-| `crates/nes-core` 单元测试 | 598 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
+| `crates/nes-core` 单元测试 | 602 | 各模块行为：CPU 指令、PPU 时序、APU 通道、Mapper、存档、节奏、配置 |
 | `tests/nestest.rs` | 3 | 6502 指令集与寻址模式的权威校验 |
 | `tests/ppu.rs` | 55 | 背景/精灵渲染、滚动、镜像、sprite 0、VBlank/NMI、卡带命名表 |
 | `tests/apu.rs` | 68 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 68 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
 | `tests/rom_tests.rs` | 14 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
-| `crates/nes-uniffi` 单元测试 | 7 | 绑定层：契约同步、panic 兜底、音频拉取、零拷贝读帧 |
+| `crates/nes-uniffi` 单元测试 | 10 | 绑定层：契约同步、panic 兜底、音频拉取、帧缓冲的字节视图 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
 
 ### 13.1 测试 ROM：精度基线
@@ -786,7 +786,8 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 哪一项检查失败。AccuracyCoin 是菜单式 ROM：harness 会按 Start 跑完全部测试，
 再读它留在 `$0400` 页的结果表（`$FF` = 跳过，bit0 置位 = 通过，否则该值就是错误码）。
 
-2026-10-15 在本机的基线：
+2026-10-16 在本机重新实测的基线（10-15 的两处渲染修复没有移动任何套件：
+它们修的是像素，而基线看不见像素——见本节末尾的说明）：
 
 | 套件 | 结果 |
 | --- | --- |
@@ -810,6 +811,23 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 直到 APU 挪到 CPU 周期的开头：最后三张表读的都是那一个 cycle。`apu_test` 同样如此，直到 DMC
 改成 Mesen 的通道：长度计数在取数时移动、取到的字节留在缓冲里等输出单元的字节边界、定时器周期
 取表里的值。）
+
+AccuracyCoin 那 34 项也值得点名，因为其中最大的一组其实是同一个机制。名单直接来自 ROM 自己的测试
+清单（`AccuracyCoin.asm` 里的 `result_* = $04xx` 常量与 `TestPages:` 表；上面的实测把地址按
+`fail at 0x....` 打了出来）：
+
+- **DMA 边界情形，13 项**：`DMA + $2007 Read`/`Write`、`DMA + $2002 Read`、`DMA + $4015
+  Read`、`DMA + $4016 Read`、`DMA + Open Bus`、`DMA Landing on Write`、`DMC DMA Bus
+  Conflicts`、`DMC DMA + OAM DMA`、`DMC Reload Timing`、`Implicit DMA Abort`、`Explicit DMA
+  Abort`、`Misaligned OAM DMA`。它们全都落在 `MemoryRead` 现在跑的那条 DMA 路径上，而且
+  失败在同一两项检查（第 3、5 项）——这正是"一个机制、不是十三件事"的证据。
+- **CPU 指令细节，7 项**：`Open Bus`、`Implied Dummy Reads`、`Instruction Timing`、
+  `Interrupt flag latency`、`JSR Edge Cases`、`Branch Dummy Reads`、`Internal Data Bus`。
+- **未文档 `SHx` 指令，5 项**：`SHA`/`SHS`/`SHY`/`SHX`（`$93`、`$9F`、`$9B`、`$9C`、`$9E`）。
+- **sprite，3 项**：`Arbitrary Sprite zero`、`Sprite overflow behavior`、`Suddenly Resize Sprite`。
+- **APU，3 项**：`APU Register Activation`、`Frame Counter IRQ`、`Delta Modulation Channel`。
+- **手柄，2 项**：`Controller Strobing`、`Controller Clocking`。
+- **PPU，1 项**：`$2002 flag timing`。
 
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。

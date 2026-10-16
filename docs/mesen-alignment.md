@@ -453,8 +453,12 @@ double-charged fetch hid here for several steps (§7).
 `sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
 **5/5**, `mmc3_test_2` **5/6**, `ppu_vbl_nmi` 9/10, AccuracyCoin **34 failing** (143 ran, 94 passed, 0 skipped — the same 34 as
 before the APU move). Unit tests: 602. Frame cost: about 1.86 ms (release, 600 frames of nestest,
-median of five; spread ±0.06) — the host this session ran on reports 3.68 ms for the same test, so
-only compare numbers measured on one host. Branch: `codex/mesen-alignment`.
+median of five; spread ±0.06). **Frame cost is a same-run comparison only**: this machine has
+reported 1.82 ms (1.815/1.825/1.826, idle) and 3.68 ms (the 10-15 round, with other load on it)
+for the same test, so the difference is the load rather than the code — the 5–8% in `0520b59` is
+the Android front end turning the PPU bus trace off for itself
+(`set_ppu_bus_trace_capacity(0)`); the core's default is unchanged. Branch: `main` (the alignment
+work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops at `226bd01`).
 
 | # | Item | Status | Evidence (commit / measurement) | Next step |
 | --- | --- | --- | --- | --- |
@@ -471,6 +475,11 @@ only compare numbers measured on one host. Branch: `codex/mesen-alignment`.
 | B1 | A game's sprites drawn with holes ("transparent" characters) | **Done** | The sprite pattern fetch's high plane came from the low plane's address (§7), so colour 2 pixels read as colour 0 and vanished. Fixed to `addr + row + 8`; unit test `test_a_sprites_high_plane_is_the_tiles_second_half` fails on the old code | Nothing. Worth remembering: the ROM baseline is blind to drawn pixels — a game, or a unit test, is what catches this class |
 | B2 | Background tiles drawn with their right-hand neighbour's palette (`?` blocks, the tail of brick rows and of title text going green) | **Done** | Coarse X stepped on before the attribute fetch (§7's row): fixed at the reload dot, with three regression tests that fail on the old code | Nothing; the neighbouring item is §2.2's fetch enable (Mesen keeps fetching with the background off) |
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
+
+**AccuracyCoin's 34 have been sorted by name** (13 DMA edge cases, 7 CPU instruction details, 5
+unofficial `SHx` opcodes, 3 sprites, 3 APU, 2 controllers, 1 PPU); the list is in
+`docs/architecture.md` §13.1. The thirteen DMA ones fail on the same two checks, which says they
+are *one* mechanism — that is the first cut worth making.
 
 **How to get Mesen's sources** (`/tmp` copies may be gone; this is what worked here): the
 repository is `SourMesen/Mesen2`; fetch a file at a time, e.g.

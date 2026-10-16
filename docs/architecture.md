@@ -822,14 +822,14 @@ Key points:
 
 | Suite | Count | Coverage |
 | --- | --- | --- |
-| `crates/nes-core` unit tests | 598 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
+| `crates/nes-core` unit tests | 602 | Per-module behavior: CPU instructions, PPU timing, APU channels, mappers, saves, pacing, configuration |
 | `tests/nestest.rs` | 3 | Authoritative check of the 6502 instruction set and addressing modes |
 | `tests/ppu.rs` | 55 | Background/sprite rendering, scrolling, mirroring, sprite 0, VBlank/NMI, cartridge nametables |
 | `tests/apu.rs` | 68 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 68 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
 | `tests/rom_tests.rs` | 14 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
-| `crates/nes-uniffi` unit tests | 7 | Binding layer: contract sync, panic containment, audio pull, zero-copy frame reads |
+| `crates/nes-uniffi` unit tests | 10 | Binding layer: contract sync, panic containment, audio pull, the frame buffer's byte view |
 | Doc tests | 1 | `FrameClock` usage example |
 
 ### 13.1 Test ROMs: the accuracy baseline
@@ -866,7 +866,8 @@ failure message names the ROM and the exact check that failed. AccuracyCoin is m
 the harness drives Start to run all tests, then reads the result table it leaves in page
 `$0400` (`$FF` = skipped, bit 0 set = passed, otherwise the value is an error code).
 
-Baseline as of 2026-10-15, measured on this checkout:
+Baseline as of 2026-10-16, re-measured on this checkout (the two rendering fixes of 2026-10-15
+moved no suite: what they fixed is pixels, which the baseline cannot see — see the note below):
 
 | Suite | Result |
 | --- | --- |
@@ -891,6 +892,23 @@ submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped 
 last three tables were all reading that one cycle. `apu_test` was another until the DMC became
 Mesen's channel: the length counter moves at the fetch, the fetched byte waits in the buffer for
 the output unit's byte boundary, and the timer's period is the table's own value.)
+
+AccuracyCoin's 34 are worth naming too, because the largest group is one mechanism. Read off
+the ROM's own test list (`AccuracyCoin.asm`'s `result_* = $04xx` constants and its
+`TestPages:` table; the addresses are checked into the run above as `fail at 0x....`):
+
+- **DMA edge cases, 13**: `DMA + $2007 Read`/`Write`, `DMA + $2002 Read`, `DMA + $4015 Read`,
+  `DMA + $4016 Read`, `DMA + Open Bus`, `DMA Landing on Write`, `DMC DMA Bus Conflicts`,
+  `DMC DMA + OAM DMA`, `DMC Reload Timing`, `Implicit DMA Abort`, `Explicit DMA Abort`,
+  `Misaligned OAM DMA`. All of them live on the DMA path `MemoryRead` now runs, and they fail
+  at the same two checks (3 and 5) — evidence that they are one mechanism, not thirteen.
+- **CPU instruction details, 7**: `Open Bus`, `Implied Dummy Reads`, `Instruction Timing`,
+  `Interrupt flag latency`, `JSR Edge Cases`, `Branch Dummy Reads`, `Internal Data Bus`.
+- **Unofficial `SHx` opcodes, 5**: `SHA`/`SHS`/`SHY`/`SHX` at `$93`, `$9F`, `$9B`, `$9C`, `$9E`.
+- **Sprites, 3**: `Arbitrary Sprite zero`, `Sprite overflow behavior`, `Suddenly Resize Sprite`.
+- **APU, 3**: `APU Register Activation`, `Frame Counter IRQ`, `Delta Modulation Channel`.
+- **Controllers, 2**: `Controller Strobing`, `Controller Clocking`.
+- **PPU, 1**: `$2002 flag timing`.
 
 The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and that list is
 asserted in both directions: a failure outside it is a regression, and an entry that starts
