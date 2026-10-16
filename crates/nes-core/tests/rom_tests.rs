@@ -34,7 +34,7 @@ fn blargg_instr_timing() {
 
 #[test]
 fn blargg_branch_timing() {
-    common::check_blargg_directory("blargg/branch_timing_tests", BLARGG_SLOW_FRAMES, &[]);
+    common::check_blargg_directory("blargg/branch_timing_tests", BLARGG_FRAMES, &[]);
 }
 
 #[test]
@@ -88,11 +88,9 @@ fn blargg_ppu_open_bus() {
 
 #[test]
 fn blargg_sprite_hit() {
-    common::check_blargg_directory(
-        "blargg/sprite_hit_tests_2005.10.05",
-        BLARGG_SLOW_FRAMES,
-        &[],
-    );
+    // The pixel-verdict suites run their whole frame budget, so it is kept to
+    // what the ROMs need: their picture settles about thirty frames in.
+    common::check_blargg_directory("blargg/sprite_hit_tests_2005.10.05", BLARGG_FRAMES, &[]);
 }
 
 #[test]
@@ -163,6 +161,10 @@ fn accuracy_coin_matches_its_baseline() {
     }
 
     assert!(
+        report.golden.is_none(),
+        "the frames do not match their goldens"
+    );
+    assert!(
         report.tests_run >= MINIMUM_TESTS,
         "AccuracyCoin should run its whole suite: {}",
         report.summary()
@@ -174,4 +176,12 @@ fn accuracy_coin_matches_its_baseline() {
          docs/architecture.md §13.1: {}",
         report.summary()
     );
+}
+
+/// The hash function is part of the golden format: Mesen's `.mtp` tests store
+/// `SHA1::GetHash(frame.FrameBuffer, frame.FrameBufferSize)` per frame, so ours
+/// has to be SHA1 for the two sets to be comparable at all.
+#[test]
+fn test_sha1_matches_the_known_digests() {
+    common::sha1::sha1_matches_the_known_digests();
 }

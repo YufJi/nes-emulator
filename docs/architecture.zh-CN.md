@@ -752,7 +752,7 @@ flowchart TB
 | `tests/apu.rs` | 68 | 五通道波形、包络、长度计数、帧序列器、扩展音频混音 |
 | `tests/mappers.rs` | 68 | 银行切换、IRQ、镜像、电池 RAM |
 | `tests/host_contract.rs` | 3 | 宿主契约：控制台是 `Send`，可在工作线程上运行 |
-| `tests/rom_tests.rs` | 14 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
+| `tests/rom_tests.rs` | 15 | 真实测试 ROM：blargg 的 CPU/PPU/APU/MMC3 套件与 AccuracyCoin（无 ROM 时跳过） |
 | `crates/nes-uniffi` 单元测试 | 10 | 绑定层：契约同步、panic 兜底、音频拉取、帧缓冲的字节视图 |
 | 文档测试 | 1 | `FrameClock` 用法示例 |
 
@@ -804,7 +804,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
 | `apu_test` | 8/8 |
-| AccuracyCoin | 共跑 143 项、94 通过、0 跳过、34 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
+| AccuracyCoin | 共跑 140 项、94 通过、0 跳过、34 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
 `ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"。（`cpu_interrupts_v2` 原先也在这张单子上，
@@ -834,6 +834,15 @@ AccuracyCoin 那 34 项也值得点名，因为其中最大的一组其实是同
 失败的 ROM 以"每个套件一份基线清单"的形式写在 `tests/rom_tests.rs` 里，并且双向断言：
 清单之外的失败视为回归，清单内变成通过的项会直接让测试失败，直到把它从清单删掉。
 这样在消化欠账的过程中 `cargo test --workspace` 仍能保持绿色，基线也不会悄悄漂移。
+
+**并非每个套件都会自报结果，不自报的那些现在由像素来判。** blargg 较早的一批 ROM
+——`sprite_hit_tests_2005.10.05`、`sprite_overflow_tests`、`blargg_ppu_tests_2005.09.15b`、
+`branch_timing_tests`、`oam_stress`——从不写 `$6000` 这个结果字节：过去有 26 个 ROM 被计为"通过"，
+其实测试根本没跑，因为"状态不是 `$80`"被当成了裁决。现在它们按 Mesen 对每个 ROM 的做法来判：逐帧
+哈希（对原始帧缓冲做 SHA1，RLE 存到 `crates/nes-core/tests/golden/`），ROM 的画面就是裁决；而会
+自报结果的那些，必须先被看到**真的在运行**过。这些金标准是**从本构建录下来的回归网**（要重新录制用
+`NES_GOLDEN_RECORD=1`，并读一遍 diff）；等 `.mtp` 读取器就位，可以换成 Mesen 自己的值
+（`docs/mesen-alignment.zh-CN.md` §5.1/§5.2）。
 
 **基线看不见什么。**清单里没有一个 ROM 会去看自己画出来的画面，所以它对面上的颜色和图案一无所
 知：sprite 取指把 tile 的 low 平面同时当成 high 平面读——sprite 四种颜色里有两色被画成透明的

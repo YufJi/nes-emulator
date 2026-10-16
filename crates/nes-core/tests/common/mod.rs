@@ -6,6 +6,9 @@
 //! the ROMs are dropped into `roms/` (the expected layout is in
 //! `docs/architecture.md` §13).
 
+pub mod frames;
+pub mod sha1;
+
 use std::path::{Path, PathBuf};
 
 use nes_core::nes::BUTTON_START;
@@ -70,16 +73,32 @@ pub struct BlarggReport {
     pub frames: u32,
     /// Set when the test never finished inside the frame budget.
     pub timed_out: bool,
+    /// Whether the ROM ever reported itself as running (`$6000 = $80`).
+    ///
+    /// The older suites in `roms/blargg/` — `sprite_hit_tests_2005.10.05`,
+    /// `sprite_overflow_tests`, `blargg_ppu_tests_2005.09.15b`,
+    /// `branch_timing_tests`, `oam_stress` — never write that byte at all, so
+    /// reading "the status is not `$80`" as a verdict made 26 of them look like
+    /// passes without a test ever running. When this is false the verdict comes
+    /// from the golden frames instead, which is how Mesen judges everything.
+    pub saw_running: bool,
 }
 
 impl BlarggReport {
-    pub fn passed(&self) -> bool {
-        !self.timed_out && self.status == 0
+    /// The ROM's own verdict, which only exists for a ROM that reported.
+    pub fn self_reported_pass(&self) -> bool {
+        self.saw_running && !self.timed_out && self.status == 0
     }
 }
 
 /// Run a blargg test ROM until it reports a result.
-pub fn run_blargg(nes: &mut Nes, max_frames: u32) -> BlarggReport {
+/// Run a blargg-style ROM until it reports, hashing every frame on the way when
+/// a recorder is handed in.
+pub fn run_blargg_recorded(
+    nes: &mut Nes,
+    max_frames: u32,
+    mut recorder: Option<&mut frames::FrameRecorder>,
+) -> BlarggReport {
     const STATUS: u16 = 0x6000;
     const TEXT: u16 = 0x6004;
     const RUNNING: u8 = 0x80;
@@ -87,10 +106,16 @@ pub fn run_blargg(nes: &mut Nes, max_frames: u32) -> BlarggReport {
     // Every suite boots the same way: a few frames of setup before it starts
     // reporting, then `status` flips away from `0x80` when it is done.
     let mut frames = 0;
+    let mut saw_running = false;
     while frames < max_frames {
         nes.frame();
+        if let Some(recorder) = recorder.as_deref_mut() {
+            recorder.step(nes);
+        }
         frames += 1;
-        if frames > 2 && nes.peek(STATUS) != RUNNING {
+        if nes.peek(STATUS) == RUNNING {
+            saw_running = true;
+        } else if saw_running && frames > 2 {
             break;
         }
     }
@@ -112,6 +137,7 @@ pub fn run_blargg(nes: &mut Nes, max_frames: u32) -> BlarggReport {
         text,
         frames,
         timed_out,
+        saw_running,
     }
 }
 
@@ -132,6 +158,8 @@ pub fn check_blargg_directory(relative: &str, max_frames: u32, expected_failures
 
     let mut regressions = Vec::new();
     let mut fixed = Vec::new();
+    let mut golden = Vec::new();
+    let mut recorder = frames::FrameRecorder::new(relative);
     for path in &roms {
         let name = path
             .file_name()
@@ -139,26 +167,56 @@ pub fn check_blargg_directory(relative: &str, max_frames: u32, expected_failures
             .to_string_lossy()
             .into_owned();
         let mut nes = console(path);
-        let report = run_blargg(&mut nes, max_frames);
+        recorder.begin(&name);
+        let report = run_blargg_recorded(&mut nes, max_frames, Some(&mut recorder));
+        let goldens = recorder.finish();
+        if let Some(complaint) = &goldens {
+            golden.push(format!("{name}: {complaint}"));
+        }
         let expected = expected_failures.contains(&name.as_str());
-        let passing = report.passed();
+
+        // A ROM that never reported itself is judged by its pixels: the golden
+        // frames are the whole verdict, which is what Mesen does with every ROM
+        // it runs. That is not a weaker test than the `$6000` protocol here, it
+        // is the only test those suites have.
+        let passing = if report.saw_running {
+            report.self_reported_pass() && goldens.is_none()
+        } else {
+            goldens.is_none()
+        };
+        let how = if report.saw_running {
+            "$6000"
+        } else {
+            "frames"
+        };
 
         if passing && expected {
             println!("FIXED: {name} now passes — drop it from the baseline");
             fixed.push(name);
         } else if passing {
-            println!("pass: {name} ({} frames)", report.frames);
+            let note = match &goldens {
+                Some(complaint) => format!("goldens: {complaint}"),
+                None => String::new(),
+            };
+            println!(
+                "pass: {name} ({} frames, verdict: {how}){note}",
+                report.frames
+            );
         } else if expected {
             println!("known: {name} -> {}", describe(&report));
         } else {
-            println!("FAIL: {name} -> {report:?}");
+            let note = match &goldens {
+                Some(complaint) => format!(" ({complaint})"),
+                None => String::new(),
+            };
+            println!("FAIL: {name} -> {:?}{note}", report);
             regressions.push(format!("{name}: {}", describe(&report)));
         }
     }
 
     assert!(
-        regressions.is_empty() && fixed.is_empty(),
-        "roms/{relative} no longer matches its baseline:\n{}\n{}",
+        regressions.is_empty() && fixed.is_empty() && golden.is_empty(),
+        "roms/{relative} no longer matches its baseline:\n{}\n{}\n{}",
         if regressions.is_empty() {
             String::new()
         } else {
@@ -175,6 +233,15 @@ pub fn check_blargg_directory(relative: &str, max_frames: u32, expected_failures
                 "{} baseline entries now pass, so the list is stale:\n  {}",
                 fixed.len(),
                 fixed.join("\n  ")
+            )
+        },
+        if golden.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "{} ROMs draw something other than their goldens:\n  {}",
+                golden.len(),
+                golden.join("\n  ")
             )
         },
     );
@@ -227,6 +294,8 @@ pub struct AccuracyCoinReport {
     pub skipped: usize,
     /// `(address, value)` for each recorded failure, sorted by address.
     pub failures: Vec<(u16, u8)>,
+    /// What the golden frame hashes said, when they said anything.
+    pub golden: Option<String>,
 }
 
 /// Boot AccuracyCoin, run every test, and read the result table.
@@ -241,17 +310,23 @@ pub fn run_accuracy_coin(max_frames: u32) -> Option<AccuracyCoinReport> {
 
     let path = rom("accuracycoin/AccuracyCoin.nes")?;
     let mut nes = console(&path);
+    let mut recorder = frames::FrameRecorder::new("accuracycoin");
+    recorder.begin("AccuracyCoin.nes");
 
     // Let the menu come up, then press and release Start.
     for _ in 0..MENU_FRAMES {
         nes.frame();
+        recorder.step(&nes);
     }
     nes.set_button(1, BUTTON_START, true);
     nes.frame();
+    recorder.step(&nes);
     nes.frame();
+    recorder.step(&nes);
     nes.set_button(1, BUTTON_START, false);
     for _ in 0..max_frames {
         nes.frame();
+        recorder.step(&nes);
     }
 
     let mut passed = 0;
@@ -271,6 +346,7 @@ pub fn run_accuracy_coin(max_frames: u32) -> Option<AccuracyCoinReport> {
         passed,
         skipped,
         failures,
+        golden: recorder.finish(),
     })
 }
 

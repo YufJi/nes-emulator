@@ -828,7 +828,7 @@ Key points:
 | `tests/apu.rs` | 68 | Five-channel waveforms, envelopes, length counters, frame sequencer, expansion audio mixing |
 | `tests/mappers.rs` | 68 | Bank switching, IRQ, mirroring, battery RAM |
 | `tests/host_contract.rs` | 3 | Host contract: the console is `Send` and runs on a worker thread |
-| `tests/rom_tests.rs` | 14 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
+| `tests/rom_tests.rs` | 15 | Real test ROMs: blargg's CPU/PPU/APU/MMC3 suites and AccuracyCoin (skipped without ROMs) |
 | `crates/nes-uniffi` unit tests | 10 | Binding layer: contract sync, panic containment, audio pull, the frame buffer's byte view |
 | Doc tests | 1 | `FrameClock` usage example |
 
@@ -884,7 +884,7 @@ moved no suite: what they fixed is pixels, which the baseline cannot see — see
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper) |
 | `apu_test` | 8/8 |
-| AccuracyCoin | 143 ran, 94 passed, 0 skipped, 34 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
+| AccuracyCoin | 140 ran, 94 passed, 0 skipped, 34 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
 submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on.
@@ -916,6 +916,17 @@ The failing ROMs are listed in `tests/rom_tests.rs` as a per-suite baseline, and
 asserted in both directions: a failure outside it is a regression, and an entry that starts
 passing fails the suite until it is removed. So `cargo test --workspace` stays green while
 the backlog is worked through, and the baseline cannot silently drift.
+
+**Not every suite reports itself, and the ones that do not are judged by their pixels.** The
+older blargg ROMs — `sprite_hit_tests_2005.10.05`, `sprite_overflow_tests`,
+`blargg_ppu_tests_2005.09.15b`, `branch_timing_tests`, `oam_stress` — never write the `$6000`
+result byte: 26 ROMs that used to be counted as passing were doing nothing of the sort, because
+"the status is not `$80`" was read as a verdict. They are now judged the way Mesen judges every
+ROM: every frame is hashed (SHA1 over the raw frame buffer, run-length encoded into
+`crates/nes-core/tests/golden/`) and the ROM's picture is the verdict, with a ROM that *does*
+report required to have been seen running first. Those goldens are a regression net recorded from
+this build — re-record with `NES_GOLDEN_RECORD=1` and read the diff — and Mesen's own values can
+replace them once a `.mtp` reader exists (`docs/mesen-alignment.md` §5.1/§5.2).
 
 **What the baseline cannot see.** No ROM in it looks at the picture it draws, so the
 baseline says nothing about the colours and patterns on screen: a sprite-pattern fetch that

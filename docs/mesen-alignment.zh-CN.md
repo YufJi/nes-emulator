@@ -233,6 +233,31 @@ README 自己也写着这些测试是给 RP2A03G + RP2C02G 写的、有些与芯
 这是判断"某一项到底在测什么"最快的办法。若哪天真的想要更强的 oracle，可以拿 MesenCE 跑
 `.mtp` 式的录制、比对金标准帧；但那需要构建 Mesen 并备好 ROM，不是免费的。
 
+### 5.2 基线现在也看像素了——顺手查出 26 个"空通过"
+
+套用 Mesen 的**判定机制**顺手暴露了我们这边的一个洞。到 2026-10-16 为止的现状：
+
+- **每个套件的逐帧哈希**（`tests/common/frames.rs`）：对原始帧缓冲做
+  `SHA1::GetHash(frame.FrameBuffer, frame.FrameBufferSize)`（与 Mesen 的 `.mtp` 同一个函数、同一
+  份字节），RLE 存到 `tests/golden/<套件>/<rom>.hashes`。为省下昂贵的哈希，先用一个廉价指纹判断
+  "画面是否变了"，只在变化时算 SHA1——"变了一帧又变回去"会漏掉，这是让套件跑得完的代价。要重新
+  录制就用 `NES_GOLDEN_RECORD=1`，并**读一遍 diff**。
+- **它查出的洞：`$6000` 协议**。ROM 若从不写这个字节，它就一直是 0，而"状态不是 `$80`"被当成
+  通过——于是**有 26 个 ROM 在测试从未运行的情况下被计为通过**：
+  `sprite_hit_tests_2005.10.05`（11）、`sprite_overflow_tests`（5）、
+  `blargg_ppu_tests_2005.09.15b`（5）、`branch_timing_tests`（3）、`oam_stress`（1），以及
+  `instr_timing` 两个中的一个（逐个 ROM 观察 `$6000` 实测得到）。这些是 blargg **较早**的 ROM，
+  结论只打印在屏幕上。
+- **修法**：不自报结果的 ROM 由**它的帧**来判——金标准本身就是全部裁决（Mesen 对每个 ROM 都是这么
+  判的）；会自报的 ROM 必须**真的被看到在运行**过，它的结果才算数。这些套件的帧预算按 ROM 的实际
+  需要收紧（画面约三十帧内稳定；`oam_stress` 是文档注明的例外）。
+- **它有效**：把 B1 那个 bug（sprite 图案 high 平面读成 low 平面的地址）改回去，
+  `blargg_sprite_hit` 立刻以 "frames moved from the goldens" 失败，其余一切不变——正是当初让本目录
+  所有套件绿了一整天的那一类 bug。
+- **它不是**"正确性裁决"：金标准只说"这个 ROM 的画面没有移动"，不说它是对的；而且这些是**我们的**
+  哈希，不是 Mesen 的。要换成 Mesen 的值，需要写 `.mtp` 读取器（zip 容器里是 `TestMovie.mmo` 加
+  哈希表），哈希来自 MesenCE；格式见 §5.1。
+
 ## 6. 验收协议
 
 ```bash

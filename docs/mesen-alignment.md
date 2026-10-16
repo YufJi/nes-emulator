@@ -283,6 +283,36 @@ the fastest way to see *what* a failing check means. The stronger oracle, if it 
 to run MesenCE itself over `.mtp`-style recordings and compare golden frames; that needs Mesen
 built and the ROMs present, so it is not free.
 
+### 5.2 The baseline now judges pixels too — and 26 of its "passes" were empty
+
+Adopting Mesen's *mechanism* turned up a hole in ours, so this is the state of the local suites as
+of 2026-10-16:
+
+- **Every suite's frames are hashed** (`tests/common/frames.rs`): SHA1 over the raw frame buffer
+  (`SHA1::GetHash(frame.FrameBuffer, frame.FrameBufferSize)`, the same hash and the same bytes
+  Mesen's `.mtp` tests use), run-length encoded into `tests/golden/<suite>/<rom>.hashes`. To save
+  the expensive hash, a frame is hashed when a cheap fingerprint says the picture moved — a change
+  that changes back within one frame goes unnoticed, which is the price of a suite that finishes.
+  Re-record deliberately with `NES_GOLDEN_RECORD=1` and read the diff.
+- **The hole it found**: the `$6000` protocol. A ROM that never writes it leaves that byte at zero,
+  and "the status is not `$80`" was being read as a pass — so **26 ROMs were counted as passing
+  without a test ever running**: all of `sprite_hit_tests_2005.10.05` (11),
+  `sprite_overflow_tests` (5), `blargg_ppu_tests_2005.09.15b` (5), `branch_timing_tests` (3),
+  `oam_stress` (1) and one of `instr_timing`'s two (measured by running each ROM and watching
+  `$6000`). Those suites are the *older* blargg ROMs, which print their verdict to the screen
+  instead.
+- **The fix**: a ROM that never reports itself is judged by its frames — the goldens are the whole
+  verdict, which is how Mesen judges every ROM it runs — and a ROM that does report must actually
+  have been seen running before its result counts. Their frame budgets are kept to what the ROMs
+  need (the picture settles about thirty frames in; `oam_stress` is the documented exception).
+- **It works**: re-introducing the B1 bug (the sprite pattern's high plane read from the low
+  plane's address) makes `blargg_sprite_hit` fail with "frames moved from the goldens" and nothing
+  else changes. That is the class of bug that passed every suite in this directory for a day.
+- **What it is not**: a verdict about correctness. A golden says a ROM's picture did not move, not
+  that it is right — and these are *our* hashes, not Mesen's. The step that would make them Mesen's
+  is a `.mtp` reader (a zip holding `TestMovie.mmo` plus the hash table) whose hashes come out of
+  MesenCE; §5.1 has the format.
+
 ## 6. Verification protocol
 
 ```bash
