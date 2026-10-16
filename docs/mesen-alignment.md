@@ -222,6 +222,13 @@ randomised CPU/PPU alignment (this core has offset 0).
   `cpu_interrupts_v2/2-nmi_and_brk` and `mmc3_test_2/4-scanline_timing` — while 2 passes every
   suite. The earlier note here said no suite discriminated between 0, 1 and 2; that was true of
   the whole-line renderer and is not true any more.
+- **Power-on contents.** RAM and the PPU's palette RAM come up all-zero here, where Mesen's
+  default is `RamPowerOnState = Random` (and its non-random path seeds the palette with a fixed
+  32-byte boot pattern for blargg's old palette ROM). Random power-on contents are one of the
+  three settings Mesen offers — `AllZeros`, `AllOnes`, `Random` — so zeros are a Mesen
+  configuration, and they are the one that keeps this core's determinism invariant
+  (`frame()`/`run_cycles()`/`step_instruction()` reaching byte-identical state). A ROM that
+  reads RAM before writing it can therefore differ from Mesen's default run.
 
 ## 5. Instruments
 
@@ -388,6 +395,8 @@ several runs.
 | The sprite pattern fetch's second plane | The sprite phase read `addr + row` for the high plane as well as the low one, so the low plane came in twice. A sprite pixel whose planes are (0, 1) is colour 2; read back as (0, 0) it is *transparent*, so two of a sprite's four colours were holes — a game character drawn with see-through patches. The high plane is the tile's second eight bytes (`addr + row + 8`), which is what the background fetch has always done. **No suite saw it**: no local ROM looks at the pixels it draws, so `sprite_hit` 11/11, `sprite_overflow` 5/5, every blargg suite and AccuracyCoin's 34 sat exactly where they did even with the bug in | No ROM moved (the whole baseline was run before and after: byte-identical verdicts). The regression test renders a sprite whose planes differ and rejects the old code with the pixel at `0xFF000000` — the backdrop, the sprite invisible there. Frame cost 1.83 ms (median of five; the difference from 1.86 before is inside the run-to-run spread) |
 | The SHx stores' address corruption | `SHA`/`SHS`/`SHX`/`SHY` keep the index's carry into the high byte — only the addressing's discarded read happens at the un-carried address — and then AND that high byte with the register pair being written, so the store can land in a page the arithmetic never mentions; the value is the pair ANDed with the *base's* high byte plus one, and a DMA that interrupts the cycle before the write lifts that mask (Mesen's `SyaSxaAxa` and its `hadDma`). The old code kept the base's page and left the address alone, which is none of the four behaviours different 6502 revisions have — and is exactly what AccuracyCoin's behaviour probe is looking for | AccuracyCoin's five `UnOp_` tests (`SHA $93`/`$9F`, `SHS $9B`, `SHY $9C`, `SHX $9E`) all move from failing check 3 to check 15 at once, and their failing count stays at 34 because that last check is inside the tests' DMA section (its own comment: "error codes 7, 8, 9, A, B, and C" — from there on, a DMA has to be right). Every blargg suite unchanged; unit tests 602 → 603 |
 | Coarse X and the attribute fetch | Coarse X used to step right after the nametable read; Mesen steps it on the group's *last* dot (`(_cycle & 0x07) == 0`, the reload dot here). The attribute fetch comes two dots after the nametable one and reads `v`'s coarse X bit 1 (which palette pair) and bits 2-4 (which attribute byte), so every background tile drew with its **right-hand neighbour's** palette, and one four-tile boundary in four read the neighbour's byte as well. The pattern fetches were untouched (their row comes from fine Y). The symptom lands only on palette boundaries: in SMB's 1-1 the right halves of the `?` blocks and the tail of the brick rows went green (the sky's pair), and the title screen's last "E" in "1 PLAYER GAME" went green | **No ROM saw it** — no local ROM looks at the pixels it draws, so every blargg suite and AccuracyCoin's 143 ran / 94 passed / 34 failing sat exactly where they did. Pixel-comparing against the whole-line renderer: `894cc07` (before the per-dot background pipeline) is **byte-identical** to the fixed code, while `5dc9e32` (the per-dot background pipeline itself) is already 304 pixels off — the defect came in with it, and `nestest`'s byte-identity check could not see it. Three regression tests (the increment's dot, the pair, the attribute byte's address) all fail on the old code. SMB's title screen and 1-1 render correctly again (248 and 283 pixels change on the same frames, all of them on palette boundaries). Frame cost: median of three on one host 3.68 ms, 3.84 ms unfixed (spread ±0.3 ms; this host is running about 2× the table's absolute numbers today) |
+
+| The five quick ones from §10.3, in one step | NES 2.0's byte 8 read Mesen's way (`(Byte8 & 0x0F) << 8` for the mapper, `(Byte8 & 0xF0) >> 4` for the submapper, plus the archaic iNES whose mapper lives in byte 6 alone); a `$2002` read clears *only* VBlank (`UpdateStatusFlag`) and leaves the two sprite flags for pre-render; the mixer takes Mesen's constants and channel weights; power-up and soft resets are two different things (`SP = $FD` and `A/X/Y = 0` at power-on, `SP -= 3` and `I` at the button) followed by the eight dummy cycles; and the odd frame's skipped dot reads the rendering state as of the *end* of dot 338 (Mesen's `_renderingEnabled` lags a dot behind `$2001`) | **`ppu_vbl_nmi` 9/10 → 10/10** (`10-even_odd_timing` passes, printing the `08 08 09 07` its own comment predicts) and **AccuracyCoin 34 → 32**: `Suddenly Resize Sprite` and `Misaligned OAM DMA` stop failing. `cpu_reset/registers` gets past its check 2 and now reads `A X Y P S = 00 00 00 34 FD`, exactly the ROM's power-on expectation, where it used to print `S=$F7` and fail. Every reporting ROM re-measured in one pass: `instr_test-v5` 16/16, `instr_timing` 2/2, `cpu_interrupts_v2` 5/5, `apu_test` 8/8, `mmc3_test_2` 5/6 (the documented one), `oam_read`, `ppu_open_bus`, `cpu_dummy_writes` 2/2, `cpu_exec_space/ppuio`, and the five `ACCESS_DOTS = 2` ROMs (`05-nmi_timing`, `06-suppression`, `07-nmi_on_timing`, `2-nmi_and_brk`, `4-scanline_timing`) all still green. Unit tests 604 → 605 |
 
 **One stale number, corrected.** From `8ec693d` (DMA inside `MemoryRead`) until the row above,
 AccuracyCoin never ran: the ROM hung inside its own DMA-sync loop while booting, `$37` stayed
@@ -592,6 +601,7 @@ work and the front-end work merged here on 10-16; `codex/mesen-alignment` stops 
 | — | The access-dot experiment | Done | `f5943b3`: 0 and 1 each cost five suites, 2 passes every one — so `ACCESS_DOTS = 2` stands | Nothing |
 | C1 | **The file-by-file comparison with MesenCE (§10)** | Done | The whole `Core/NES` tree was fetched and read against this core (551 files, ~275 boards). Twelve defects found, including the NES 2.0 nibble swap, `$2002` clearing the sprite flags, the CPU's reset `SP`, and the controller ports' open bus; twelve areas confirmed identical; AccuracyCoin's 34 re-read as "which check failed" (`(value >> 2) + 1`, which moves the §7/§9 labels by one) | Follow §10.7: the DMA port → `$4016`/`$4017` with `read_joy3` → the PPU's register state machines → `$2002`'s flags and per-dot sprite evaluation |
 | C2 | **The ROM suites removed for the alignment pass** (§6/§9) | Done | `tests/rom_tests.rs`, `tests/common/` and `tests/golden/` deleted on 10-16 (recoverable from git: `b6c06a1` and earlier; a copy sits in `/tmp/nes-baseline-snapshot-20261016`). `cargo test --workspace` 130 s → ~11 s, 604 unit tests green. The suites §10.6 lists were staged under `roms/nes-test-roms/` (37 ROMs, gitignored) and measured once each | Re-add everything when the alignment pass ends, with the suites §10.6 lists: at that measurement `cpu_dummy_writes` (2/2) and `cpu_exec_space`'s `ppuio` ROM already reported "Passed", `cpu_exec_space_apu` failed at open-bus check 2, and `cpu_reset/registers` failed at check 2 with `SP=$F7` where the ROM wants `$FD` — the defect §10.3 #3 fixes |
+| C3 | The five quick §10.3 items: NES 2.0 nibbles, `$2002` flag lifetime, Mesen's mixer, the reset split + eight warm-up cycles, and the one-dot-lagged rendering state for the odd frame's skip | **Done** | §7's row has the whole measurement. `ppu_vbl_nmi` 10/10, AccuracyCoin 32 failing, `cpu_reset/registers` past check 2 with the expected `S=$FD`; the whole reporting-ROM set re-measured with no regressions; unit tests 605 | §10.3's remaining items, in §10.7's order: the controller ports and `$4016`'s write delay (#4/#5), then the PPU's register state machines (#6), then the DMA port (#7) — with the APU edge timings (#8) and the dead `addressing.rs` (#10) as sidecars |
 
 **One thing to get right first**: AccuracyCoin's count is *our* baseline, not Mesen's — it is not
 part of Mesen's test suite (§5.1). Every item's oracle has to be Mesen's source, with the ROM's
@@ -748,6 +758,11 @@ and `_vblankEnd` 260/310/310; 341 dots a line; the APU's `_stepCycles` and the D
 
 ### 10.3 The defects this pass found (each with its fix)
 
+**Status:** items 1, 2, 3 and 9 are fixed (commit C3's step, §7 and §9), and with them the
+odd frame's skip moved to the one-dot-lagged rendering state (§10.2's PPU rows) — the four
+remaining groups are 4/5 (the controller ports), 6 (the PPU's register state machines), 7 (DMA)
+and 8 (the APU's edge timings), plus the two cleanups 10 and 11.
+
 1. **NES 2.0's mapper and submapper nibbles are swapped** (`crates/nes-core/src/nes.rs`, the
    `RomHeader` parse). Mesen: `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)` and
    `SubMapper = (Byte8 & 0xF0) >> 4`; here the mapper takes `(flags8 & 0xF0) << 4` and the submapper
@@ -807,6 +822,9 @@ Read on both sides, same answer:
   §4's deliberate deviation.
 - `UpdateStatusFlag`'s special case (`_preventVblFlag` on the NMI scanline's cycle 0) is the same race
   the suppression window models.
+- The one-dot lag of the rendering state (`_renderingEnabled` is refreshed by `UpdateState` after
+  each dot's work): the odd frame's skipped dot now reads the state as of the end of dot 338, which
+  is what `10-even_odd_timing` measures with its four writes across that boundary.
 
 ### 10.5 AccuracyCoin's 34, and what each one actually demands
 
@@ -851,6 +869,13 @@ checkout (`cargo test -p nes-core --test rom_tests accuracy -- --nocapture`: 140
 Every "DMA + ..." row is the same missing mechanism (§10.2's DMA row); the two controller groups,
 `Internal Data Bus` and `Open Bus` are the `$4016`/`$4015` open-bus work. Nothing here needs
 AccuracyCoin to be right - it is a checklist that happens to be free.
+
+**Re-measured after §10.3's first four fixes (same day): 32 failing.** The two that stopped are
+`Suddenly Resize Sprite` (`$0489`) and `Misaligned OAM DMA` (`$0494`); every other row above is
+still failing on the same check, which is the expected shape — the four groups left are the
+controller ports, the PPU's register state machines, DMA, and the APU's edge timings. The
+failing-check arithmetic above is what makes that readable: the values in the table are the
+bytes the ROM prints.
 
 ### 10.6 Baseline suites: the ones Mesen's own source develops against
 

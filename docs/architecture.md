@@ -894,19 +894,21 @@ suites go back in:
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 5/5 |
-| `ppu_vbl_nmi` | 9/10 (only the odd-frame skip is left, and it is a dot of ordering rather than of geometry) |
+| `ppu_vbl_nmi` | **10/10** (the odd-frame skip landed with the one-dot-lagged rendering state, §10.3's C3 step) |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
 | `ppu_open_bus` | 1/1 |
 | `sprite_hit_tests` | 11/11 |
 | `sprite_overflow_tests` | 5/5 |
-| `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper) |
+| `mmc3_test_2` | 5/6 (the alternate IRQ revision needs a mapper-4 submapper — and Mesen fails it too, `docs/mesen-alignment.md` §10.6) |
 | `apu_test` | 8/8 |
-| AccuracyCoin | 140 ran, 94 passed, 0 skipped, 34 failing (the ROM's own counter depends on how long its results screen has been up, so the harness uses it only as a liveness check — and a ROM that reports nothing at all now *fails* the test rather than skipping it, because that is what a boot-time hang looks like) |
+| AccuracyCoin | 32 failing, down from 34 when §10.3's first four fixes landed (`Suddenly Resize Sprite` and `Misaligned OAM DMA` stopped failing). The ROM's own counter depends on how long its results screen has been up, so a harness uses it only as a liveness check |
 
 The failures are the roadmap, not a mystery: `mmc3_test_2`'s last case needs a mapper-4
-submapper and `ppu_vbl_nmi`'s last one the dot the odd frame's clock is skipped on.
+submapper that a plain iNES header cannot carry. (`ppu_vbl_nmi`'s last one, the dot the odd
+frame's clock is skipped on, went green when that decision started reading the rendering state
+as of the previous dot, Mesen's own one-dot lag; `docs/mesen-alignment.md` §7 has the row.)
 (`cpu_interrupts_v2` was one of these until the APU moved to the front of the CPU cycle: its
 last three tables were all reading that one cycle. `apu_test` was another until the DMC became
 Mesen's channel: the length counter moves at the fetch, the fetched byte waits in the buffer for
@@ -1031,7 +1033,7 @@ clone needs `npm run build:wasm` before building the front end.
   the dot its pixel is drawn on — but the evaluation that fills secondary OAM is one call per
   line rather than the chip's odd/even OAM read pattern, so the OAM corruption a mid-line
   `$2003` write causes is not modelled (see §2.1 of `docs/mesen-alignment.md`).
-- **The VBlank flag's neighbours are dot-exact, except the odd-frame skip**: a `$2002` read
+- **The VBlank flag's neighbours are dot-exact**: a `$2002` read
   is performed two dots into its own cycle, where the chip performs it, so a read on the dot
   just before the flag is set takes the frame's flag *and* its NMI away, and one on the
   flag's own dot reads it and clears it. The VBlank suppression window is that one dot wide.
@@ -1040,10 +1042,11 @@ clone needs `npm run build:wasm` before building the front end.
   one that does stays latched until the handler is entered — which is what keeps a long
   vertical blanking from re-entering the handler on every poll, and what lets a `$2000` write
   that raises the line be answered after the *next* instruction, its own instruction's poll
-  having already happened. blargg's `ppu_vbl_nmi` went from 1/10 to 9/10 on this; its last
-  case, `10-even_odd_timing`, and `mmc3_test_2/4-scanline_timing` both still need the exact
-  dot the odd-frame clock skip and a frame's first A12 rise are decided on, which is per-dot
-  rendering.
+  having already happened. blargg's `ppu_vbl_nmi` went 1/10 → 9/10 on that, and 9/10 → **10/10**
+  when the odd frame's skipped dot was tied to Mesen's one-dot-lagged rendering state: the
+  decision on pre-render dot 339 reads whether rendering was on at the end of dot 338, so a
+  `$2001` write landing on the decision's own dot is one dot too late — which is what
+  `10-even_odd_timing`'s four checks walk a write across.
 - **The CPU is access-driven, and interrupts fall out of that**: the lines are sampled at
   the end of every CPU cycle and the decision is made one cycle behind, so the sample that
   counts is the second-to-last cycle's - which is what gives CLI/SEI/PLP their
@@ -1163,12 +1166,12 @@ backlog, so they are written down here to stop them being re-litigated:
    "platform-agnostic").~~ Done: the Android TV app implements the four channels with a GLES2
    surface whose swap paces the loop, plus an `AudioTrack` (`android/README.md`), and the iOS
    app implements the same contract with `CADisplayLink`, Metal and `AVAudioEngine`.
-5. **The accuracy backlog the test ROMs now name**: the remaining cases in §13.1 —
-   `ppu_vbl_nmi`'s last one, `mmc3_test_2`'s last one — plus MMC5's
-   extended attributes, the five mappers §8 defers, and the PAL dot ratio. The register writes,
-   the `$2002`/`$2007` reads, the DMA and the DMC are on their cycles and dots now; what is left
-   is mostly below that level: the odd frame's skipped clock, the sprite evaluation's OAM reads,
-   the boards that are still missing.
+5. **The accuracy backlog**: `mmc3_test_2`'s last case (§13.1 — Mesen fails it too, the ROM
+   wants an IRQ revision a plain iNES header cannot name), AccuracyCoin's remaining items, MMC5's
+   extended attributes, the five mappers §8 defers, and the PAL dot ratio. The VBlank flag and its
+   neighbours, the odd frame's skipped clock, the register writes and the `$2002`/`$2007` reads
+   are on their dots now; what is left is mostly below that level: the DMA's dummy reads and the
+   DMC's delays, the sprite evaluation's OAM reads, and the boards that are still missing.
 
 The accuracy work has its own document — the alignment with Mesen2's NES core, the gaps that
 are left, the measurements each step produced and the experiments that were reverted:

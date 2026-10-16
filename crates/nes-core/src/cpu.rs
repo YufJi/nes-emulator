@@ -189,22 +189,46 @@ impl Cpu {
     }
 
     /// Reset the CPU
+    /// Power-on reset: the registers take their documented power-on values —
+    /// `A/X/Y = 0`, `SP = $FD`, `P = I` — and the stack pointer is *not* walked
+    /// down. RAM is untouched either way (`NesCpu::Reset(false, ...)`).
     pub fn reset(&mut self, bus: &mut dyn Bus) {
-        self.sp = self.sp.wrapping_sub(3);
-        self.status.insert(StatusFlags::I);
+        self.reset_internal(bus, false);
+    }
 
-        // Read reset vector
-        let lo = bus.read(0xFFFC) as u16;
-        let hi = bus.read(0xFFFD) as u16;
-        self.pc = (hi << 8) | lo;
+    /// Soft reset, the reset button: the registers and the RAM stay as they
+    /// are, the interrupt-disable flag goes up, and the stack pointer walks
+    /// down three bytes with nothing written to the stack
+    /// (`NesCpu::Reset(true, ...)`, which is what a console's reset line does).
+    pub fn soft_reset(&mut self, bus: &mut dyn Bus) {
+        self.reset_internal(bus, true);
+    }
 
+    fn reset_internal(&mut self, bus: &mut dyn Bus, soft: bool) {
         self.halted = false;
         self.need_nmi = false;
         self.prev_need_nmi = false;
         self.prev_nmi_flag = false;
         self.run_irq = false;
         self.prev_run_irq = false;
-        self.cycles = 0;
+
+        // Read reset vector. The plain access, not a cycle: the two reads must
+        // not clock the PPU or the APU (Mesen's comment on the same reads).
+        let lo = bus.read(0xFFFC) as u16;
+        let hi = bus.read(0xFFFD) as u16;
+        self.pc = (hi << 8) | lo;
+
+        if soft {
+            self.status.insert(StatusFlags::I);
+            self.sp = self.sp.wrapping_sub(3);
+        } else {
+            self.a = 0;
+            self.x = 0;
+            self.y = 0;
+            self.sp = 0xFD;
+            self.status = StatusFlags::I;
+            self.cycles = 0;
+        }
     }
 
     /// Get the accumulator value

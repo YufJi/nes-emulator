@@ -316,6 +316,33 @@ impl Ppu {
         self.open_bus_decay_stamp = [0; 8];
     }
 
+    /// A soft reset — the reset button (`NesPpu::Reset(true)`).
+    ///
+    /// The registers and the frame's position go back to their power-on
+    /// values; the memories do not. VRAM, palette RAM and OAM keep what the
+    /// program left in them, and so does the scroll's `v`, which hardware only
+    /// clears at power-on. The status flags survive too: only a power-on reset
+    /// clears those.
+    pub fn soft_reset(&mut self) {
+        self.ctrl = PpuCtrl::empty();
+        self.mask = PpuMask::empty();
+
+        self.oam_addr = 0;
+        self.t = 0;
+        self.x = 0;
+        self.w = false;
+
+        self.scanline = 0;
+        self.cycle = 0;
+
+        self.nmi_pending = false;
+        self.suppress_vblank = false;
+        self.read_buffer = 0;
+        self.open_bus_latch = 0;
+        self.ignore_vram_read = 0;
+        self.open_bus_decay_stamp = [0; 8];
+    }
+
     /// Read from a PPU register ($2000-$2007)
     ///
     /// # Arguments
@@ -336,12 +363,18 @@ impl Ppu {
     pub fn read_register_with(&mut self, addr: u16, mut memory: PpuMemory<'_>) -> u8 {
         match addr & 0x2007 {
             0x2002 => {
-                // $2002: PPUSTATUS - read-only. A read clears VBlank, sprite
-                // overflow and sprite 0 hit and resets the write toggle. Games
-                // such as Super Mario Bros. spin on the sprite 0 flag while
-                // waiting for the status bar split, so leaving it set stalls
-                // their timing loops. Bits 0-4 are not driven and read back as
-                // open bus.
+                // $2002: PPUSTATUS - read-only. A read clears VBlank and resets
+                // the write toggle. Games such as Super Mario Bros. spin on the
+                // sprite 0 flag while waiting for the status bar split, so
+                // leaving the toggle set stalls their timing loops. Bits 0-4 are
+                // not driven and read back as open bus.
+                //
+                // Sprite overflow and sprite 0 hit are *not* touched here: they
+                // belong to the frame that set them and are cleared at
+                // pre-render, which is Mesen's `UpdateStatusFlag` - a read
+                // clears the VBlank flag and the CPU's NMI latch, nothing else.
+                // Taking them away on a read instead cuts their life short, and
+                // a test that reads the flag twice sees a different chip.
                 //
                 // A read landing on the dot just before the one the VBlank flag
                 // is set on wins that race: the flag never appears for this
@@ -358,9 +391,7 @@ impl Ppu {
                     self.suppress_vblank = true;
                 }
                 let status = self.status.bits();
-                self.status.remove(
-                    PpuStatus::VBLANK | PpuStatus::SPRITE_OVERFLOW | PpuStatus::SPRITE_0_HIT,
-                );
+                self.status.remove(PpuStatus::VBLANK);
                 self.w = false;
                 let value = (status & 0xE0) | (self.open_bus(&memory) & 0x1F);
                 self.drive_open_bus_bits(value, 0xE0);

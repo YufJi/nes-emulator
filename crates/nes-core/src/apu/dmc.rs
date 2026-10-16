@@ -384,6 +384,25 @@ impl DmcChannel {
         self.dma_request = None;
     }
 
+    /// A soft reset: the sample's address and its length survive, since
+    /// hardware only sets those at power-on (`NesApu::Reset(true)` and Mesen's
+    /// `DeltaModulationChannel::Reset`, which keeps `_sampleAddr` and
+    /// `_sampleLength`). Everything else — the reader, the buffer, the DAC, the
+    /// IRQ and loop enables — restarts.
+    pub fn soft_reset(&mut self) {
+        let sample_start_address = self.sample_start_address;
+        let sample_length = self.sample_length;
+        let reg_4012 = self.reg_4012;
+        let reg_4013 = self.reg_4013;
+
+        self.reset();
+
+        self.sample_start_address = sample_start_address;
+        self.sample_length = sample_length;
+        self.reg_4012 = reg_4012;
+        self.reg_4013 = reg_4013;
+    }
+
     /// Supply the byte requested through [`DmcChannel::dma_request`].
     pub fn supply_dma_byte(&mut self, value: u8) {
         self.dma_request = None;

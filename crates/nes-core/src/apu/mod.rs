@@ -179,11 +179,6 @@ pub struct Apu {
     pub noise: NoiseChannel,
     /// Delta modulation channel ($4010-$4013)
     pub dmc: DmcChannel,
-
-    /// Lookup table for pulse channel mixing (0-30)
-    pulse_table: [f32; 31],
-    /// Lookup table for triangle/noise/DMC mixing (0-202)
-    tnd_table: [f32; 203],
 }
 
 crate::state::state_fields!(Apu {
@@ -202,7 +197,7 @@ crate::state::state_fields!(Apu {
 impl Apu {
     /// Create a new APU instance
     pub fn new() -> Self {
-        let mut apu = Self {
+        Self {
             frame_counter: FrameCounter::new(),
             frame_counter_mode: FrameCounterMode::FourStep,
             frame_counter_irq_window: 0,
@@ -213,34 +208,7 @@ impl Apu {
             triangle: TriangleChannel::new(),
             noise: NoiseChannel::new(),
             dmc: DmcChannel::new(),
-            pulse_table: [0.0; 31],
-            tnd_table: [0.0; 203],
-        };
-
-        apu.init_lookup_tables();
-        apu
-    }
-
-    /// Initialize the DAC lookup tables
-    ///
-    /// These tables are used to mix the output of all channels
-    /// according to the NES APU hardware formula.
-    fn init_lookup_tables(&mut self) {
-        // Pulse channel lookup table
-        // Formula: 95.52 / (8128.0 / pulse_output + 100.0)
-        for i in 0..31 {
-            self.pulse_table[i] = 95.52 / (8128.0 / (i as f32) + 100.0);
         }
-        // Handle the 0 case (avoid division by zero)
-        self.pulse_table[0] = 0.0;
-
-        // Triangle/Noise/DMC lookup table
-        // Formula: 163.67 / (24329.0 / tnd_output + 100.0)
-        for i in 0..203 {
-            self.tnd_table[i] = 163.67 / (24329.0 / (i as f32) + 100.0);
-        }
-        // Handle the 0 case
-        self.tnd_table[0] = 0.0;
     }
 
     /// Read from an APU register
@@ -458,16 +426,48 @@ impl Apu {
 
     /// Mix the channel outputs into one analogue sample.
     ///
-    /// Uses the non-linear mixing formula from the NES documentation: silence
-    /// is 0.0 and full scale is roughly 1.0.
+    /// Mesen's own mixer (`NesSoundMixer::GetOutputVolume`): the same
+    /// non-linear shape the documentation gives, with its constants and its
+    /// channel weights, which are not the documented ones —
+    /// `tnd = dmc + 2.7516713261 * triangle + 1.8493587125 * noise`, then
+    /// `159.79 / (22638 / tnd + 100)`; the pulses use `95.88 / (8128 / square +
+    /// 100)`. Silence is 0.0 and full scale is just under 1.0, since Mesen's
+    /// numbers are scaled by 5000 for a 16-bit output and divided out here.
+    ///
+    /// The weights matter: the documented `3` and `2` make the triangle 3.7%
+    /// and the noise 3.0% louder than Mesen's do (measured against its
+    /// constants), which is the balance `apu_mixer` can hear.
     pub fn output(&self) -> f32 {
-        let pulse_index = (self.pulse1.get_output() + self.pulse2.get_output()) as usize;
-        let tnd_index = 3 * self.triangle.get_output() as usize
-            + 2 * self.noise.get_output() as usize
-            + self.dmc.get_output() as usize;
+        Self::mix(
+            self.pulse1.get_output() as u32 + self.pulse2.get_output() as u32,
+            self.dmc.get_output(),
+            self.triangle.get_output(),
+            self.noise.get_output(),
+        )
+    }
 
-        self.pulse_table[pulse_index.min(self.pulse_table.len() - 1)]
-            + self.tnd_table[tnd_index.min(self.tnd_table.len() - 1)]
+    /// The mixer's arithmetic, in the channels' own units (pulses 0-15 each,
+    /// triangle and noise 0-15, the DMC's DAC 0-127).
+    ///
+    /// Mesen's constants, scaled down by its 5000: silence is 0.0 and full
+    /// scale is just under 1.0. Its weights are the interesting part — see
+    /// [`Apu::output`].
+    fn mix(square: u32, dmc: u8, triangle: u8, noise: u8) -> f32 {
+        let square = square as f32;
+        let tnd = dmc as f32 + 2.751_671_3 * triangle as f32 + 1.849_358_7 * noise as f32;
+
+        let square_volume = if square > 0.0 {
+            95.88 / (8128.0 / square + 100.0)
+        } else {
+            0.0
+        };
+        let tnd_volume = if tnd > 0.0 {
+            159.79 / (22638.0 / tnd + 100.0)
+        } else {
+            0.0
+        };
+
+        square_volume + tnd_volume
     }
 
     /// Reset the APU to its power-on state.
@@ -482,6 +482,24 @@ impl Apu {
         self.triangle.reset();
         self.noise.reset();
         self.dmc.reset();
+    }
+
+    /// A soft reset — the reset button (`NesApu::Reset(true)`).
+    ///
+    /// The frame counter's mode survives, because `$4017`'s setting is a
+    /// register rather than a counter and only a power-on reset clears it. The
+    /// triangle keeps its length counter and the DMC keeps the sample address
+    /// and length its `$4012`/`$4013` writes set; every other counter restarts.
+    pub fn soft_reset(&mut self) {
+        self.frame_counter.reset();
+        self.frame_counter_irq = false;
+        self.frame_counter_irq_inhibit = false;
+
+        self.pulse1.reset();
+        self.pulse2.reset();
+        self.triangle.soft_reset();
+        self.noise.reset();
+        self.dmc.soft_reset();
     }
 }
 
@@ -579,20 +597,52 @@ mod tests {
         assert!(!apu.frame_counter_irq);
     }
 
+    /// The mixer is Mesen's, constants and channel weights included — and the
+    /// weights are not the documented ones, which is the whole point of this
+    /// test: at full volume Mesen's triangle comes out 3.7% and its noise 3.0%
+    /// quieter than `3 * triangle + 2 * noise` puts them, while its pulses are
+    /// 0.4% louder than the documented `95.52` would make them.
     #[test]
-    fn test_lookup_tables_initialized() {
-        let apu = Apu::new();
+    fn test_the_mixer_is_mesens_own_formula() {
+        assert_eq!(Apu::mix(0, 0, 0, 0), 0.0, "silence is zero");
 
-        // Verify lookup tables are initialized
-        // Index 0 should be 0.0 (special case to avoid division by zero)
-        assert_eq!(apu.pulse_table[0], 0.0);
-        assert_eq!(apu.tnd_table[0], 0.0);
+        // Both pulses at full volume: 95.88 / (8128 / 30 + 100).
+        let pulses = Apu::mix(30, 0, 0, 0);
+        assert!(
+            (pulses - 0.2585).abs() < 0.0005,
+            "the pulses' full-scale share is Mesen's 0.2585, got {pulses}"
+        );
+        let documented = 95.52 / (8128.0 / 30.0 + 100.0);
+        assert!(pulses > documented, "Mesen's constant is the larger one");
 
-        // Non-zero indices should have calculated values
-        assert!(apu.pulse_table[1] > 0.0);
-        assert!(apu.tnd_table[1] > 0.0);
+        // The triangle alone at full volume: tnd = 2.7516713261 * 15.
+        let triangle = Apu::mix(0, 0, 15, 0);
+        assert!(
+            (triangle - 0.2464).abs() < 0.001,
+            "the triangle's share is Mesen's 0.2464, got {triangle}"
+        );
+        let documented = 163.67 / (24329.0 / (3.0 * 15.0) + 100.0);
+        assert!(
+            triangle < documented,
+            "and it is the quieter one: {triangle} against {documented}"
+        );
+
+        // Noise and triangle do not share a weight, so the balance between them
+        // is Mesen's too: 2.7516713261 / 1.8493587125 is not 3 / 2. The
+        // difference is small on the way out — 1.4127 against 1.4219 — because
+        // the non-linear curve compresses it, which is also why a static mix
+        // measurement has to be this precise to see it at all.
+        let noise = Apu::mix(0, 0, 0, 15);
+        let triangle_to_noise = triangle / noise;
+        let documented_ratio =
+            (163.67 / (24329.0 / 45.0 + 100.0)) / (163.67 / (24329.0 / 30.0 + 100.0));
+        assert!(
+            (triangle_to_noise - documented_ratio).abs() > 0.005
+                && triangle_to_noise < documented_ratio,
+            "the weights have to differ from 3:2, got {triangle_to_noise} against \
+             {documented_ratio}"
+        );
     }
-
     #[test]
     fn test_audio_channel_trait_mock() {
         // Test that we can create a mock AudioChannel

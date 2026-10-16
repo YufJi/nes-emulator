@@ -139,8 +139,11 @@ fn test_ppustatus_read() {
     assert!(!ppu.w);
 }
 
+/// A `$2002` read takes the VBlank flag and the write toggle, and leaves the
+/// two sprite flags alone: they are cleared at pre-render, not on a read
+/// (Mesen's `UpdateStatusFlag`).
 #[test]
-fn test_ppustatus_read_clears_flags() {
+fn test_ppustatus_read_clears_only_vblank() {
     let mut ppu = Ppu::new();
 
     // Set all status flags
@@ -150,10 +153,13 @@ fn test_ppustatus_read_clears_flags() {
     // Read status
     let _ = ppu.read_register(0x2002);
 
-    // VBLANK, SPRITE_0_HIT, and SPRITE_OVERFLOW should be cleared
+    // VBlank goes, and the write toggle with it. The two sprite flags stay:
+    // Mesen's `UpdateStatusFlag` clears only the VBlank flag, and the sprite
+    // flags are cleared at pre-render instead (the machine does that in
+    // `NesBus::ppu_step`).
     assert!(!ppu.status.contains(PpuStatus::VBLANK));
-    assert!(!ppu.status.contains(PpuStatus::SPRITE_0_HIT));
-    assert!(!ppu.status.contains(PpuStatus::SPRITE_OVERFLOW));
+    assert!(ppu.status.contains(PpuStatus::SPRITE_0_HIT));
+    assert!(ppu.status.contains(PpuStatus::SPRITE_OVERFLOW));
 
     // Write toggle should be cleared
     assert!(!ppu.w);

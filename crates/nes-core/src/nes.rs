@@ -91,6 +91,11 @@ const STATE_VERSION: u8 = 12;
 /// cycle is ever not exactly three dots long.
 const ACCESS_DOTS: u32 = 2;
 
+/// Dummy cycles the CPU spends after a reset before the cartridge's first
+/// instruction runs, which is what puts the PPU and the APU that far into a
+/// frame when it does (Mesen's `NesCpu::Reset`).
+const RESET_WARM_UP_CYCLES: u32 = 8;
+
 /// How much audio the core buffers before it starts dropping the oldest
 /// samples, in milliseconds.
 ///
@@ -205,11 +210,15 @@ impl RomHeader {
         let flags7 = data[7];
         let flags8 = data[8];
 
-        // iNES and NES 2.0 differ in byte 7's bits 2-3: 0b10 marks NES 2.0.
-        // Nothing else about the layout changes for the fields read here, and a
-        // plain iNES file's byte 8 is not part of the header at all — reading a
-        // submapper out of it would be reading whatever the unused byte holds.
+        // Byte 7's bits 2-3 name the format: 0b10 is NES 2.0, 0b00 plain iNES,
+        // and anything else is the archaic iNES whose mapper number lives in
+        // byte 6's high nibble alone (Mesen's `GetRomHeaderVersion`). Nothing
+        // else about the layout changes for the fields read here, and neither
+        // an archaic nor a plain iNES file's byte 8 is part of the header at
+        // all — reading a submapper out of it would be reading whatever the
+        // unused byte holds.
         let nes2 = (flags7 & 0x0C) == 0x08;
+        let archaic_ines = flags7 & 0x0C != 0x08 && flags7 & 0x0C != 0x00;
 
         // Byte 9's two nibbles carry the high bits of the PRG and CHR sizes in
         // NES 2.0; in iNES that byte is the TV-system flag and must not be read
@@ -256,16 +265,24 @@ impl RomHeader {
         let has_trainer = flags6 & 0x04 != 0;
         let has_battery = flags6 & 0x02 != 0;
 
-        // Mapper number from flags6 (high nibble) and flags7 (high nibble),
-        // plus flags8's high nibble for NES 2.0's four extra bits.
-        let mapper_number = ((flags7 & 0xF0) as u16)
-            | ((flags6 & 0xF0) as u16 >> 4)
-            | if nes2 {
-                ((flags8 & 0xF0) as u16) << 4
-            } else {
-                0
-            };
-        let submapper = if nes2 { flags8 & 0x0F } else { 0 };
+        // The mapper number is three nibbles, and their places differ by
+        // format. Mesen: `(Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)`
+        // for NES 2.0, `(Byte7 & 0xF0) | (Byte6 >> 4)` for iNES, and
+        // `Byte6 >> 4` for the archaic one. NES 2.0's fourth nibble is the
+        // submapper — byte 8's *high* half, not its low one, which is the
+        // mapper's eighth bit and the reason the two are easy to swap.
+        let mapper_number = if archaic_ines {
+            ((flags6 & 0xF0) as u16) >> 4
+        } else {
+            ((flags7 & 0xF0) as u16)
+                | ((flags6 & 0xF0) as u16 >> 4)
+                | if nes2 {
+                    ((flags8 & 0x0F) as u16) << 8
+                } else {
+                    0
+                }
+        };
+        let submapper = if nes2 { flags8 >> 4 } else { 0 };
 
         // TV system: NES 2.0 states it outright in byte 12's low two bits
         // (0 = NTSC, 1 = PAL, 2 = both, 3 = Dendy); otherwise byte 9 bit 0 is
@@ -323,6 +340,20 @@ struct NesBus {
     apu: Apu,
     /// Cartridge mapper
     mapper: Option<Box<dyn Mapper>>,
+    /// Frames the machine has finished since it was created.
+    ///
+    /// Deliberately *not* the PPU's frame counter: that one restarts at every
+    /// reset, because the odd frame's skipped dot is read off its parity, while
+    /// this one is what a host counts and keeps counting across a cartridge
+    /// change (`Nes::frame_number`).
+    frames_completed: u64,
+    /// Whether rendering was on at the end of the previous dot.
+    ///
+    /// Mesen keeps this lag deliberately (`UpdateState` runs after a dot's
+    /// work): the odd frame's skipped dot is decided from the state as of the
+    /// dot before, so a `$2001` write landing on the decision's own dot is one
+    /// dot too late. `10-even_odd_timing` measures the boundary.
+    rendering_enabled_delayed: bool,
     /// Controller states (player 1 and 2)
     controllers: [ControllerState; 2],
     /// Controller strobe/latch state
@@ -483,6 +514,8 @@ impl NesBus {
             open_bus: 0,
             has_battery: false,
             submapper: 0,
+            frames_completed: 0,
+            rendering_enabled_delayed: false,
             frame_ready: false,
         }
     }
@@ -575,9 +608,54 @@ impl NesBus {
         }
     }
 
-    /// Reset the system
+    /// Power-on the system: everything, memories included, back to the state a
+    /// cartridge finds when the console is switched on.
+    fn power_on(&mut self, cpu: &mut Cpu) {
+        self.reset_with(cpu, false);
+    }
+
+    /// Press the reset button.
     fn reset(&mut self, cpu: &mut Cpu) {
-        cpu.reset(self);
+        self.reset_with(cpu, true);
+    }
+
+    /// The two resets, which differ in three places that a cartridge can see:
+    /// the CPU walks its stack pointer down (soft only), the memories are
+    /// cleared (power-on only), and the CPU takes its eight dummy cycles either
+    /// way.
+    fn reset_with(&mut self, cpu: &mut Cpu, soft: bool) {
+        // The cycle counter restarts with the CPU, so a reset leaves the same
+        // clock parity behind every time — which the DMA and DMC phase checks
+        // read (Mesen's `CycleCount = -1` at the top of its `Reset`).
+        self.cpu_cycles = 0;
+
+        if soft {
+            self.ppu.soft_reset();
+            self.apu.soft_reset();
+        } else {
+            self.ppu.reset();
+            self.apu.reset();
+        }
+        self.pipeline.reset_shifters();
+        self.pipeline.clear_bg_plane();
+        // A held bus address would outlive the reset the cartridge's own
+        // accesses are about to set.
+        let _ = self.pipeline.take_bus_access();
+        self.bus_address = 0;
+
+        if soft {
+            cpu.soft_reset(self);
+        } else {
+            cpu.reset(self);
+        }
+
+        // "The CPU takes 8 cycles before it starts executing the ROM's code
+        // after a reset/power up" — Mesen's `Reset` runs exactly these eight
+        // dummy cycles, which is also how far into a frame the PPU and the APU
+        // are when the cartridge's first instruction runs.
+        for _ in 0..RESET_WARM_UP_CYCLES {
+            self.advance_one_cpu_cycle();
+        }
     }
 
     /// Run one frame of emulation
@@ -1382,10 +1460,14 @@ impl NesBus {
         // write that reaches `$2001` in between arrives after the chip has
         // made up its mind (Mesen's counter jumps to 340 while it is processing
         // 339), and a decision taken on 340 itself would count that write.
-        let rendering = self
-            .ppu
-            .mask
-            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
+        //
+        // What the decision reads is the rendering state *as of the end of the
+        // previous dot*, not the live mask: Mesen's `_renderingEnabled` is
+        // refreshed by its `UpdateState` after each dot, so a `$2001` write
+        // that lands in the same dot as the decision is one dot too late for
+        // it. `10-even_odd_timing`'s checks 2-5 walk a write across that
+        // boundary one CPU cycle at a time and pin it down.
+        let rendering = self.rendering_enabled_delayed;
         if self.ppu.scanline == self.region.last_scanline()
             && self.ppu.cycle == 339
             && rendering
@@ -1403,6 +1485,7 @@ impl NesBus {
             if self.ppu.scanline > self.region.last_scanline() {
                 self.ppu.scanline = 0;
                 self.ppu.frame += 1;
+                self.frames_completed += 1;
                 self.frame_ready = true;
 
                 // Show the finished frame by exchanging buffers with the
@@ -1436,6 +1519,14 @@ impl NesBus {
         self.ppu_step();
         self.feed_ppu_bus();
         self.record_ppu_bus_sample();
+
+        // The rendering state every dot leaves behind for the next one to read
+        // (Mesen's `UpdateState`, which runs at the end of each `Exec`). The
+        // odd frame's skipped dot is what depends on it most visibly.
+        self.rendering_enabled_delayed = self
+            .ppu
+            .mask
+            .intersects(PpuMask::SHOW_BG | PpuMask::SHOW_SPRITES);
     }
 
     /// Append the dot the PPU just finished to the bus timeline.
@@ -1486,7 +1577,7 @@ impl Nes {
         let mut bus = NesBus::new();
         bus.apply_config(&config);
         let mut cpu = Cpu::new();
-        bus.reset(&mut cpu);
+        bus.power_on(&mut cpu);
         Self { cpu, bus, config }
     }
 
@@ -1498,7 +1589,9 @@ impl Nes {
     /// Load an iNES cartridge image and reset the console.
     pub fn load_rom(&mut self, data: &[u8]) -> crate::Result<()> {
         self.bus.load_rom(data)?;
-        self.bus.reset(&mut self.cpu);
+        // Mesen's `LoadRom` powers the machine on (`Reset(false, ...)` for every
+        // chip), which is what gives the CPU `SP = $FD` and clears the RAM.
+        self.bus.power_on(&mut self.cpu);
         Ok(())
     }
 
@@ -1642,7 +1735,7 @@ impl Nes {
 
     /// Number of frames rendered so far.
     pub fn frame_number(&self) -> u64 {
-        self.bus.ppu.frame
+        self.bus.frames_completed
     }
 
     /// Whether a frame has finished since the last [`Nes::clear_frame_ready`].
@@ -1821,7 +1914,10 @@ mod tests {
         let mut nes = Nes::new();
         nes.load_rom(&marker_rom(0)).expect("load NROM");
 
-        assert_eq!(nes.ppu_position(), (0, 0));
+        // A freshly loaded cartridge has already spent the eight dummy cycles a
+        // reset costs the CPU (`RESET_WARM_UP_CYCLES`), which is where the PPU
+        // is standing when the first instruction runs.
+        assert_eq!(nes.ppu_position(), (0, (RESET_WARM_UP_CYCLES * 3) as u16));
         let frame_dots = nes.region().scanlines() as usize * 341;
         nes.set_ppu_bus_trace_capacity(frame_dots * 2);
         nes.clear_ppu_bus_trace();
@@ -1834,20 +1930,25 @@ mod tests {
             assert!(calls <= frame_dots, "a frame should have ended by now");
         }
 
-        // The bus timeline is the thing that is dot-exact: a frame's worth of
-        // samples, each one dot past the last. The machine may have recorded a
-        // few more, because the instruction the boundary fell inside runs to
-        // its end, so the claim is over the frame's own dots.
+        // The bus timeline is the thing that is dot-exact: the rest of the
+        // frame's samples, each one dot past the last. (The frame has itself
+        // spent its first 24 dots on the reset's warm-up, and the trace was
+        // cleared after them.) The machine may have recorded a few more,
+        // because the instruction the boundary fell inside runs to its end, so
+        // the claim is over the frame's own dots.
         let trace: Vec<_> = nes.ppu_bus_trace().collect();
+        let warm_up_dots = (RESET_WARM_UP_CYCLES * 3) as usize;
+        let rest_of_the_frame = frame_dots - warm_up_dots;
         assert!(
-            trace.len() >= frame_dots,
-            "a frame is {frame_dots} dots of PPU bus timeline, got {}",
+            trace.len() >= rest_of_the_frame,
+            "the rest of the frame is {rest_of_the_frame} dots of PPU bus timeline, got {}",
             trace.len()
         );
         let scanlines = nes.region().scanlines() as usize;
-        for (index, sample) in trace[..frame_dots].iter().enumerate() {
-            let expected = (index + 1) % 341;
-            let expected_scanline = ((index + 1) / 341) % scanlines;
+        for (index, sample) in trace[..rest_of_the_frame].iter().enumerate() {
+            let dot = index + 1 + warm_up_dots;
+            let expected = dot % 341;
+            let expected_scanline = (dot / 341) % scanlines;
             assert_eq!(
                 (sample.scanline as usize, sample.dot as usize),
                 (expected_scanline, expected),
@@ -1886,11 +1987,12 @@ mod tests {
         // have all been spent.
         let trace: Vec<_> = nes.ppu_bus_trace().collect();
         assert!(trace.len() >= 30, "got {} samples", trace.len());
+        let warm_up_dots = (RESET_WARM_UP_CYCLES * 3) as u16;
         for (index, sample) in trace.iter().enumerate() {
             assert_eq!(sample.scanline, 0);
             assert_eq!(
                 sample.dot as usize,
-                index + 1,
+                index + 1 + warm_up_dots as usize,
                 "sample {index} is out of step"
             );
         }
@@ -1916,8 +2018,14 @@ mod tests {
         let trace: Vec<_> = nes.ppu_bus_trace().collect();
         assert_eq!(trace.len(), 8, "the oldest samples are dropped");
         let dots: Vec<u16> = trace.iter().map(|sample| sample.dot).collect();
-        assert_eq!(dots, (14..=21).collect::<Vec<u16>>());
-        assert_eq!(nes.ppu_position(), (0, 21));
+        // The eight samples end where the instruction the reset left behind
+        // leaves the PPU: seven CPU cycles past the warm-up's dot.
+        let warm_up_dots = (RESET_WARM_UP_CYCLES * 3) as u16;
+        assert_eq!(
+            dots,
+            (warm_up_dots + 14..=warm_up_dots + 21).collect::<Vec<u16>>()
+        );
+        assert_eq!(nes.ppu_position(), (0, warm_up_dots + 21));
     }
 
     #[test]
@@ -2063,11 +2171,13 @@ mod tests {
         assert_eq!(bits, vec![1, 0, 0, 1, 0, 0, 0, 0]);
     }
 
-    /// PPUSTATUS reads must clear VBlank *and* the sprite flags, otherwise
-    /// games that spin on the sprite 0 hit (Super Mario Bros. does, to time its
-    /// status bar split) stall in their wait loops.
+    /// A PPUSTATUS read clears the VBlank flag and leaves the sprite flags: the
+    /// sprite ones belong to the frame that set them and are cleared at
+    /// pre-render (Mesen's `UpdateStatusFlag`). Games that spin on the sprite 0
+    /// hit keep working either way — the flag they wait for is *set* in the
+    /// same frame they read it.
     #[test]
-    fn ppustatus_read_clears_vblank_and_sprite_flags() {
+    fn ppustatus_read_clears_vblank_only() {
         let mut nes = Nes::new();
         nes.bus
             .ppu
@@ -2088,8 +2198,11 @@ mod tests {
             "sprite overflow should be reported by the read"
         );
         assert!(!nes.bus.ppu.status.contains(PpuStatus::VBLANK));
-        assert!(!nes.bus.ppu.status.contains(PpuStatus::SPRITE_OVERFLOW));
-        assert!(!nes.bus.ppu.status.contains(PpuStatus::SPRITE_0_HIT));
+        assert!(
+            nes.bus.ppu.status.contains(PpuStatus::SPRITE_OVERFLOW),
+            "a read is not what clears the sprite flags"
+        );
+        assert!(nes.bus.ppu.status.contains(PpuStatus::SPRITE_0_HIT));
         assert!(
             !nes.bus.ppu.w,
             "the write toggle should be reset by the read"
@@ -2264,13 +2377,49 @@ mod tests {
         header[4] = 1; // one 16KB PRG bank
         header[6] = 0x00; // mapper low nibble 0
         header[7] = 0x08; // bits 2-3 = 0b10: NES 2.0
-        header[8] = 0x04; // submapper 4, mapper high nibble 0
+        header[8] = 0x40; // submapper 4 (the *high* nibble), mapper high bits 0
         header[12] = 0x01; // PAL
 
         let mut nes = Nes::new();
         nes.load_rom(&rom_with_header(header)).expect("load");
         assert_eq!(nes.rom_submapper(), 4, "the submapper is read from byte 8");
         assert_eq!(nes.region(), Region::Pal, "and byte 12 states the region");
+    }
+
+    /// NES 2.0's byte 8 is two fields: its high nibble is the submapper and its
+    /// low nibble is the mapper number's eighth bit. Reading them the other way
+    /// round turns a mapper-4 submapper-1 file into mapper 4 submapper 0 (or, as
+    /// here, a mapper-2 file with a mapper number of 258 into mapper 2).
+    #[test]
+    fn test_nes2_byte_eight_is_submapper_high_mapper_low() {
+        // Submapper 1 on mapper 2: byte 8 = 0x10. Swapped, the 0x10 would land
+        // in the mapper number as 0x100 and be rejected.
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 1;
+        header[6] = 0x20; // mapper low nibble 2
+        header[7] = 0x08; // NES 2.0
+        header[8] = 0x10; // submapper 1, mapper high bits 0
+
+        let mut nes = Nes::new();
+        nes.load_rom(&rom_with_header(header))
+            .expect("mapper 2 with submapper 1 has to load");
+        assert_eq!(nes.rom_submapper(), 1);
+
+        // And the mapper's eighth bit belongs to byte 8's low nibble: 0x01
+        // makes this mapper 2 + 0x100, which this core does not have.
+        let mut header = [0u8; 16];
+        header[..4].copy_from_slice(b"NES\x1a");
+        header[4] = 1;
+        header[6] = 0x20;
+        header[7] = 0x08;
+        header[8] = 0x01;
+
+        let mut nes = Nes::new();
+        match nes.load_rom(&rom_with_header(header)) {
+            Err(crate::NesError::UnsupportedMapper(258)) => {}
+            other => panic!("expected mapper 258 to be refused, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2550,54 +2699,49 @@ mod tests {
     }
 
     /// A register write reaches its register inside the cycle the chip drives
-    /// it on, not at the cycle's end.
+    /// it on, not at the cycle's end — and the odd frame's skipped dot reads one
+    /// dot *behind* that.
     ///
-    /// The odd frame's skipped dot is decided on pre-render dot 339, and the
-    /// write lands two dots into its cycle: a `$2001` write in the cycle whose
-    /// dots are 337-339 is therefore in time to make the frame short, and the
-    /// frame takes one dot less than one where the rendering bit arrived later.
+    /// The decision is made on pre-render dot 339 from the rendering state as
+    /// of the end of dot 338 (Mesen refreshes `_renderingEnabled` after every
+    /// dot's work, so a write landing on the decision's own dot is one dot too
+    /// late). A `$2001` write two dots into its cycle therefore has to land in
+    /// the cycle *before* the one whose dots are 337-339: the 334-336 cycle is
+    /// in time, and 337-339 is not. `10-even_odd_timing` walks a write across
+    /// this boundary one CPU cycle at a time and pins it down.
     #[test]
     fn test_a_register_write_is_in_time_for_the_odd_frame_decision() {
-        /// Dots until the frame counter moves, from a pre-render position with
-        /// an odd frame due.
-        fn dots_until_the_next_frame(bus: &mut NesBus) -> u32 {
-            let frame = bus.ppu.frame;
-            let mut dots = 0;
-            while bus.ppu.frame == frame {
-                bus.advance_one_ppu_dot();
-                dots += 1;
+        /// Walk the pre-render line's last dots with an odd frame due, writing
+        /// `$2001` between the `write_after_dots`-th and the next one, and
+        /// report whether the frame was made short.
+        fn short_frame(bus: &mut NesBus, write_after_dots: u32) -> bool {
+            assert_eq!(bus.ppu.cycle, 333, "the walk starts three dots in");
+            for dot in 1..=6 {
+                bus.advance_one_ppu_dot(); // dots 334 … 339
+                if dot == write_after_dots {
+                    bus.ppu.write_register(0x2001, PpuMask::SHOW_BG.bits());
+                }
             }
-            dots
+            assert_eq!(bus.ppu.cycle, 339, "the decision's own dot is reached");
+            bus.skip_odd_frame_dot
         }
 
-        // The write lands before dot 339 is decided: the frame is short.
-        let mut bus = NesBus::new();
-        bus.ppu.scanline = bus.region.last_scanline();
-        bus.ppu.cycle = 336;
-        bus.ppu.frame = 1; // odd, so the skip is due
-        bus.write_cycle(0x2001, PpuMask::SHOW_BG.bits());
-        assert_eq!(
-            bus.ppu.cycle, 339,
-            "the write's cycle ends with the dot the decision is made on"
+        let mut before = NesBus::new();
+        before.ppu.scanline = before.region.last_scanline();
+        before.ppu.cycle = 333;
+        before.ppu.frame = 1; // odd, so the skip is due
+        assert!(
+            short_frame(&mut before, 4),
+            "a write the chip can see during dot 338 is in time"
         );
 
-        // Nothing enables rendering before that dot in the second bus, so the
-        // frame stays long.
-        let mut late = NesBus::new();
-        late.ppu.scanline = late.region.last_scanline();
-        late.ppu.cycle = 336;
-        late.ppu.frame = 1;
-        late.write_cycle(0x2001, 0);
-
-        assert_eq!(
-            dots_until_the_next_frame(&mut bus),
-            1,
-            "the frame is short: the dot at 340 is the one that goes missing"
-        );
-        assert_eq!(
-            dots_until_the_next_frame(&mut late),
-            2,
-            "the same frame, one dot longer, without the rendering bit"
+        let mut on_the_dot = NesBus::new();
+        on_the_dot.ppu.scanline = on_the_dot.region.last_scanline();
+        on_the_dot.ppu.cycle = 333;
+        on_the_dot.ppu.frame = 1;
+        assert!(
+            !short_frame(&mut on_the_dot, 5),
+            "the same write landing after dot 338 was processed is one dot too late"
         );
     }
 

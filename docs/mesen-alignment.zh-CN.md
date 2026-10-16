@@ -182,6 +182,12 @@ CPU 侧最大的差距，DMC 的工作依赖它。
   五个 ROM 失败——`ppu_vbl_nmi` 的 `05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`，
   `cpu_interrupts_v2/2-nmi_and_brk`，以及 `mmc3_test_2/4-scanline_timing`——而 2 让所有套件通过。
   上文原先写的"没有任何套件能区分 0/1/2"在整行渲染器时代成立，现在不成立了。
+- **上电内容**。这里的 RAM 与 PPU 调色板 RAM 都是全零上电，而 Mesen 的默认是
+  `RamPowerOnState = Random`（非随机那条路还会把调色板填成固定的 32 字节上电图案，好让 blargg
+  那张老调色板 ROM 通过）。随机上电内容只是 Mesen 提供的三种设置之一
+  （`AllZeros`/`AllOnes`/`Random`），所以全零也是一种 Mesen 配置，而且是唯一能保住本内核
+  确定性不变量（`frame()`/`run_cycles()`/`step_instruction()` 在同一帧边界逐字节相同）的那个。
+  因此"先读后写" RAM 的 ROM 与 Mesen 的默认跑法可能不同。
 
 ## 5. 观测手段
 
@@ -325,6 +331,8 @@ cargo test --workspace
 | SHx 的地址损坏 | `SHA`/`SHS`/`SHX`/`SHY` 在索引把进位带出低字节时，**保留**进位（只有取指那次丢弃读落在未进位的地址上），再把这个高位与"要写的寄存器对"按位与——于是写可能落到算式根本提不到的页；写的值 = 寄存器对 &（**base** 的高位 + 1），而若 DMA 打断了写之前那个周期，这个掩蔽会被取消（Mesen 的 `SyaSxaAxa` 与它的 `hadDma`）。旧代码把写留在 base 那一页、完全不碰地址，那既不是四种行为里的任何一种，也正是 AccuracyCoin 的行为探测在找的东西 | AccuracyCoin 的五项 `UnOp_`（`SHA $93`/`$9F`、`SHS $9B`、`SHY $9C`、`SHX $9E`）同时从第 3 项推进到第 15 项，而失败总数仍是 34——因为那最后一项落在这些测试的 DMA 段里（源码自己的注释写着"错误码 7、8、9、A、B、C"，从那往后必须 DMA 正确）。所有 blargg 套件零移动；单元测试 602 → 603 |
 | 背景属性的粗 X | 粗 X 原先紧跟 nametable 取指自增，而 Mesen 在**每组的最后一个 dot**（`(_cycle & 0x07) == 0`，本内核的装载 dot）才推进它：属性取指在 nametable 之后两个 dot，读的却是 `v` 的粗 X 位 1（象限）与粗 X 位 2-4（属性字节地址）。于是每个背景瓦片都拿到**右邻**的调色板，跨四瓦片边界时还多读一个属性字节；图案取指不受影响（行号取自 fine Y）。症状只落在调色板边界：SMB 1-1 的 `?` 砖右半、砖行末尾与标题画面 "1 PLAYER GAME" 末尾的 "E" 都变成天空那一档的绿 | **没有一个 ROM 看见它**——本地 ROM 不看自己画出来的像素，blargg 全套与 AccuracyCoin 的 143 跑 94 过 34 失败在改前改后一字不差。与整行渲染器逐像素比：`894cc07`（逐 dot 之前）与修好后**完全一致**，而 `5dc9e32`（逐 dot 背景）已经差 304 像素——这个缺陷是逐 dot 背景流水线带进来的，`nestest` 的逐字节比对看不见它。三条回归测试（自增的 dot、象限、属性字节地址）在旧代码上全部失败。SMB 的标题画面与 1-1 都恢复原色（同一帧 248 / 283 个像素变化，全部落在调色板边界上）。帧耗时：同机各三次中位 3.68 ms，未修 3.84 ms（抖动 ±0.3 ms；本机当前绝对值约为上表的 2 倍） |
 
+| §10.3 的前五项，一次做完 | NES 2.0 的 byte 8 按 Mesen 读（mapper 取 `(Byte8 & 0x0F) << 8`、submapper 取 `(Byte8 & 0xF0) >> 4`，并补上 mapper 只写在 byte 6 的古老 iNES）；`$2002` 读**只**清 VBlank（`UpdateStatusFlag`），两个 sprite 标志留给预渲染行；混音改用 Mesen 的常数与声道权重；上电复位与软复位分成两件事（上电 `SP = $FD`、`A/X/Y = 0`，按键 `SP -= 3` 且置 `I`），之后都跑八个空周期；奇数帧跳点读的是 dot 338 **末尾**的渲染状态（Mesen 的 `_renderingEnabled` 比 `$2001` 慢一个 dot） | **`ppu_vbl_nmi` 9/10 → 10/10**（`10-even_odd_timing` 通过，输出正是它自己注释里写的 `08 08 09 07`），**AccuracyCoin 34 → 32**：`Suddenly Resize Sprite` 与 `Misaligned OAM DMA` 不再失败。`cpu_reset/registers` 越过第 2 项，打印出 `A X Y P S = 00 00 00 34 FD`——正是 ROM 对上电的期望值，此前是 `S=$F7` 而失败。把所有会自报结果的 ROM 复测一遍：`instr_test-v5` 16/16、`instr_timing` 2/2、`cpu_interrupts_v2` 5/5、`apu_test` 8/8、`mmc3_test_2` 5/6（已知那一项）、`oam_read`、`ppu_open_bus`、`cpu_dummy_writes` 2/2、`cpu_exec_space/ppuio`，以及被 `ACCESS_DOTS = 2` 钉住的五张（`05-nmi_timing`、`06-suppression`、`07-nmi_on_timing`、`2-nmi_and_brk`、`4-scanline_timing`）全部仍然绿。单元测试 604 → 605 |
+
 **一个过期数字，已更正。** 从 `8ec693d`（DMA 移进 `MemoryRead`）到上表最后一行之间，
 AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA 同步循环，`$37` 一直是 0，
 而 harness 把它当成"这里没有 ROM"跳过了自己——于是中间几行原样重复了它在 `30b7267` 时的 46，
@@ -458,8 +466,8 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 `instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
 `oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
 `sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
-`ppu_vbl_nmi` 9/10、AccuracyCoin **34 项失败**（共跑 140 项、94 通过、0 跳过——与 APU 挪位之前
-一模一样的 34 项，逐项清单见 §10.5）。单元测试 604 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+`ppu_vbl_nmi` **10/10**、AccuracyCoin **32 项失败**（§10.3 前五项落地后：34 → 32，
+`Suddenly Resize Sprite` 与 `Misaligned OAM DMA` 转绿；逐项清单见 §10.5）。单元测试 605 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
 抖动 ±0.06）。**帧耗时只做同轮对比**：同一台机器上这项测过 1.82 ms（1.815/1.825/1.826，空闲）
 也测过 3.68 ms（10-15 那轮，机器上有别的负载），差别来自负载而不是代码——`0520b59` 里那个
 5–8% 是 Android 前端自己关掉 PPU 总线轨迹换来的（`set_ppu_bus_trace_capacity(0)`），内核默认
@@ -485,6 +493,7 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 | — | 访问 dot 的实验 | 完成 | `f5943b3`：0/1 各让五个套件失败，2 全绿 → 保留 `ACCESS_DOTS = 2` | 无 |
 | C1 | **与 MesenCE 的逐文件源码对比（§10）** | 完成 | 把整棵 `Core/NES` 取下来与本内核对照读了一遍（551 个文件、约 275 个板级类）。查出 12 处缺陷，含 NES 2.0 半字节对调、`$2002` 清掉 sprite 两个标志、CPU 复位的 `SP`、手柄口的 open bus；核实 12 项已一致；AccuracyCoin 的 34 项按"第几项失败"重读（`(value >> 2) + 1`，§7/§9 原先的编号整体多一） | 按 §10.7 的顺序做：DMA 逐字移植 → `$4016`/`$4017` 配 `read_joy3` → PPU 寄存器状态机 → `$2002` 标志与逐 dot sprite 求值 |
 | C2 | **为对齐让路而移除 ROM 套件**（§6/§9） | 完成 | 10-16 删除 `tests/rom_tests.rs`、`tests/common/`、`tests/golden/`（可从 git 取回：`b6c06a1` 及更早；另有一份在 `/tmp/nes-baseline-snapshot-20261016`）。`cargo test --workspace` 130 s → 约 11 s，604 个单元测试全绿。§10.6 列出的套件已放到 `roms/nes-test-roms/`（37 张 ROM，已 gitignore）并各自量过一次 | 对齐收尾时全部放回，连同 §10.6 的那些：那次实测里 `cpu_dummy_writes`（2/2）与 `cpu_exec_space` 的 `ppuio` 已经报 "Passed"，`cpu_exec_space_apu` 失败在 open bus 第 2 项，`cpu_reset/registers` 失败在第 2 项并打印 `SP=$F7`（ROM 要的是 `$FD`）——正是 §10.3 第 3 条要修的缺陷 |
+| C3 | §10.3 的前五项：NES 2.0 半字节、`$2002` 标志寿命、Mesen 混音、复位分成两种加八个预热周期、奇数帧跳点读慢一个 dot 的渲染状态 | **完成** | 实测整行见 §7。`ppu_vbl_nmi` 10/10、AccuracyCoin 32 项失败、`cpu_reset/registers` 越过第 2 项并打出期望的 `S=$FD`；所有会自报结果的 ROM 复测无回退；单元测试 605 | §10.3 剩下的，按 §10.7 的顺序：手柄口与 `$4016` 写入延迟（第 4/5 条），再是 PPU 寄存器状态机（第 6 条），再是 DMA（第 7 条）——APU 边沿时序（第 8 条）与死代码 `addressing.rs`（第 10 条）作为侧刀 |
 
 **先记住一件容易搞错的事**：AccuracyCoin 的计数是**我们的**基线，不是 Mesen 的——它不在 Mesen
 的测试套件里（§5.1）。每一项的 oracle 都应当是 Mesen 的源码，ROM 的裁决是证据而不是目标；少数项
@@ -631,6 +640,10 @@ CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 
 
 ### 10.3 本轮查出的缺陷（每条附修法）
 
+**进度：**第 1、2、3、9 条已修（C3 那一步，见 §7 与 §9），奇数帧跳点也随之改成读慢一个 dot 的
+渲染状态（§10.2 的 PPU 行）——剩下的是第 4/5 条（手柄口）、第 6 条（PPU 寄存器状态机）、
+第 7 条（DMA）与第 8 条（APU 边沿时序），外加第 10、11 两条清理。
+
 1. **NES 2.0 的 mapper 与 submapper 半字节对调**（`crates/nes-core/src/nes.rs` 的 `RomHeader` 解析）。
    Mesen 是 `MapperID = (Byte8 & 0x0F) << 8 | (Byte7 & 0xF0) | (Byte6 >> 4)`、`SubMapper = (Byte8 & 0xF0) >> 4`；
    这里 mapper 取 `(flags8 & 0xF0) << 4`、submapper 取 `flags8 & 0x0F`。`roms/` 里没有一个带 NES 2.0
@@ -678,6 +691,8 @@ CPU 周期里访问的切分 `_startClockCount`/`_endClockCount` NTSC 6/6、PAL 
 - `$2002` 读的 VBlank 抑制窗口：AccuracyCoin 的 `$2002 flag timing` 第 1 项（答案 `$E0 $E0 $80 $00`）
   在 `ACCESS_DOTS = 2` 下通过，这是 §4 那条有意偏差的独立证据。
 - `UpdateStatusFlag` 的特例（NMI 扫描线 cycle 0 置 `_preventVblFlag`）与抑制窗口建模的是同一次竞争。
+- 渲染状态慢一个 dot（`_renderingEnabled` 由 `UpdateState` 在每个 dot 的处理之后刷新）：奇数帧跳点
+  现在读的是 dot 338 末尾的状态，`10-even_odd_timing` 那四次跨边界写入量的正是它。
 
 ### 10.5 AccuracyCoin 那 34 项，各自到底要什么
 
@@ -720,6 +735,11 @@ harness 打印的是 ROM 存下的那个字节，它的构造是 `(ErrorCode << 
 每一行 "DMA + …" 都是同一个缺失机制（§10.2 的 DMA 行）；两组手柄项与 `Internal Data Bus`、`Open Bus`
 都是 `$4016`/`$4015` 的 open bus 工作。这里没有哪一项需要 AccuracyCoin 是对的——它只是一份顺手就有的
 检查表。
+
+**在 §10.3 前四项修完之后重测（同一天）：32 项失败。** 停下来的两项是 `Suddenly Resize Sprite`
+（`$0489`）与 `Misaligned OAM DMA`（`$0494`）；上表其余每一项都还在同一项检查上失败，这个形状正是
+预期的——剩下四组是手柄口、PPU 寄存器状态机、DMA 与 APU 边沿时序。上面那套失败项换算正是让这件事
+读得出来的原因：表里记的是 ROM 打印出来的原始字节。
 
 ### 10.6 基线套件：Mesen 自己开发时用的那些
 

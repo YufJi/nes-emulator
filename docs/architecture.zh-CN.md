@@ -811,7 +811,7 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `instr_timing` | 2/2 |
 | `branch_timing_tests` | 3/3 |
 | `cpu_interrupts_v2` | 5/5 |
-| `ppu_vbl_nmi` | 9/10（只剩奇数帧跳点：它需要"时钟在哪一个 dot 被跳过"） |
+| `ppu_vbl_nmi` | **10/10**（奇数帧跳点在 C3 那一步落地：跳点读的是 dot 338 末尾的渲染状态） |
 | `blargg_ppu_tests` | 5/5 |
 | `oam_read` | 1/1 |
 | `oam_stress` | 1/1 |
@@ -820,10 +820,10 @@ AccuracyCoin 在 <https://github.com/100thCoin/AccuracyCoin>（两者都可自�
 | `sprite_overflow_tests` | 5/5 |
 | `mmc3_test_2` | 5/6（"alternate" IRQ 版本需要 mapper 4 的 submapper） |
 | `apu_test` | 8/8 |
-| AccuracyCoin | 共跑 140 项、94 通过、0 跳过、34 失败（ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查——而"什么都报不出来"现在会让测试**失败**而不是跳过，因为那正是启动期卡死的样子） |
+| AccuracyCoin | 32 项失败（§10.3 前五项落地后由 34 降到 32；`Suddenly Resize Sprite` 与 `Misaligned OAM DMA` 转绿。最后一轮实测在套件移除之前——ROM 自己的计数器取决于结果页停留多久，harness 只用它做存活检查） |
 
 这些失败不是谜团，就是路线图：`mmc3_test_2` 最后一项需要 mapper 4 的 submapper，
-`ppu_vbl_nmi` 最后一项需要"奇数帧被跳掉的那个 dot"。（`cpu_interrupts_v2` 原先也在这张单子上，
+（`ppu_vbl_nmi` 的最后一项已在 C3 那一步转绿；`cpu_interrupts_v2` 原先也在这张单子上，
 直到 APU 挪到 CPU 周期的开头：最后三张表读的都是那一个 cycle。`apu_test` 同样如此，直到 DMC
 改成 Mesen 的通道：长度计数在取数时移动、取到的字节留在缓冲里等输出单元的字节边界、定时器周期
 取表里的值。）
@@ -930,16 +930,17 @@ flowchart LR
   以及在它那个像素被画出的 dot 上置位的 sprite 0 命中——但填充二级 OAM 的求值仍是每行一次调用，
   不是芯片那套奇偶 OAM 读模式，因此行内写 `$2003` 造成的 OAM 损坏没有建模
   （见 `docs/mesen-alignment.md` §2.1）。
-- **VBlank 标志周边已经精确到 dot，只剩奇数帧跳点**：`$2002` 的读在它自己那个 cycle 的第二个
+- **VBlank 标志周边已经精确到 dot**：`$2002` 的读在它自己那个 cycle 的第二个
   dot 之后执行，也就是芯片真正做这次访问的位置；因此"在标志置位前一个 dot 读取"会同时抹掉
   这一帧的标志与 NMI，而"正好在标志置位那个 dot 读取"会读到标志并清掉它——抑制窗口就是
   这一个 dot。NMI 线是"标志与使能"共同构成的电平（`vblank && NMI enable`），每个 CPU cycle
   末尾采样一次：一个 cycle 内起落的电平不会被看到，而被看到的电平会一直锁存到 CPU 取走
   这次中断为止——这既保证长时间 VBlank 下不会每次采样都重入处理程序，也让"打开 NMI 的
   `$2000` 写入要到下一条指令之后才被响应"（它自己那条指令的采样周期已经过去了）自然成立。
-  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 9/10；最后一项 `10-even_odd_timing` 与
-  `mmc3_test_2/4-scanline_timing` 都需要"奇数帧跳点/一帧首个 A12 上升沿落在哪个 dot"，
-  也就是逐 dot 渲染。
+  blargg 的 `ppu_vbl_nmi` 因此从 1/10 升到 9/10；到 **10/10** 是在奇数帧跳点挂上 Mesen 那个
+  慢一个 dot 的渲染状态之后：预渲染行 dot 339 的判决读的是 dot 338 末尾的渲染开关，因此落在
+  判决自己那个 dot 上的 `$2001` 写入晚了一个 dot——`10-even_odd_timing` 的四项检查就是拿一次
+  写入在这个边界上逐 CPU 周期挪出来的。
 - **CPU 是访问驱动的，中断判定自然落在其中**：中断线在每个 CPU cycle 末尾采样，判决滞后一个
   cycle，因此真正生效的是倒数第二个 cycle 的采样——这既是 CLI/SEI/PLP 一指令延迟的来源
   （RTI 没有延迟），也让已跳转分支能"无视"它最后一个 cycle 里抬起的中断。向量过程的七个 cycle
@@ -1030,10 +1031,11 @@ flowchart LR
 4. ~~**原生前端首个落地**（iOS 或 Android，验证第 10 节契约是否真的"平台无关"）。~~
    已完成：Android TV 应用用「以 GL 表面 swap 为节拍」的 GLES2 画面与 `AudioTrack` 实现了这四条
    通道（`android/README.md`），iOS 应用用 `CADisplayLink`、Metal 与 `AVAudioEngine` 实现了同一份契约。
-5. **测试 ROM 已经点名的精度欠账**：§13.1 里剩余的那些——`ppu_vbl_nmi` 的最后 1 项、
-   `mmc3_test_2` 的 1 项——外加 MMC5 的扩展属性、§8 里说明延后的 5 个 Mapper、PAL 的 dot
-   比例。寄存器写入、`$2002`/`$2007` 读、DMA 与 DMC 现在都落在各自 cycle 的 dot 上；剩下的
-   基本都在更下一层：奇数帧被跳掉的那个 dot、sprite 求值时的 OAM 读模式、以及仍缺的板卡。
+5. **精度欠账**：`mmc3_test_2` 的最后 1 项（§13.1——Mesen 同样失败：那张 ROM 要的 IRQ 修订版
+   纯 iNES 头部根本写不出来）、AccuracyCoin 剩下的项、MMC5 的扩展属性、§8 里说明延后的 5 个
+   Mapper、PAL 的 dot 比例。VBlank 标志及其周边、奇数帧跳点、寄存器写入与 `$2002`/`$2007` 读
+   现在都落在各自的 dot 上；剩下的基本都在更下一层：DMA 的 dummy 读与 DMC 的延迟、sprite 求值
+   时的 OAM 读模式、以及仍缺的板卡。
 
 精度工作另有一份专门文档——与 Mesen2 NES 内核的对齐现状、尚存的差距、每一步的实测数据，以及
 被撤回的实验：[`mesen-alignment.zh-CN.md`](./mesen-alignment.zh-CN.md)。下次动手时从它开始；

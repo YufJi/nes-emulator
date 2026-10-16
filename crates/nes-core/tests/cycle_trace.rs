@@ -21,6 +21,67 @@ use std::path::PathBuf;
 
 use nes_core::Nes;
 
+#[test]
+#[ignore = "a diagnostic tool: set NES_ACCURACYCOIN=1 to run the suite and print its failures"]
+fn run_accuracy_coin_and_report() {
+    if std::env::var_os("NES_ACCURACYCOIN").is_none() {
+        println!("set NES_ACCURACYCOIN=1 to run AccuracyCoin and print its result table");
+        return;
+    }
+    const MENU_FRAMES: u32 = 90;
+    const RESULTS: std::ops::Range<u16> = 0x0400..0x0500;
+
+    let path = resolve_rom_path("roms/accuracycoin/AccuracyCoin.nes");
+    if !path.exists() {
+        println!("skipped: no roms/accuracycoin/AccuracyCoin.nes");
+        return;
+    }
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+
+    // The ROM is menu-driven: let the menu come up, then press Start to run
+    // every test.
+    for _ in 0..MENU_FRAMES {
+        nes.frame();
+    }
+    nes.set_button(1, nes_core::nes::BUTTON_START, true);
+    nes.frame();
+    nes.frame();
+    nes.set_button(1, nes_core::nes::BUTTON_START, false);
+    let budget: u32 = std::env::var("NES_ACCURACYCOIN_FRAMES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3600);
+    for _ in 0..budget {
+        nes.frame();
+    }
+
+    let mut passed = 0;
+    let mut skipped = 0;
+    let mut failures = Vec::new();
+    for addr in RESULTS {
+        match nes.peek(addr) {
+            0 => {}
+            0xFF => skipped += 1,
+            value if value & 1 == 1 => passed += 1,
+            value => failures.push((addr, value)),
+        }
+    }
+    println!(
+        "AccuracyCoin: {} tests ran, {passed} passed, {skipped} skipped, {} failing",
+        nes.peek(0x37),
+        failures.len()
+    );
+    for (addr, value) in &failures {
+        // The byte is `(check << 2) | 2`, so the failing check is `(v >> 2) + 1`.
+        println!(
+            "  fail at {addr:#06X} = {value:#04X} (check {})",
+            (value >> 2) + 1
+        );
+    }
+}
+
 /// Follow a ROM's blargg-style status while it runs.
 ///
 /// A suite that never reports `$6000 = $80` is either still running or stuck,

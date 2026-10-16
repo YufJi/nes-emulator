@@ -90,6 +90,21 @@ impl TriangleChannel {
         self.enabled = false;
     }
 
+    /// A soft reset: everything except the length counter, which hardware
+    /// leaves standing for this channel alone (`NesApu::Reset(true)`, and
+    /// Mesen's `ApuLengthCounter::Reset`, which clears nothing but its enable
+    /// for the triangle). The control bit that doubles as the counter's halt
+    /// survives with it.
+    pub fn soft_reset(&mut self) {
+        let length_counter = self.length_counter;
+        let halt = self.linear_counter_control;
+
+        self.reset();
+
+        self.length_counter = length_counter;
+        self.linear_counter_control = halt;
+    }
+
     /// Enable or disable the channel
     /// Called when writing to $4015 (bit 2 controls triangle)
     pub fn set_enabled(&mut self, enabled: bool) {
