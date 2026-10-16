@@ -113,7 +113,8 @@ ios/               iOS 应用（SwiftUI、Metal、AVAudioEngine）
 android/           Android TV 应用（Compose、GLES2、AudioTrack，Kotlin 绑定）
 docs/              架构说明（docs/architecture.zh-CN.md）、与 Mesen 的对齐文档
                    （docs/mesen-alignment.zh-CN.md）、嵌入式掌机方案
-                   （docs/embedded-handheld.zh-CN.md）、界面截图（docs/img/）
+                   （docs/embedded-handheld.zh-CN.md）、sprite 阶段的执行计划
+                   （docs/sprite-phase-plan.zh-CN.md）、界面截图（docs/img/）
 roms/              本地测试 ROM（可选；缺失时相关测试会跳过）
 ```
 

@@ -32,6 +32,11 @@ pub const BUTTON_RIGHT: u8 = 7;
 /// This is the resolution the cartridge sees — A12 rises between *fetch
 /// dots*, and the nine-dot filter a scanline counter uses is measured there —
 /// so it is also the resolution the accuracy work has to be able to observe.
+/// The registers travel with it: a `$2000`/`$2001` write and a sprite fetch
+/// only mean anything against *the dot they landed on*, which is what
+/// AccuracyCoin's `Suddenly Resize Sprite` is written to pin down. Reading the
+/// sample is side-effect free, unlike `Nes::peek` (a `$2002` read clears
+/// VBlank).
 /// [`Nes::ppu_bus_trace`] returns the samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpuBusSample {
@@ -43,6 +48,20 @@ pub struct PpuBusSample {
     /// Address the PPU is driving, which is what a cartridge's A12 filter
     /// looks at.
     pub address: u16,
+    /// `$2000` on this dot.
+    pub ctrl: u8,
+    /// `$2001` on this dot.
+    pub mask: u8,
+    /// `$2002` bits 7-5 on this dot (the flags as the register drives them).
+    pub status: u8,
+    /// `$2003` on this dot.
+    pub oam_addr: u8,
+    /// Scroll address `v`.
+    pub v: u16,
+    /// Scroll latch `t`.
+    pub t: u16,
+    /// Fine X.
+    pub x: u8,
 }
 
 /// Dots of per-dot PPU bus history kept by default: a little over twelve NTSC
@@ -53,6 +72,34 @@ pub struct PpuBusSample {
 /// frame raises it with [`Nes::set_ppu_bus_trace_capacity`] rather than paying
 /// for a frame's worth of samples on every machine.
 pub const DEFAULT_PPU_BUS_TRACE_DOTS: usize = 4096;
+
+/// One write to a PPU register, with the dot it landed on.
+///
+/// The sprite phase and the scroll registers are written mid-line, and "which
+/// dot did that `$2001`/`$2000` write land on" is the whole question behind
+/// tests such as AccuracyCoin's `Suddenly Resize Sprite`. The PPU sees the
+/// write when its dot comes round, so the pair (write, dot) is the measurement
+/// — Mesen's own debugging logs the same triple, with the status register as it
+/// stood at that dot.
+///
+/// [`Nes::ppu_write_log`] returns them. Unlike the bus trace this costs a push
+/// on every register write, so it is **off** until a caller asks for it with
+/// [`Nes::set_ppu_write_log_capacity`]. It is host-side diagnostic state: it
+/// stays out of the save state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpuWriteSample {
+    /// Scanline the write landed on (0-239 visible, then post-render, vertical
+    /// blanking, with the pre-render line last).
+    pub scanline: u16,
+    /// Dot within that scanline (0-340).
+    pub dot: u16,
+    /// Register address as the CPU wrote it (anywhere in `$2000-$3FFF`).
+    pub addr: u16,
+    /// Value written.
+    pub value: u8,
+    /// `$2002` as it stood on that dot.
+    pub status: u8,
+}
 
 /// Magic prefix identifying a [`Nes::save_state`] blob.
 const STATE_MAGIC: &[u8; 5] = b"NESST";
@@ -460,6 +507,12 @@ struct NesBus {
     ppu_bus_trace: VecDeque<PpuBusSample>,
     /// How many dots of history [`NesBus::ppu_bus_trace`] keeps.
     ppu_bus_trace_capacity: usize,
+    /// The last [`NesBus::ppu_write_log_capacity`] writes to a PPU register,
+    /// oldest first. Off (`0`) until a caller turns it on.
+    ppu_write_log: VecDeque<PpuWriteSample>,
+    /// How many register writes [`NesBus::ppu_write_log`] keeps, and whether it
+    /// is recording at all.
+    ppu_write_log_capacity: usize,
     /// Dots a previous instruction already produced that the caller has not
     /// stepped through yet; [`NesBus::step_dot`] spends one per call.
     pending_dots: u32,
@@ -594,6 +647,8 @@ impl NesBus {
             bus_address: 0,
             ppu_bus_trace: VecDeque::with_capacity(DEFAULT_PPU_BUS_TRACE_DOTS),
             ppu_bus_trace_capacity: DEFAULT_PPU_BUS_TRACE_DOTS,
+            ppu_write_log: VecDeque::new(),
+            ppu_write_log_capacity: 0,
             pending_dots: 0,
             frame_buffer: FrameBuffer::new(),
             pipeline: PixelPipeline::new(),
@@ -887,6 +942,21 @@ impl NesBus {
 
     /// Write to PPU register
     fn write_ppu_register(&mut self, addr: u16, value: u8) {
+        // Logged before the register logic runs: the dot the write landed on is
+        // the chip's position *now*, and the status byte is what a `$2002` read
+        // on that dot would have returned.
+        if self.ppu_write_log_capacity != 0 {
+            if self.ppu_write_log.len() == self.ppu_write_log_capacity {
+                self.ppu_write_log.pop_front();
+            }
+            self.ppu_write_log.push_back(PpuWriteSample {
+                scanline: self.ppu.scanline,
+                dot: self.ppu.cycle,
+                addr,
+                value,
+                status: self.ppu.status.bits(),
+            });
+        }
         let drawing_line =
             self.ppu.scanline < 240 || self.ppu.scanline == self.region.last_scanline();
         let memory = PpuMemory::System {
@@ -1686,6 +1756,21 @@ impl NesBus {
         }
     }
 
+    /// The last [`NesBus::ppu_write_log_capacity`] PPU register writes, oldest
+    /// first.
+    fn ppu_write_log(&self) -> &VecDeque<PpuWriteSample> {
+        &self.ppu_write_log
+    }
+
+    /// Turn the PPU register write log on (`writes > 0`) or off (`0`) and size
+    /// it; the oldest samples go when it shrinks.
+    fn set_ppu_write_log_capacity(&mut self, writes: usize) {
+        self.ppu_write_log_capacity = writes;
+        while self.ppu_write_log.len() > writes {
+            self.ppu_write_log.pop_front();
+        }
+    }
+
     /// Advance the machine by exactly one PPU dot.
     ///
     /// The CPU runs whole instructions, so the instruction this dot falls
@@ -1884,6 +1969,13 @@ impl NesBus {
             scanline: self.ppu.scanline,
             dot: self.ppu.cycle,
             address: self.bus_address,
+            ctrl: self.ppu.ctrl.bits(),
+            mask: self.ppu.mask.bits(),
+            status: self.ppu.status.bits(),
+            oam_addr: self.ppu.oam_addr,
+            v: self.ppu.v,
+            t: self.ppu.t,
+            x: self.ppu.x,
         });
     }
 }
@@ -2165,6 +2257,36 @@ impl Nes {
     /// How many dots of bus timeline [`Nes::ppu_bus_trace`] keeps.
     pub fn ppu_bus_trace_capacity(&self) -> usize {
         self.bus.ppu_bus_trace_capacity
+    }
+
+    /// The last [`Nes::ppu_write_log_capacity`] writes to a PPU register, oldest
+    /// first, each with the dot it landed on and `$2002` as it stood there.
+    ///
+    /// Mid-line writes are what the sprite phase and the scroll registers turn
+    /// on — AccuracyCoin's `Suddenly Resize Sprite` is a `$2000` write a few CPU
+    /// cycles either side of a sprite fetch — and this is the log the accuracy
+    /// work diffs between two builds: the *first* write that differs is worth
+    /// more than any count. It records nothing until
+    /// [`Nes::set_ppu_write_log_capacity`] is called, because it costs a push on
+    /// every register write.
+    pub fn ppu_write_log(&self) -> impl Iterator<Item = PpuWriteSample> + '_ {
+        self.bus.ppu_write_log().iter().copied()
+    }
+
+    /// Drop the recorded register writes, so the next ones start a fresh log.
+    pub fn clear_ppu_write_log(&mut self) {
+        self.bus.ppu_write_log.clear();
+    }
+
+    /// Raise or lower how many PPU register writes [`Nes::ppu_write_log`] keeps;
+    /// `0` turns recording off. The oldest samples go when it shrinks.
+    pub fn set_ppu_write_log_capacity(&mut self, writes: usize) {
+        self.bus.set_ppu_write_log_capacity(writes);
+    }
+
+    /// How many PPU register writes [`Nes::ppu_write_log`] keeps (`0`: off).
+    pub fn ppu_write_log_capacity(&self) -> usize {
+        self.bus.ppu_write_log_capacity
     }
 
     /// Clear the frame-ready flag.

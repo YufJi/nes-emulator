@@ -149,7 +149,8 @@ ios/               iOS app (SwiftUI, Metal, AVAudioEngine)
 android/           Android TV app (Compose, GLES2, AudioTrack; Kotlin bindings)
 docs/              architecture notes (docs/architecture.md), the Mesen alignment
                    document (docs/mesen-alignment.md), embedded handheld plan
-                   (docs/embedded-handheld.md), UI screenshots (docs/img/)
+                   (docs/embedded-handheld.md), the sprite-phase execution plan
+                   (docs/sprite-phase-plan.md), UI screenshots (docs/img/)
 roms/              local test ROMs (optional; tests that need them are skipped when absent)
 ```
 

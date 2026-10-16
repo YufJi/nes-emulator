@@ -1,0 +1,10 @@
+# SHA1 over the raw frame buffer (`SHA1::GetHash(frame.FrameBuffer, ...)`, the same
+# hash Mesen's .mtp tests use), from power-on, run-length encoded as `hash xFrames`.
+# A frame is hashed when its picture differs from the previous one, so this is a
+# regression net and not a verdict -- and not yet Mesen's own recorded values.
+2b5dba90767cae3dc31d322a46dd3c23eb487374 x6
+16202c2a8dc37faf4f656779afd95c093c732af3 x52
+a45be595f842cca943a56bfa279964ba163f42b4 x1
+aea7090f731c08dc00f0b52ee921f6a40a0cbd4b x255
+aea7090f731c08dc00f0b52ee921f6a40a0cbd4b x255
+aea7090f731c08dc00f0b52ee921f6a40a0cbd4b x31

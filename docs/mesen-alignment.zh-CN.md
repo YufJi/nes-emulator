@@ -41,6 +41,10 @@
 
 ### 2.1 PPU：sprite 的**求值**仍是逐行
 
+> **这一项的计划在 [`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md)**——MesenCE 的逐 dot
+> 时刻表、每一步的门、每一步用来量的诊断，以及 2026-10-16 实际量到的基线（那里把
+> `sprite_overflow_tests` 从 5/5 更正为 2/5）。
+
 渲染已经逐 dot（`PixelPipeline`）：背景每八个 dot 取一个瓦片、每 dot 移出一像素并在它自己的
 dot 上画出来，滚动取芯片自己的 `v`/`t`/`x`；sprite 阶段的图案取指落在各自的 dot 上
 （257-320），sprite 像素与 sprite 0 命中都由取到的字节逐 dot 画出。Mesen 的
@@ -304,16 +308,20 @@ harness 本体是 git 历史里的 `tests/common/frames.rs`（`b6c06a1`）：
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --release
 ```
 
-- **对齐期间 ROM 套件不在树里**（2026-10-16 移除，见 §10.6）：跑满一轮要几分钟，而这轮工作需要
-  以秒计的循环。ROM 本体留在 `roms/` 下，套件在收尾时从 git 取回；在此之前，验收就是
-  `cargo test --workspace`（613 个单元测试）加上 `tests/cycle_trace.rs` 里那些 `#[ignore]` 的
-  诊断工具。改动想推动的那张 ROM，应当用 `NES_STATUS_ROM` 与 `NES_DUMP_ROM` 做点测。
-- 套件放回去之后，它们原先的规则照旧：ROM 不入库（布局与下载来源见 `docs/architecture.md` §13.1）；
-  清单里"开始通过"的项必须从里面删掉；清单之外出现失败会直接红；凡因更忠实于 Mesen 而产生的回退，
-  **连同原因**加入清单而不是把代码改回去。
+- **ROM 套件已经回到树里**（2026-10-16 放回，见
+  [`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md) 的第 0 步）：`roms/` 有 ROM 的机器上
+  跑满一轮 90 s，按套件过滤只要几秒（`--test rom_tests sprite`、`… mmc3`、`… vbl_nmi`）。没有 ROM
+  的 checkout 会自己跳过，所以全新克隆一分钱不花。请用 `--release`。
+- **清单条目写成 `"<file>.nes — <原因>"`，而且它不需要金标准。** 这些 ROM 里有好几张是把判决打在
+  屏幕上、从不写 `$6000`（blargg 早期的套件），harness 分不出它们的"通过"和"失败"——条目里那句话
+  才是"在等什么"，而一张卡死在一个没实现的功能上的 ROM 根本没有值得钉住的画面。清单上的 ROM 若**有**
+  金标准并且画面动了，那会被报出来：这是"去读那张画面"的信号，然后要么修、要么重录并把原因改掉。
+- 其余规则照旧：ROM 不入库（布局与下载来源见 `docs/architecture.md` §13.1）；清单里通过 `$6000`
+  自报通过的项必须从清单里删掉；清单之外出现失败会直接红；凡因更忠实于 Mesen 而产生的回退，**连同
+  原因**加入清单而不是把代码改回去。
 - 确定性是不变量而非特性：`frame()` / `run_cycles()` / `step_instruction()` 在同一帧边界必须得到
   逐字节相同的状态，存档必须能往返。
 - `docs/architecture.md` 与其 `zh-CN` 对照必须与代码同步；每一步的实测数字写进提交信息。
@@ -546,17 +554,36 @@ AccuracyCoin 其实从未真正跑起来：ROM 在启动时卡进自己的 DMA �
 **怎么用**：每条给出「状态 → 证据 → 下一步」。开工前先按 §6 跑一遍验收，再挑一条往下做；没有
 证据的变化不要写进本文档。
 
-**套件目前（2026-10-16）被有意移出树了。** 跑满一轮要几分钟，而 §10 的对齐工作需要以秒计的循环：
-`cargo test --workspace` 现在约 11 s（613 个单元测试全绿）。ROM 留在 `roms/` 下，套件都能从 git
-取回——连同它们原来的规则：ROM 报不出结果时**失败**而不是跳过（ROM 根本没跑起来正是启动期卡死的
-样子，DMC 的双重收费就是这样在这儿藏了好几步，§7）。收尾时把它们放回去，连同 §10.6 列出的那些。
+**C8 与 `$2002` 各标志（§10.7 第 4 条）的分步计划**在
+[`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md)：逐 dot 时刻表、每一步的门、每一步
+用来量的诊断、以及 2026-10-16 实测的基线（它把 `sprite_overflow_tests` 从 5/5 更正为 2/5）。
 
-**上一次实测的基线**（2026-10-16，移除之前）：
-`instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、`blargg_ppu_tests` 5/5、
-`oam_read` 1/1、`oam_stress` 1/1、`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
-`sprite_overflow_tests` 5/5、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
+**那个计划的第 0 步已经做完**（2026-10-16）：ROM 套件回到树里；凡以画面判决的 ROM 都先人眼读过、
+再重录金标准；清单条目开始带着"为什么在清单上"；四个诊断（逐 dot 日志、寄存器写日志、
+AccuracyCoin 结果日志、进度监视）都在 `tests/cycle_trace.rs` 里。`cargo test --workspace --release`
+全绿——其中 ROM 套件 90 s、AccuracyCoin 7.4 s。逐 ROM 的判决见 `sprite-phase-plan.zh-CN.md` §2，
+第 0 步具体改了什么见那个文件的 §3。C8 的目标还没有移动：`sprite_overflow_tests` 仍三项失败、
+AccuracyCoin 仍 17 项失败，而 `1.Basics` 的第 6 项就是 S1 的门。
+
+**套件 2026-10-16 已经回到树里**（`sprite-phase-plan.zh-CN.md` 的第 0 步）：它们曾为 §10 那轮让路被
+移出，又从 `b4caaf6^` 放了回去。放回之前，凡是以**画面**为判决的 ROM 都被人眼读过一遍，然后才按当前
+行为重录金标准——原来的金标准录于 B1/B2、逐 dot 流水线与寄存器状态机之前，所以那些 ROM 个个都报
+"frames moved"，什么都没说明。现在套件全绿，而清单上的条目各自带着原因（§6）；逐 ROM 的判决在
+`sprite-phase-plan.zh-CN.md` §2，harness 的规则在那个文件的 §3。
+
+**这一轮更正了本文档记错的两个数字。** `sprite_overflow_tests` 这里记的是 5/5；读到屏幕上它是
+**2/5**（`1.Basics` 失败在第 6 项、`3.Timing` 第 4 项、`5.Emulator` 第 3 项——三项都是同一个原因：
+sprite 步进在每一行都跑、没有渲染门），那个 5/5 来自一份画面里**已经带着**这些失败时录下的金标准。
+另外 `nes-test-roms/blargg_apu_2005.07.30` 是 **9/11**：`10.len_halt_timing` 打 `$03`、
+`11.len_reload_timing` 打 `$04`（长度计数器的 halt/reload 时序，§10.3 第 8 条）。
+
+**当前基线**（2026-10-16，套件放回后重测；以画面判决的套件见上面两条更正）：
+`instr_test-v5` 16/16、`instr_timing` 2/2、`branch_timing_tests` 3/3、
+`blargg_ppu_tests` 4/5（`power_up_palette` 属上电内容的有意偏差）、`oam_read` 1/1、`oam_stress` 1/1、
+`ppu_open_bus` **1/1**、`sprite_hit_tests` 11/11、
+`sprite_overflow_tests` **2/5**、`apu_test` **8/8**、`cpu_interrupts_v2` **5/5**、`mmc3_test_2` **5/6**、
 `ppu_vbl_nmi` **10/10**、AccuracyCoin **17 项失败**（§10.3 首批修完 34 → 32，手柄口降到 31，
-DMA 那一刀带使能延迟是 20、去掉是 18；逐项清单见 §10.5）。单元测试 609 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
+DMA 那一刀带使能延迟是 20、去掉是 18；逐项清单见 §10.5）。单元测试 613 全绿；帧耗时约 1.86 ms（release、nestest 600 帧、五次中位，
 抖动 ±0.06）。**帧耗时只做同轮对比**：同一台机器上这项测过 1.82 ms（1.815/1.825/1.826，空闲）
 也测过 3.68 ms（10-15 那轮，机器上有别的负载），差别来自负载而不是代码——`0520b59` 里那个
 5–8% 是 Android 前端自己关掉 PPU 总线轨迹换来的（`set_ppu_bus_trace_capacity(0)`），内核默认
@@ -902,7 +929,7 @@ harness 被移除之前（§6）各跑了一次——下面就是那次的结果
    三张 `full_palette` ROM 现在画出网格。`$2004` 的渲染期读写随逐 dot sprite 求值（第 4 条）
    一起走——已移植并量过，等 sprite 阶段一起落地。
 4. **`$2002` 各标志的生命周期**与逐 dot 的 sprite 求值（含伪溢出计数）——三项 sprite 与 `$2002 flag
-   timing` 第 2 项。
+   timing` 第 2 项。**这一项的分步计划在 [`sprite-phase-plan.zh-CN.md`](./sprite-phase-plan.zh-CN.md)。**
 5. **APU 的边沿时序**，先把 `len_reload_timing` 放进基线。
 6. **混音常数**，用 `apu_mixer` 裁决。
 7. **CPU 复位与预热**、NES 2.0 的两个半字节、总线冲突的范围、Dendy。

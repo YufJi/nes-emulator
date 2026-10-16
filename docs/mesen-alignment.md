@@ -46,6 +46,11 @@ Two rules, in order:
 
 ### 2.1 PPU: the sprite *evaluation* is still a line at a time
 
+> **The plan for this item is [`sprite-phase-plan.md`](./sprite-phase-plan.md)** — the dot schedule
+> from MesenCE, the stages with their gates, the diagnostics each stage is measured with, and the
+> baseline as it was actually measured on 2026-10-16 (which corrects `sprite_overflow_tests` from
+> 5/5 to 2/5; see §2 there).
+
 Rendering is per dot (`PixelPipeline`): a background tile is fetched every eight dots,
 shifted out one pixel per dot and drawn on its own dot, off the chip's own `v`/`t`/`x`; the
 sprite phase's pattern fetches run on their dots (257-320), and the sprite pixels and the
@@ -373,20 +378,25 @@ harness itself is `tests/common/frames.rs` in the git history (`b6c06a1`).
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo test --workspace --release
 ```
 
-- **The ROM suites are not in the tree during this pass** (removed 2026-10-16, §10.6): a full
-  run costs minutes, and the alignment work needs a loop measured in seconds. The ROMs stay
-  under `roms/`, the suites come back from git when the pass ends, and until then the
-  verification is `cargo test --workspace` (613 unit tests) plus the `#[ignore]`d diagnostics
-  in `tests/cycle_trace.rs`. Spot checks against the ROMs a change is supposed to move are
-  expected — that is what `NES_STATUS_ROM` and `NES_DUMP_ROM` are for.
-- When the suites are back, the rules they carried still hold: ROMs are not committed (the
-  layout and sources are in `docs/architecture.md` §13.1); a baseline entry that starts passing
+- **The ROM suites are back in the tree** (restored 2026-10-16, stage 0 of
+  [`sprite-phase-plan.md`](./sprite-phase-plan.md)): on a machine with `roms/` populated a full
+  run is 90 s and the per-suite filters are seconds (`--test rom_tests sprite`, `… mmc3`,
+  `… vbl_nmi`). A checkout without ROMs skips them, so this costs a fresh clone nothing. Use
+  `--release`.
+- **A baseline entry is `"<file>.nes — <why>"`, and it needs no golden.** Several of these ROMs
+  print their verdict on screen and never write `$6000` (blargg's older suites), so the harness
+  cannot tell "passed" from "failed" for them — the reason in the entry is what says what is
+  being waited on, and one that hangs on a missing feature has no picture worth pinning. When a
+  listed ROM *does* have goldens and they move, that is reported: it is the signal to go and read
+  the picture, then either fix it or re-record and update the reason.
+- The rest of the rules still hold: ROMs are not committed (the layout and sources are in
+  `docs/architecture.md` §13.1); a baseline entry that starts reporting a pass through `$6000`
   must be removed from the list; a failure outside the list fails the suite; and a regression
-  that comes from being *more* faithful to Mesen is added to the list *with the reason in the
-  comment* rather than reverted.
+  that comes from being *more* faithful to Mesen is added to the list *with its reason* rather
+  than reverted.
 - Determinism is an invariant, not a feature: `frame()` / `run_cycles()` / `step_instruction()`
   must reach byte-identical state at the same frame boundary, and save states must round-trip.
 - Keep `docs/architecture.md` and its `zh-CN` twin in step with the code, and record each
@@ -677,18 +687,42 @@ header is plain iNES, which §2.5 now records.
 **How to use it**: every row is *status → evidence → next step*. Re-run the verification from §6
 first, then pick a row. Nothing goes into this document without a measurement behind it.
 
-**The suites are out of the tree right now (2026-10-16), on purpose.** A full run cost minutes, and
-the alignment work (§10) needs a loop measured in seconds: `cargo test --workspace` is down to
-~11 s (613 unit tests). The ROMs stay under `roms/` and every suite comes back from git — with the
-rules it carried: it failed rather than skipped when a ROM stopped reporting, because a ROM that
-never runs its suite is what a boot-time hang looks like, and that is exactly how the DMC's
-double-charged fetch hid here for several steps (§7). Re-add them when the pass ends, together with
-the suites §10.6 lists.
+**The staged plan for C8 and `$2002`'s flag lifetimes (§10.7 item 4)** is
+[`sprite-phase-plan.md`](./sprite-phase-plan.md): the per-dot schedule, each stage's gate, the
+diagnostics each stage is measured with, and the baseline as measured on 2026-10-16 (which corrects
+`sprite_overflow_tests` from 5/5 to 2/5).
+
+**Stage 0 of that plan is done** (2026-10-16): the ROM suite is back in the tree, every
+picture-judged ROM's verdict was read by hand before its goldens were re-recorded, the baseline
+entries now carry the reason they are on the list, and the four diagnostics (dot log, register-write
+log, AccuracyCoin result log, progress monitor) are in `tests/cycle_trace.rs`.
+`cargo test --workspace --release` is green — the ROM suite is 90 s of that, AccuracyCoin 7.4 s.
+The per-ROM verdicts are `sprite-phase-plan.md` §2, and what stage 0 changed is its §3. The C8
+targets have not moved yet: `sprite_overflow_tests` still fails three checks, AccuracyCoin still
+fails 17, and `1.Basics`'s check 6 is stage S1's gate.
+
+**The suites were back in the tree on 2026-10-16** (stage 0 of `sprite-phase-plan.md`), after being
+removed for the §10 pass and restored from `b4caaf6^`. Before they went back, every ROM whose verdict
+is its *picture* was read off its own screen, and then the goldens were re-recorded against the
+current behaviour — they had been recorded before B1/B2, the per-dot pipeline and the register state
+machine, so every one of those ROMs read as "frames moved" and said nothing. The suite is now green
+with a baseline whose entries carry their reasons (§6), which is what the next stage is measured
+against; the per-ROM verdicts are in `sprite-phase-plan.md` §2, and the harness rules are in that
+plan's §3.
+
+**Two numbers this document had wrong, corrected by that pass.** `sprite_overflow_tests` was recorded
+here as 5/5; read off the screens it is **2/5** (`1.Basics` fails check 6, `3.Timing` check 4,
+`5.Emulator` check 3 — all three because the sprite walk runs on every line with no rendering gate),
+and the old 5/5 came from goldens recorded while those pictures already showed the failures. And
+`nes-test-roms/blargg_apu_2005.07.30` is **9/11**: `10.len_halt_timing` prints `$03` and
+`11.len_reload_timing` prints `$04` (the length counter's halt/reload timing, §10.3 item 8).
 
 **Current numbers** (2026-10-16, re-measured ROM by ROM after the removal and again after C3/C4
-— §7's last two rows): `instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
-`blargg_ppu_tests` 5/5, `oam_read` 1/1, `oam_stress` 1/1, `ppu_open_bus` 1/1,
-`sprite_hit_tests` 11/11, `sprite_overflow_tests` 5/5, `apu_test` **8/8**, `cpu_interrupts_v2`
+— §7's last two rows; for the frame-judged suites see the two corrections just above):
+`instr_test-v5` 16/16, `instr_timing` 2/2, `branch_timing_tests` 3/3,
+`blargg_ppu_tests` 4/5 (`power_up_palette` is the power-on deviation), `oam_read` 1/1,
+`oam_stress` 1/1, `ppu_open_bus` 1/1,
+`sprite_hit_tests` 11/11, `sprite_overflow_tests` **2/5**, `apu_test` **8/8**, `cpu_interrupts_v2`
 **5/5**, `mmc3_test_2` **5/6** (the one Mesen fails too), `ppu_vbl_nmi` **10/10**,
 `apu_test` **6/8** and `cpu_interrupts_v2` **5/5** with the two DMC regressions noted (§7), AccuracyCoin
 **17 failing** (34 before §10.3's first fixes, 32 after them, 31 after the controller ports, 20 after
@@ -1081,7 +1115,8 @@ the oracle does not have.
    with the per-dot sprite evaluation (item 4) — ported and measured, withdrawn until the sprite
    phase lands with it.
 4. **`$2002`'s flag lifetimes** and the sprite evaluation at dot granularity (with its overflow-bug
-   counter) - the three sprite items and `$2002 flag timing` check 2.
+   counter) - the three sprite items and `$2002 flag timing` check 2. **The staged plan for this one
+   is [`sprite-phase-plan.md`](./sprite-phase-plan.md).**
 5. **The APU's edge timings**, with `len_reload_timing` in the baseline first.
 6. **The mixer's constants**, judged against `apu_mixer`.
 7. **CPU reset and warm-up**, the NES 2.0 nibbles, the bus-conflict scope, Dendy.

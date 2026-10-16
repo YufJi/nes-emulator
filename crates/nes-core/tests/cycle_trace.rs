@@ -335,3 +335,294 @@ fn trace_a12_for_a_scanline() {
     }
     println!("{printed} bus changes on that line");
 }
+
+/// One line per PPU dot inside a window: the registers, the scroll, the bus
+/// address, and every register write that landed on that dot.
+///
+/// This is the tool for "that write landed on the wrong side of a fetch": a
+/// sprite slot's pattern fetch is a *dot*, so a `$2000`/`$2001` write has to be
+/// read against the dot it arrived on rather than against the instruction it
+/// came from. `docs/sprite-phase-plan.md` §3 is where it came from; S3 adds the
+/// sprite shifters to what is printed.
+///
+/// ```text
+/// NES_PPU_DOT_LOG=roms/accuracycoin/AccuracyCoin.nes \
+/// NES_DOT_WINDOW=100:250-100:290 NES_DOT_SKIP=200 \
+///   cargo test --release -p nes-core --test cycle_trace -- --ignored --nocapture dots
+/// ```
+#[test]
+#[ignore = "a diagnostic tool: set NES_PPU_DOT_LOG and NES_DOT_WINDOW"]
+fn log_every_ppu_dot() {
+    let Some(requested) = std::env::var("NES_PPU_DOT_LOG").ok() else {
+        println!("set NES_PPU_DOT_LOG=<path to a .nes file> to log its PPU dots");
+        return;
+    };
+    let Some(window_text) = std::env::var("NES_DOT_WINDOW").ok() else {
+        println!("set NES_DOT_WINDOW=<line>:<dot>-<line>:<dot>, e.g. 100:250-100:290");
+        return;
+    };
+    let Some(window) = parse_dot_window(&window_text) else {
+        panic!("NES_DOT_WINDOW should be <line>:<dot>-<line>:<dot>, e.g. 100:250-100:290");
+    };
+    let path = resolve_rom_path(&requested);
+    let skip: u64 = env_number("NES_DOT_SKIP", 0);
+
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+
+    for _ in 0..skip {
+        nes.frame();
+    }
+
+    // A whole frame of samples fits (an NTSC frame is 89,342 dots), so the
+    // window can be anywhere on the frame being logged.
+    const FRAME_DOTS: usize = 90_000;
+    nes.set_ppu_bus_trace_capacity(FRAME_DOTS);
+    nes.set_ppu_write_log_capacity(4096);
+    nes.clear_ppu_bus_trace();
+    nes.clear_ppu_write_log();
+    nes.frame();
+
+    println!(
+        "{}: dots {window_text} of frame {}",
+        path.display(),
+        nes.frame_number()
+    );
+    println!(
+        "{:>4} {:>4} {:>4} {:>4} {:>4} {:>4} {:>6} {:>6} {:>3} {:>6}  writes",
+        "line", "dot", "$2000", "$2001", "$2002", "$2003", "v", "t", "x", "bus"
+    );
+
+    let writes: Vec<nes_core::nes::PpuWriteSample> = nes.ppu_write_log().collect();
+    let mut printed = 0;
+    for sample in nes.ppu_bus_trace() {
+        let position = (sample.scanline, sample.dot);
+        if position < window.0 || position > window.1 {
+            continue;
+        }
+        let landed = writes
+            .iter()
+            .filter(|write| (write.scanline, write.dot) == position)
+            .map(|write| format!("${:04X}=${:02X}", write.addr, write.value))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!(
+            "{:>4} {:>4} {:>02X} {:>02X} {:>02X} {:>02X} {:>6} {:>6} {:>3} {:>6}  {landed}",
+            sample.scanline,
+            sample.dot,
+            sample.ctrl,
+            sample.mask,
+            sample.status,
+            sample.oam_addr,
+            format!("{:04X}", sample.v),
+            format!("{:04X}", sample.t),
+            sample.x,
+            format!("{:04X}", sample.address),
+        );
+        printed += 1;
+    }
+    println!("{printed} dots printed");
+}
+
+/// Every write to a PPU register, with the frame, scanline and dot it landed
+/// on, written to a file meant to be diffed between two builds: the *first*
+/// write that differs is worth more than any count.
+///
+/// ```text
+/// NES_REGLOG_ROM=roms/accuracycoin/AccuracyCoin.nes NES_REGLOG_FRAMES=400 \
+///   cargo test --release -p nes-core --test cycle_trace -- --ignored --nocapture reglog
+/// ```
+#[test]
+#[ignore = "a diagnostic tool: set NES_REGLOG_ROM to the .nes file to log"]
+fn log_ppu_register_writes() {
+    let Some(requested) = std::env::var("NES_REGLOG_ROM").ok() else {
+        println!("set NES_REGLOG_ROM=<path to a .nes file> to log its PPU register writes");
+        return;
+    };
+    let path = resolve_rom_path(&requested);
+    let frames: u64 = env_number("NES_REGLOG_FRAMES", 120);
+    let stem = path
+        .file_stem()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rom".to_string());
+    let out = std::env::var("NES_REGLOG_OUT").unwrap_or_else(|_| format!("/tmp/reglog-{stem}.txt"));
+
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+    nes.set_ppu_write_log_capacity(4096);
+
+    let mut log = String::new();
+    let mut printed = 0u64;
+    while nes.frame_number() < frames {
+        nes.step_instruction();
+        // One line per write, in the order the machine made them; the log is
+        // drained per instruction so nothing can be missed by the ring filling.
+        for write in nes.ppu_write_log() {
+            log.push_str(&format!(
+                "frame {:>5} line {:>3} dot {:>3} ${:04X} = ${:02X}  $2002={:02X}\n",
+                nes.frame_number(),
+                write.scanline,
+                write.dot,
+                write.addr,
+                write.value,
+                write.status,
+            ));
+            printed += 1;
+        }
+        nes.clear_ppu_write_log();
+    }
+    std::fs::write(&out, log).expect("write the log");
+    println!("{printed} writes to {out}");
+}
+
+/// Every change to AccuracyCoin's result table, with the frame it happened on.
+///
+/// The suite's verdicts land one test at a time; this names the first test a
+/// change moves, which is how the last two attempts located their first
+/// divergence (the alignment document's §7).
+///
+/// ```text
+/// NES_RESULTLOG=1 cargo test --release -p nes-core --test cycle_trace \
+///   -- --ignored --nocapture results
+/// ```
+#[test]
+#[ignore = "a diagnostic tool: set NES_RESULTLOG=1"]
+fn log_accuracy_coin_results() {
+    if std::env::var_os("NES_RESULTLOG").is_none() {
+        println!("set NES_RESULTLOG=1 to follow AccuracyCoin's result table");
+        return;
+    }
+    const MENU_FRAMES: u32 = 90;
+    const RESULTS: std::ops::Range<u16> = 0x0400..0x0500;
+
+    let path = resolve_rom_path("roms/accuracycoin/AccuracyCoin.nes");
+    if !path.exists() {
+        println!("skipped: no roms/accuracycoin/AccuracyCoin.nes");
+        return;
+    }
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+    for _ in 0..MENU_FRAMES {
+        nes.frame();
+    }
+    nes.set_button(1, nes_core::nes::BUTTON_START, true);
+    nes.frame();
+    nes.frame();
+    nes.set_button(1, nes_core::nes::BUTTON_START, false);
+
+    let budget: u64 = env_number("NES_ACCURACYCOIN_FRAMES", 3600);
+    let mut previous: Vec<u8> = RESULTS.clone().map(|addr| nes.peek(addr)).collect();
+    let mut counter = nes.peek(0x37);
+    for frame in 1..=budget {
+        nes.frame();
+        let seen = nes.peek(0x37);
+        if seen != counter {
+            println!("frame {frame:5}: $37 {counter} -> {seen}");
+            counter = seen;
+        }
+        for (index, addr) in RESULTS.enumerate() {
+            let value = nes.peek(addr);
+            if value != previous[index] {
+                let how = match value {
+                    0xFF => "marked to skip".to_string(),
+                    value if value & 1 == 1 => "passing".to_string(),
+                    value => format!("failing at check {}", (value >> 2) + 1),
+                };
+                println!(
+                    "frame {frame:5}: {addr:#06X}: {:#04X} -> {value:#04X} ({how})",
+                    previous[index]
+                );
+                previous[index] = value;
+            }
+        }
+    }
+    println!("followed {budget} frames");
+}
+
+/// A ROM's own progress counter, printed when it changes — the tool for "the
+/// ROM stopped running its table".
+///
+/// The second attempt at the sprite phase lost nine of AccuracyCoin's tests to
+/// a hang that only showed up at 9000 frames; a stall has to be visible on the
+/// frame it starts. `NES_PROGRESS_ADDR` defaults to `$37`, AccuracyCoin's test
+/// counter; point it at any byte the ROM under study increments.
+///
+/// ```text
+/// NES_PROGRESS_ROM=roms/accuracycoin/AccuracyCoin.nes NES_PROGRESS_FRAMES=9000 \
+///   cargo test --release -p nes-core --test cycle_trace -- --ignored --nocapture progress
+/// ```
+#[test]
+#[ignore = "a diagnostic tool: set NES_PROGRESS_ROM to the .nes file to follow"]
+fn log_rom_progress() {
+    let Some(requested) = std::env::var("NES_PROGRESS_ROM").ok() else {
+        println!("set NES_PROGRESS_ROM=<path to a .nes file> to follow its progress");
+        return;
+    };
+    let path = resolve_rom_path(&requested);
+    let frames: u64 = env_number("NES_PROGRESS_FRAMES", 9000);
+    let stall: u64 = env_number("NES_PROGRESS_STALL", 600);
+    let counter_addr: u16 = env_number("NES_PROGRESS_ADDR", 0x37) as u16;
+    let menu_frames: u64 = env_number("NES_PROGRESS_MENU", 90);
+
+    let data = std::fs::read(&path).expect("read the ROM");
+    let mut nes = Nes::new();
+    nes.load_rom(&data).expect("load the ROM");
+    for _ in 0..menu_frames {
+        nes.frame();
+    }
+    if std::env::var_os("NES_PROGRESS_START").is_some() {
+        nes.set_button(1, nes_core::nes::BUTTON_START, true);
+        nes.frame();
+        nes.frame();
+        nes.set_button(1, nes_core::nes::BUTTON_START, false);
+    }
+
+    println!(
+        "{}: {frames} frames, following ${counter_addr:04X}",
+        path.display()
+    );
+    let mut last = nes.peek(counter_addr);
+    let mut still_since = 1u64;
+    for frame in 1..=frames {
+        nes.frame();
+        let counter = nes.peek(counter_addr);
+        if counter != last {
+            println!(
+                "frame {frame:5}: ${counter_addr:04X} = {:#04X}, pc = {:#06X}",
+                counter,
+                nes.cpu_pc()
+            );
+            last = counter;
+            still_since = frame;
+        } else if frame - still_since == stall {
+            println!(
+                "frame {frame:5}: stalled for {stall} frames at ${counter_addr:04X} = {:#04X}, pc = {:#06X}",
+                counter,
+                nes.cpu_pc()
+            );
+        }
+    }
+}
+
+/// `<line>:<dot>`.
+fn parse_position(text: &str) -> Option<(u16, u16)> {
+    let (line, dot) = text.split_once(':')?;
+    Some((line.trim().parse().ok()?, dot.trim().parse().ok()?))
+}
+
+/// `<line>:<dot>-<line>:<dot>`, inclusive at both ends.
+fn parse_dot_window(text: &str) -> Option<((u16, u16), (u16, u16))> {
+    let (from, to) = text.split_once('-')?;
+    Some((parse_position(from)?, parse_position(to)?))
+}
+
+/// A `u64` from the environment, or `default` when it is unset or unreadable.
+fn env_number(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
