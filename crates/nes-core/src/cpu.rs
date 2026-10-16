@@ -70,6 +70,13 @@ pub struct Cpu {
     /// the effective address alone. It is written and read inside a single
     /// instruction, so it stays out of save states.
     addr_base: u16,
+    /// Whether a DMA interrupted the addressing's discarded read.
+    ///
+    /// The SHx stores skip the mask on the value they write when one did
+    /// (Mesen's `hadDma`), and the discarded read happens in the addressing
+    /// rather than in the handler, so the fact is carried across the two.
+    /// Written and read inside a single instruction: out of save states too.
+    dummy_read_had_dma: bool,
     /// An NMI has been asserted and not taken yet. Mesen's `_needNmi`.
     ///
     /// The line is sampled at the end of every CPU cycle and only a *rising*
@@ -171,6 +178,7 @@ impl Cpu {
             cycles: 0,
             halted: false,
             addr_base: 0,
+            dummy_read_had_dma: false,
             addr_mode: AddressingMode::Implied,
             need_nmi: false,
             prev_need_nmi: false,

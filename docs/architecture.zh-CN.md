@@ -824,6 +824,8 @@ AccuracyCoin 那 34 项也值得点名，因为其中最大的一组其实是同
 - **CPU 指令细节，7 项**：`Open Bus`、`Implied Dummy Reads`、`Instruction Timing`、
   `Interrupt flag latency`、`JSR Edge Cases`、`Branch Dummy Reads`、`Internal Data Bus`。
 - **未文档 `SHx` 指令，5 项**：`SHA`/`SHS`/`SHY`/`SHX`（`$93`、`$9F`、`$9B`、`$9C`、`$9E`）。
+  它们页交叉时的地址损坏已按 Mesen 的 `SyaSxaAxa` 于 10-16 落地，五项一起从第 3 项推进到
+  第 15 项；剩下那一项落在测试自己的 DMA 段里。
 - **sprite，3 项**：`Arbitrary Sprite zero`、`Sprite overflow behavior`、`Suddenly Resize Sprite`。
 - **APU，3 项**：`APU Register Activation`、`Frame Counter IRQ`、`Delta Modulation Channel`。
 - **手柄，2 项**：`Controller Strobing`、`Controller Clocking`。

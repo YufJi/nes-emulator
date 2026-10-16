@@ -905,6 +905,8 @@ the ROM's own test list (`AccuracyCoin.asm`'s `result_* = $04xx` constants and i
 - **CPU instruction details, 7**: `Open Bus`, `Implied Dummy Reads`, `Instruction Timing`,
   `Interrupt flag latency`, `JSR Edge Cases`, `Branch Dummy Reads`, `Internal Data Bus`.
 - **Unofficial `SHx` opcodes, 5**: `SHA`/`SHS`/`SHY`/`SHX` at `$93`, `$9F`, `$9B`, `$9C`, `$9E`.
+  The address corruption they do on a page crossing went in on 10-16 (Mesen's `SyaSxaAxa`), and
+  all five moved from check 3 to check 15; what is left of them is inside the tests' DMA section.
 - **Sprites, 3**: `Arbitrary Sprite zero`, `Sprite overflow behavior`, `Suddenly Resize Sprite`.
 - **APU, 3**: `APU Register Activation`, `Frame Counter IRQ`, `Delta Modulation Channel`.
 - **Controllers, 2**: `Controller Strobing`, `Controller Clocking`.

@@ -112,6 +112,9 @@ impl Cpu {
         let op = &OPCODE_TABLE[opcode as usize];
 
         self.addr_mode = op.addr_mode;
+        // The addressing's discarded read is this instruction's, and the SHx
+        // stores ask whether a DMA interrupted it (Mesen's `hadDma`).
+        self.dummy_read_had_dma = false;
         let addr = self.fetch_operand(bus, op.addr_mode);
         (op.handler)(self, bus, addr);
 
@@ -227,7 +230,13 @@ impl Cpu {
         let carried = (base & 0xFF00) != (addr & 0xFF00);
         if carried || always {
             let wrong = (base & 0xFF00) | (addr & 0x00FF);
+            let cycles = bus.cycle_count();
             self.read(bus, wrong);
+            // A DMA can interrupt this cycle, and the SHx stores then write
+            // their value unmasked (Mesen's `hadDma`).
+            if bus.cycle_count() - cycles > 1 {
+                self.dummy_read_had_dma = true;
+            }
         }
     }
 
@@ -1080,61 +1089,62 @@ impl Cpu {
         self.read(bus, addr);
     }
 
-    /// SHA (AHX, AXA) - Store A & X & (high byte + 1)
-    /// Store A AND X AND (high byte of address + 1) to memory.
-    /// Has special behavior on page crossing.
+    /// SHA (AHX, AXA) - `A & X` stored through the SHx rules.
     /// Opcodes: $93 (Indirect,Y), $9F (Absolute,Y)
     fn sha(&mut self, bus: &mut dyn Bus, addr: u16) {
-        let (target, mask) = self.shx_target(addr);
-        let value = self.a & self.x & mask;
-        self.write(bus, target, value);
+        let value = self.a & self.x;
+        self.sya_sxa_axa(bus, addr, value);
     }
 
-    /// SHX (SXA, XAS) - Store X & (high byte + 1)
-    /// Store X AND (high byte of address + 1) to memory.
+    /// SHX (SXA, XAS) - `X` stored through the SHx rules.
     /// Opcode: $9E (Absolute,Y)
     fn shx(&mut self, bus: &mut dyn Bus, addr: u16) {
-        let (target, mask) = self.shx_target(addr);
-        let value = self.x & mask;
-        self.write(bus, target, value);
+        let value = self.x;
+        self.sya_sxa_axa(bus, addr, value);
     }
 
-    /// SHY (SYA, SAY) - Store Y & (high byte + 1)
-    /// Store Y AND (high byte of address + 1) to memory.
+    /// SHY (SYA, SAY) - `Y` stored through the SHx rules.
     /// Opcode: $9C (Absolute,X)
     fn shy(&mut self, bus: &mut dyn Bus, addr: u16) {
-        let (target, mask) = self.shx_target(addr);
-        let value = self.y & mask;
-        self.write(bus, target, value);
+        let value = self.y;
+        self.sya_sxa_axa(bus, addr, value);
     }
 
-    /// SHS (TAS, XAS) - Transfer A & X to SP, then SHA
-    /// SP = A & X, then store SP & (high byte + 1).
+    /// SHS (TAS, XAS) - `A & X` stored, then that same pair moved to SP.
     /// Opcode: $9B (Absolute,Y)
     fn shs(&mut self, bus: &mut dyn Bus, addr: u16) {
-        self.sp = self.a & self.x;
-        let (target, mask) = self.shx_target(addr);
-        let value = self.sp & mask;
-        self.write(bus, target, value);
+        let value = self.a & self.x;
+        self.sya_sxa_axa(bus, addr, value);
+        self.sp = value;
     }
 
-    /// Where an SHx store really lands, and the mask its value gets.
+    /// The body Mesen spells `SyaSxaAxa`: what SHA, SHS, SHX and SHY really do.
     ///
-    /// The index addition keeps the base address's page: a carry out of the low
-    /// byte is dropped instead of incrementing the high byte, so an indexed
-    /// store that "should" cross a page writes into the page it started in.
-    /// The stored byte is `register & (high byte + 1)` of wherever that is,
-    /// which is why SHX and SHY are the instructions that depend on their
-    /// address instead of their data. blargg's `07-abs_xy` is the test that
-    /// pins both halves of the behaviour down.
-    fn shx_target(&self, addr: u16) -> (u16, u8) {
+    /// The index's carry into the high byte is *kept* — the addressing's dummy
+    /// read happens at the un-carried address, but the store does not — and when
+    /// the carry happened the resulting high byte is ANDed with the register
+    /// pair being stored, so the write can land in a different page entirely.
+    /// The value is the pair ANDed with the *base's* high byte plus one. Blargg's
+    /// `07-abs_xy` pins the value's half of this down; AccuracyCoin's
+    /// `UnOp_SHA`/`SHX`/`SHY`/`SHS` measure the address's half, and the four
+    /// behaviours they check for are what different 6502 revisions do here.
+    ///
+    /// One documented exception comes with it: when a DMA interrupts the cycle
+    /// before the write, the value is *not* masked.
+    fn sya_sxa_axa(&mut self, bus: &mut dyn Bus, addr: u16, value: u8) {
         let base = self.addr_base;
         let target = if (base & 0xFF00) != (addr & 0xFF00) {
-            (base & 0xFF00) | (addr & 0x00FF)
+            let high = ((addr >> 8) as u8) & value;
+            ((high as u16) << 8) | (addr & 0x00FF)
         } else {
             addr
         };
-        (target, ((target >> 8) as u8).wrapping_add(1))
+        let value = if self.dummy_read_had_dma {
+            value
+        } else {
+            value & ((base >> 8) as u8).wrapping_add(1)
+        };
+        self.write(bus, target, value);
     }
 
     /// LAE (LAS, LAR) - Load A, X, SP from memory & SP
@@ -3013,6 +3023,9 @@ mod tests {
         /// Raise the NMI line once the CPU has spent this many cycles, so a
         /// test can put an edge inside a sequence that is already running.
         nmi_at_cycle: Option<u64>,
+        /// Make the next read of this address take an extra cycle, the way a
+        /// DMA stall does.
+        stalled_read: Option<u16>,
     }
 
     impl MockBus {
@@ -3023,7 +3036,14 @@ mod tests {
                 irq: false,
                 cycles: 0,
                 nmi_at_cycle: None,
+                stalled_read: None,
             }
+        }
+
+        /// Make one read cost two cycles, which is what a DMA interrupting it
+        /// looks like from the CPU's side.
+        fn stall_the_read_at(&mut self, addr: u16) {
+            self.stalled_read = Some(addr);
         }
 
         /// Raise the NMI line, the interrupt that restarts a halted CPU.
@@ -3076,6 +3096,10 @@ mod tests {
         fn read_cycle(&mut self, addr: u16) -> u8 {
             let value = self.read(addr);
             self.end_of_cycle();
+            if self.stalled_read == Some(addr) {
+                self.stalled_read = None;
+                self.end_of_cycle();
+            }
             value
         }
 
@@ -4032,44 +4056,68 @@ mod tests {
     /// high byte + 1.
     #[test]
     fn test_shx_page_cross_keeps_the_base_page() {
-        // SHY $12F0,X with X = $20 would land in $1310: it lands in $1210
-        // instead, with the value masked by $12 + 1.
+        // No carry: the store lands where the arithmetic says, with the value
+        // masked by the base's high byte plus one.
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        bus.load_program(0x0600, &[0x9C, 0xF0, 0x12]);
-        cpu.pc = 0x0600;
-        cpu.x = 0x20;
-        cpu.y = 0xFF;
-        assert_eq!(cpu.execute_instruction(&mut bus, 0x9C), 5);
-        // Y & ($12 + 1): the page it stayed in is what the mask comes from.
-        assert_eq!(bus.memory[0x1210], 0x13);
-        assert_eq!(
-            bus.memory[0x1310], 0x00,
-            "the page it would have crossed is untouched"
-        );
-
-        // No carry: the store lands exactly where the arithmetic says.
-        let mut cpu = Cpu::new();
-        let mut bus = MockBus::new();
-        bus.load_program(0x0600, &[0x9E, 0xF0, 0x12]);
+        bus.load_program(0x0600, &[0x9E, 0xF0, 0x12]); // SHX $12F0,Y
         cpu.pc = 0x0600;
         cpu.x = 0xFF;
         cpu.y = 0x0F;
-        cpu.execute_instruction(&mut bus, 0x9E);
-        assert_eq!(bus.memory[0x12FF], 0x13);
+        assert_eq!(cpu.execute_instruction(&mut bus, 0x9E), 5);
+        assert_eq!(bus.memory[0x12FF], 0x13, "X & ($12 + 1)");
 
-        // The same rule applies to the A & X store and to SHS, which also
-        // writes the AND into the stack pointer first.
+        // Carry: the index's carry into the high byte is kept — the target is
+        // $1310 — and that high byte is ANDed with Y ($02), so the write lands
+        // in $0210, a page the arithmetic never mentions.
         let mut cpu = Cpu::new();
         let mut bus = MockBus::new();
-        bus.load_program(0x0600, &[0x9B, 0xF0, 0x12]);
+        bus.load_program(0x0600, &[0x9C, 0xF0, 0x12]); // SHY $12F0,X
         cpu.pc = 0x0600;
-        cpu.y = 0x20;
+        cpu.x = 0x20;
+        cpu.y = 0x02;
+        cpu.execute_instruction(&mut bus, 0x9C);
+        assert_eq!(bus.memory[0x0210], 0x02 & 0x13);
+        assert_eq!(
+            bus.memory[0x1310], 0x00,
+            "not where the index arithmetic says"
+        );
+
+        // SHA and SHS put A & X on the bus; SHS leaves that pair in the stack
+        // pointer *after* the store.
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x9B, 0xF0, 0x12]); // SHS $12F0,Y
+        cpu.pc = 0x0600;
         cpu.a = 0x0F;
         cpu.x = 0xF3;
+        cpu.y = 0x20;
         cpu.execute_instruction(&mut bus, 0x9B);
         assert_eq!(cpu.sp, 0x03);
-        assert_eq!(bus.memory[0x1210], 0x03 & 0x13);
+        // (A & X) & ($12 + 1) = $03 & $13 = $03, and the high byte $13 & $03 is
+        // $03, so the store lands in $0310.
+        assert_eq!(bus.memory[0x0310], 0x03);
+    }
+
+    /// A DMA that interrupts the cycle before the write takes the mask off the
+    /// SHx value: Mesen's `hadDma` exception, which AccuracyCoin's later checks
+    /// look for.
+    #[test]
+    fn test_shx_value_is_unmasked_when_a_dma_interrupts_the_write() {
+        let mut cpu = Cpu::new();
+        let mut bus = MockBus::new();
+        bus.load_program(0x0600, &[0x9F, 0xF0, 0x12]); // SHA $12F0,Y
+        cpu.pc = 0x0600;
+        cpu.a = 0xFF;
+        cpu.x = 0xFF;
+        cpu.y = 0x20;
+        // The discarded read happens at the un-carried address, $1210.
+        bus.stall_the_read_at(0x1210);
+        cpu.execute_instruction(&mut bus, 0x9F);
+        assert_eq!(
+            bus.memory[0x1310], 0xFF,
+            "with the DMA in between, the value keeps all eight bits"
+        );
     }
 
     /// The undocumented instructions are combinations of documented ones; these
